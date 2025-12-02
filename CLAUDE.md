@@ -14,8 +14,30 @@ PrimeMover Orchestrator is a unified monitoring, debugging, and experiment manag
 ### CLI Commands
 
 ```bash
+# Setup (new developer onboarding)
+orchestrator setup                  # Full setup: clone repos, build, start
+orchestrator setup --skip-clone     # Skip cloning (repos already exist)
+orchestrator setup --skip-build     # Skip Maven build
+orchestrator setup --skip-start     # Don't start after setup
+
+# Lifecycle
+orchestrator up                     # Start all components
+orchestrator up --no-runner         # Start without runner
+orchestrator down                   # Stop all components
+orchestrator down --volumes         # Stop and remove data
+orchestrator restart                # Restart all
+orchestrator restart --runner       # Restart just runner
+
 # Status
 orchestrator status -v              # System health check
+orchestrator doctor                 # Diagnose setup issues
+orchestrator config show            # Show configuration
+
+# Database
+orchestrator db migrate --seed      # Run migrations + seed
+orchestrator db reset               # Fresh migration + seed
+orchestrator db init                # Full Laravel initialization
+orchestrator db clear-test          # Clear test data (keeps users)
 
 # Logs
 orchestrator logs query -c api -l error -t 1h
@@ -78,8 +100,14 @@ ruff check orchestrator/ --fix
 
 ```
 orchestrator/
-├── cli.py                    # Click-based CLI
-├── config.py                 # Pydantic settings
+├── cli.py                    # Click-based CLI (setup, up, down, etc.)
+├── config/
+│   └── settings.py           # Pydantic settings from .env
+├── components/
+│   ├── api.py                # API Docker Compose management
+│   ├── runner.py             # Runner process management (native Java)
+│   ├── monitoring.py         # Grafana/Loki/Prometheus stack
+│   └── manager.py            # Orchestrates all components
 ├── clients/
 │   ├── loki.py               # Loki log queries
 │   └── cloudwatch.py         # AWS CloudWatch queries

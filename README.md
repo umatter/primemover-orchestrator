@@ -240,13 +240,23 @@ orchestrator dashboard
 │  ├─────────────────┤  ├─────────────────┤  ├─────────────────┤         │
 │  │ Apache    :8090 │  │ Java Process    │  │ Grafana   :3000 │         │
 │  │ PHP-FPM        │  │ PID tracking    │  │ Loki      :3100 │         │
-│  │ MySQL     :3307 │  │                 │  │ Prometheus:9090 │         │
-│  │ Redis     :8889 │  │                 │  │ Tempo     :3200 │         │
-│  │ Memcached      │  │                 │  │ Promtail       │         │
-│  └─────────────────┘  └─────────────────┘  └─────────────────┘         │
-│                                                                          │
-└─────────────────────────────────────────────────────────────────────────┘
+│  │ MySQL     :3307 │  │      │          │  │ Prometheus:9090 │         │
+│  │ Redis     :8889 │  │      │ HTTP     │  │ Tempo     :3200 │         │
+│  │ Memcached      │  │      ▼          │  │ Promtail       │         │
+│  └─────────────────┘  └──────┼──────────┘  └─────────────────┘         │
+│                              │                                           │
+└──────────────────────────────┼──────────────────────────────────────────┘
+                               │
+                    ┌──────────▼──────────┐
+                    │   AWS Lambda        │
+                    │  (bot-decision-yt)  │
+                    │                     │
+                    │  YouTube video      │
+                    │  selection logic    │
+                    └─────────────────────┘
 ```
+
+**Note on Lambda**: The `bot-decision-yt` Lambda runs in AWS, not locally. The Runner invokes it via HTTP during job execution to select YouTube videos. No local setup is required - the orchestrator provides commands to view logs and analyze decisions from the deployed Lambda.
 
 ## Configuration
 

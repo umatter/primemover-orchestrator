@@ -386,6 +386,24 @@ def setup(
                 )
                 if result.returncode == 0:
                     console.print(f"  [green]✓[/green] GUI built successfully")
+
+                    # Deploy to API's public/gui folder
+                    gui_dist_src = gui_path / "dist" / "primemover-frontend"
+                    api_public_gui = repos["api"]["path"] / "public" / "gui"
+
+                    if gui_dist_src.exists():
+                        console.print(f"  [cyan]⋯[/cyan] Deploying GUI to API public folder...")
+
+                        # Remove old deployment if exists
+                        if api_public_gui.exists():
+                            shutil.rmtree(api_public_gui)
+
+                        # Copy new build
+                        shutil.copytree(gui_dist_src, api_public_gui)
+                        console.print(f"  [green]✓[/green] GUI deployed to {api_public_gui}")
+                        console.print(f"    [dim]Access at: http://localhost:8090/gui[/dim]")
+                    else:
+                        console.print(f"  [yellow]⚠[/yellow] Build output not found at {gui_dist_src}")
                 else:
                     console.print(f"  [red]✗[/red] Build failed")
                     console.print(f"    [dim]Run manually: cd {gui_path} && npm run build[/dim]")
@@ -474,6 +492,13 @@ def setup(
             console.print(f"  [green]✓[/green] GUI: dist/ built")
         else:
             console.print(f"  [dim]○[/dim] GUI: not built yet (npm run build needed)")
+
+        # Check if deployed to API
+        api_public_gui = repos["api"]["path"] / "public" / "gui"
+        if api_public_gui.exists() and (api_public_gui / "index.html").exists():
+            console.print(f"  [green]✓[/green] GUI: deployed to API (public/gui)")
+        else:
+            console.print(f"  [dim]○[/dim] GUI: not deployed to API yet")
     else:
         console.print(f"  [yellow]⚠[/yellow] GUI: package.json not found")
 
@@ -483,6 +508,18 @@ def setup(
     else:
         console.print(f"  [red]✗[/red] Config: .env missing")
         all_ok = False
+
+    # Lambda note (runs in AWS, not locally)
+    console.print(f"\n  [dim]Note: Lambda (bot-decision-yt) runs in AWS, not locally.[/dim]")
+    console.print(f"  [dim]The runner invokes it via HTTP during job execution.[/dim]")
+
+    # Check AWS credentials (optional, for log viewing)
+    import os
+    if os.environ.get("AWS_ACCESS_KEY_ID") or os.environ.get("AWS_SECRET_ACCESS_KEY"):
+        console.print(f"  [green]✓[/green] AWS credentials configured (for Lambda log viewing)")
+    else:
+        console.print(f"  [dim]○[/dim] AWS credentials not set (optional, for Lambda log viewing)")
+        console.print(f"    [dim]Set AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY in .env for 'orchestrator lambda' commands[/dim]")
 
     # Step 5: Start components
     if not skip_start and all_ok:
@@ -553,6 +590,11 @@ def setup(
     console.print("  API:     http://localhost:8090")
     console.print("  GUI:     http://localhost:8090/gui")
     console.print("  Grafana: http://localhost:3000")
+    console.print()
+    console.print("[bold]Lambda (runs in AWS):[/bold]")
+    console.print("  orchestrator lambda logs -t 1h        # View Lambda logs")
+    console.print("  orchestrator lambda decisions <job>   # Analyze decisions")
+    console.print("  [dim]Requires AWS credentials in .env for log access[/dim]")
     console.print()
     console.print("[dim]Credentials: admin@primemover.example / password[/dim]")
 
