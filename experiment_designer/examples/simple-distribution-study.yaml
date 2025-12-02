@@ -1,0 +1,111 @@
+# Simple Distribution Study Example
+#
+# Demonstrates parameter distributions and !file tag without pool scoring.
+# This example should pass validation and generate correctly.
+
+version: "1.0"
+
+experiment:
+  name: "Simple Distribution Study"
+  description: "Example showing parameter distributions and external files"
+
+defaults:
+  location: US-IL-CHICAGO
+  browser: mlx
+  timezone: America/Chicago
+  captcha_mode: always
+
+# Design with parameter distributions
+design:
+  type: factorial
+  seed: 42
+
+  parameters:
+    # Uniform distribution
+    pi:
+      distribution: uniform
+      min: -1
+      max: 1
+
+    # Discrete distribution
+    kappa:
+      distribution: discrete
+      values:
+        0: 0.25
+        1: 0.25
+        2: 0.50
+
+    # Normal distribution
+    alpha:
+      distribution: normal
+      mean: 0.35
+      std: 0.1
+
+    # Fixed value
+    tau:
+      value: 1.0
+
+  factors:
+    browser:
+      levels: [chrome, firefox]
+      maps_to:
+        agent.identification:
+          chrome: chrome
+          firefox: firefox
+
+    condition:
+      levels: [control, treatment]
+      maps_to:
+        preferences.experiment_group:
+          control: "A"
+          treatment: "B"
+
+  replications: 3
+
+crawlers:
+  - from_design: true
+    name: "bot_{browser}_{condition}_{replica:02d}"
+    description: "PI={pi:.3f}, Kappa={kappa}, Alpha={alpha:.3f}"
+
+    configuration:
+      name: "Config"
+      params:
+        active: true
+        # Sampled params (pi, kappa, alpha, tau) injected automatically
+
+        # Static search terms (loaded from file)
+        search_terms: !file
+          path: ./data/searchterms_pool.csv
+          select: first
+          count: 5
+
+      preferences:
+        - name: location
+          value: "US-IL-CHICAGO"
+          active: true
+
+    proxy:
+      name: "Proxy"
+      hostname: "proxy.example.com"
+      port: 8080
+      type: http
+
+    agent:
+      name: "Agent"
+      location: "US-IL-CHICAGO"
+      active: true
+
+    session:
+      name: "Session"
+      start: "2025-02-01T10:00:00-06:00"
+      active: true
+
+      workflow:
+        - visit: https://google.com
+        - wait: 5s
+        - type:
+            text: "example search"
+            selector: "//input[@name='q']"
+            submit: true
+        - wait: 5s
+        - scroll: 30s

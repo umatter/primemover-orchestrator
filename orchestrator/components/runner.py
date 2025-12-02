@@ -1,0 +1,434 @@
+"""
+Runner Component for managing primemover_runner as a native Java process.
+
+Manages the Spring Boot Java runner application with PID-based process tracking.
+"""
+
+import glob
+import os
+import signal
+import subprocess
+import time
+from pathlib import Path
+from typing import Optional
+
+from orchestrator.components.base import BaseComponent, ComponentHealth, ComponentStatus
+
+
+class RunnerComponent(BaseComponent):
+    """
+    Manages primemover_runner as a native Java process.
+
+    The runner is a Spring Boot application that executes
+    automation jobs. It runs as a native process (not containerized)
+    with PID file tracking for lifecycle management.
+    """
+
+    # PID file location
+    PID_FILE = Path("/tmp/primemover-runner.pid")
+
+    # Log file location (relative to runner path)
+    LOG_DIR = "primemover-runner/log"
+
+    # Default Java options
+    DEFAULT_JAVA_OPTS = "-Xmx2g -Xms512m"
+
+    # Startup timeout (seconds)
+    STARTUP_TIMEOUT = 30
+
+    # Shutdown timeout (seconds)
+    SHUTDOWN_TIMEOUT = 15
+
+    def __init__(
+        self,
+        path: Path,
+        java_opts: Optional[str] = None,
+        spring_profile: str = "local",
+    ):
+        """
+        Initialize Runner component.
+
+        Args:
+            path: Path to primemover_runner directory
+            java_opts: JVM options (default: -Xmx2g -Xms512m)
+            spring_profile: Spring profile to use (default: local)
+        """
+        super().__init__(name="Runner", path=path)
+        self.java_opts = java_opts or self.DEFAULT_JAVA_OPTS
+        self.spring_profile = spring_profile
+        self._jar_path: Optional[Path] = None
+        self._config_path: Optional[Path] = None
+
+    @property
+    def jar_path(self) -> Optional[Path]:
+        """Get path to the runner JAR file."""
+        if self._jar_path is None:
+            self._jar_path = self._find_jar()
+        return self._jar_path
+
+    @property
+    def config_path(self) -> Path:
+        """Get path to the config directory."""
+        if self._config_path is None:
+            self._config_path = self.path / "primemover-runner" / "config"
+        return self._config_path
+
+    @property
+    def log_path(self) -> Path:
+        """Get path to the log directory."""
+        return self.path / self.LOG_DIR
+
+    def _find_jar(self) -> Optional[Path]:
+        """Find the runner JAR file."""
+        target_dir = self.path / "primemover-runner" / "target"
+        if not target_dir.exists():
+            return None
+
+        # Find JAR files matching the pattern
+        jars = list(target_dir.glob("primemover-runner-*.jar"))
+        # Exclude test/sources JARs
+        jars = [j for j in jars if "-sources" not in j.name and "-tests" not in j.name]
+
+        if jars:
+            # Return the most recently modified
+            return max(jars, key=lambda p: p.stat().st_mtime)
+        return None
+
+    def start(self) -> ComponentHealth:
+        """
+        Start the runner process.
+
+        Returns:
+            ComponentHealth with status after start attempt
+        """
+        # Validate first
+        valid, errors = self.validate()
+        if not valid:
+            return ComponentHealth(
+                status=ComponentStatus.ERROR,
+                message="Validation failed",
+                details={"errors": errors},
+            )
+
+        # Check if already running
+        pid = self._get_pid()
+        if pid and self._is_process_running(pid):
+            return ComponentHealth(
+                status=ComponentStatus.RUNNING,
+                message=f"Runner is already running (PID: {pid})",
+                details={"pid": pid},
+            )
+
+        # Build the command
+        jar = self.jar_path
+        cmd = [
+            "java",
+            *self.java_opts.split(),
+            "-jar",
+            str(jar),
+            f"--spring.profiles.active={self.spring_profile}",
+            f"--spring.config.location={self.config_path}/",
+        ]
+
+        # Ensure log directory exists
+        self.log_path.mkdir(parents=True, exist_ok=True)
+
+        # Start the process
+        log_file = self.log_path / "runner-stdout.log"
+        try:
+            with open(log_file, "a") as stdout_log:
+                process = subprocess.Popen(
+                    cmd,
+                    stdout=stdout_log,
+                    stderr=subprocess.STDOUT,
+                    cwd=self.path / "primemover-runner",
+                    start_new_session=True,  # Detach from terminal
+                )
+
+            # Save PID
+            self.PID_FILE.write_text(str(process.pid))
+
+            # Wait for startup
+            if self._wait_for_startup(process.pid):
+                return ComponentHealth(
+                    status=ComponentStatus.RUNNING,
+                    message=f"Runner started (PID: {process.pid})",
+                    details={
+                        "pid": process.pid,
+                        "log_file": str(log_file),
+                        "profile": self.spring_profile,
+                    },
+                )
+            else:
+                # Process may have failed to start properly
+                if not self._is_process_running(process.pid):
+                    return ComponentHealth(
+                        status=ComponentStatus.ERROR,
+                        message="Runner process exited unexpectedly",
+                        details={"log_file": str(log_file)},
+                    )
+                else:
+                    return ComponentHealth(
+                        status=ComponentStatus.STARTING,
+                        message="Runner started but not yet responsive",
+                        details={"pid": process.pid, "log_file": str(log_file)},
+                    )
+
+        except Exception as e:
+            return ComponentHealth(
+                status=ComponentStatus.ERROR,
+                message=f"Failed to start runner: {e}",
+            )
+
+    def stop(self, remove_volumes: bool = False) -> ComponentHealth:
+        """
+        Stop the runner process.
+
+        Args:
+            remove_volumes: Ignored for runner (no volumes)
+
+        Returns:
+            ComponentHealth with status after stop attempt
+        """
+        pid = self._get_pid()
+
+        if not pid:
+            # Clean up stale PID file if exists
+            if self.PID_FILE.exists():
+                self.PID_FILE.unlink()
+            return ComponentHealth(
+                status=ComponentStatus.STOPPED,
+                message="Runner is not running",
+            )
+
+        if not self._is_process_running(pid):
+            # Clean up stale PID file
+            self.PID_FILE.unlink()
+            return ComponentHealth(
+                status=ComponentStatus.STOPPED,
+                message="Runner is not running (cleaned up stale PID file)",
+            )
+
+        # Try graceful shutdown first (SIGTERM)
+        try:
+            os.kill(pid, signal.SIGTERM)
+        except ProcessLookupError:
+            self.PID_FILE.unlink()
+            return ComponentHealth(
+                status=ComponentStatus.STOPPED,
+                message="Runner stopped (process not found)",
+            )
+
+        # Wait for graceful shutdown
+        for _ in range(self.SHUTDOWN_TIMEOUT):
+            if not self._is_process_running(pid):
+                self.PID_FILE.unlink()
+                return ComponentHealth(
+                    status=ComponentStatus.STOPPED,
+                    message="Runner stopped gracefully",
+                )
+            time.sleep(1)
+
+        # Force kill if still running
+        try:
+            os.kill(pid, signal.SIGKILL)
+            time.sleep(1)
+        except ProcessLookupError:
+            pass
+
+        if self.PID_FILE.exists():
+            self.PID_FILE.unlink()
+
+        if self._is_process_running(pid):
+            return ComponentHealth(
+                status=ComponentStatus.ERROR,
+                message=f"Failed to stop runner (PID: {pid})",
+                details={"pid": pid},
+            )
+
+        return ComponentHealth(
+            status=ComponentStatus.STOPPED,
+            message="Runner stopped (forced)",
+        )
+
+    def status(self) -> ComponentHealth:
+        """
+        Get current runner status.
+
+        Returns:
+            ComponentHealth with current status and details
+        """
+        pid = self._get_pid()
+
+        if not pid:
+            return ComponentHealth(
+                status=ComponentStatus.STOPPED,
+                message="Runner is not running (no PID file)",
+            )
+
+        if not self._is_process_running(pid):
+            return ComponentHealth(
+                status=ComponentStatus.STOPPED,
+                message="Runner is not running (stale PID file)",
+                details={"stale_pid": pid},
+            )
+
+        # Get process info
+        details = self._get_process_details(pid)
+
+        return ComponentHealth(
+            status=ComponentStatus.RUNNING,
+            message=f"Runner is running (PID: {pid})",
+            details=details,
+        )
+
+    def is_running(self) -> bool:
+        """
+        Quick check if runner is running.
+
+        Returns:
+            True if runner process is running
+        """
+        pid = self._get_pid()
+        return pid is not None and self._is_process_running(pid)
+
+    def validate(self) -> tuple[bool, list[str]]:
+        """
+        Validate runner prerequisites.
+
+        Returns:
+            Tuple of (is_valid, list of error messages)
+        """
+        errors = []
+
+        # Check path exists
+        if not self.path or not self.path.exists():
+            errors.append(f"Runner path does not exist: {self.path}")
+            return False, errors
+
+        # Check JAR exists
+        jar = self.jar_path
+        if not jar or not jar.exists():
+            errors.append(
+                f"Runner JAR not found. Expected at: {self.path}/primemover-runner/target/primemover-runner-*.jar. "
+                "Run 'mvn package' in the runner directory to build."
+            )
+
+        # Check config directory exists
+        if not self.config_path.exists():
+            errors.append(f"Config directory not found: {self.config_path}")
+
+        # Check application.properties exists
+        props_file = self.config_path / "application.properties"
+        if not props_file.exists():
+            errors.append(f"application.properties not found: {props_file}")
+
+        # Check Java is available
+        java_check = subprocess.run(
+            ["java", "-version"], capture_output=True, text=True
+        )
+        if java_check.returncode != 0:
+            errors.append("Java is not installed or not in PATH")
+        else:
+            # Check Java version (need 17+)
+            version_output = java_check.stderr  # Java outputs version to stderr
+            if "version" in version_output:
+                # Try to extract major version
+                import re
+                match = re.search(r'version "(\d+)', version_output)
+                if match:
+                    major_version = int(match.group(1))
+                    if major_version < 17:
+                        errors.append(f"Java 17+ required, found Java {major_version}")
+
+        return len(errors) == 0, errors
+
+    def tail_logs(self, lines: int = 50) -> str:
+        """
+        Get the last N lines of the runner log.
+
+        Args:
+            lines: Number of lines to return
+
+        Returns:
+            Log content
+        """
+        log_file = self.log_path / "runner-stdout.log"
+        if not log_file.exists():
+            return "No log file found"
+
+        result = subprocess.run(
+            ["tail", "-n", str(lines), str(log_file)],
+            capture_output=True,
+            text=True,
+        )
+        return result.stdout
+
+    def _get_pid(self) -> Optional[int]:
+        """Get PID from file if exists."""
+        if not self.PID_FILE.exists():
+            return None
+        try:
+            return int(self.PID_FILE.read_text().strip())
+        except (ValueError, OSError):
+            return None
+
+    def _is_process_running(self, pid: int) -> bool:
+        """Check if a process with the given PID is running."""
+        try:
+            os.kill(pid, 0)  # Signal 0 doesn't kill, just checks
+            return True
+        except (OSError, ProcessLookupError):
+            return False
+
+    def _wait_for_startup(self, pid: int) -> bool:
+        """Wait for runner to complete startup."""
+        start_time = time.time()
+
+        while time.time() - start_time < self.STARTUP_TIMEOUT:
+            if not self._is_process_running(pid):
+                return False
+
+            # Check for "Started" message in logs
+            log_file = self.log_path / "runner-stdout.log"
+            if log_file.exists():
+                try:
+                    content = log_file.read_text()
+                    if "Started PrimemoverRunnerApplication" in content or "Tomcat started" in content:
+                        return True
+                except OSError:
+                    pass
+
+            time.sleep(1)
+
+        # Return True if still running (might just be slow to start)
+        return self._is_process_running(pid)
+
+    def _get_process_details(self, pid: int) -> dict:
+        """Get detailed information about the running process."""
+        details = {"pid": pid}
+
+        # Get process info from /proc
+        try:
+            proc_stat = Path(f"/proc/{pid}/stat").read_text().split()
+            # Field 22 is starttime
+            details["uptime_seconds"] = int(
+                (time.time() * 100 - int(proc_stat[21])) / 100
+            )
+        except (OSError, IndexError, ValueError):
+            pass
+
+        # Get memory usage
+        try:
+            proc_status = Path(f"/proc/{pid}/status").read_text()
+            for line in proc_status.split("\n"):
+                if line.startswith("VmRSS:"):
+                    details["memory_mb"] = int(line.split()[1]) // 1024
+                    break
+        except (OSError, ValueError):
+            pass
+
+        details["log_file"] = str(self.log_path / "runner-stdout.log")
+        details["profile"] = self.spring_profile
+
+        return details

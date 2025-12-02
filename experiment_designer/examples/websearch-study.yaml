@@ -1,0 +1,218 @@
+# Web Search Polarization Study
+#
+# This example demonstrates the full capabilities of Phase 4:
+# - External data files (CSV pools)
+# - Parameter distributions (uniform, discrete, normal, gumbel)
+# - Proportional factor levels (stratified sampling)
+# - Data pool selection with scoring expressions
+# - Reproducible randomization via seed
+
+version: "1.0"
+
+experiment:
+  name: "Web Search Polarization Study 2025"
+  description: |
+    Investigating algorithmic personalization in web search results.
+    Based on methodology from websearch_polarization.Rmd
+
+# Data pools - external CSV files for dynamic selection
+data_pools:
+  outlets:
+    source: ./data/outlets_pool.csv
+    columns:
+      - domain
+      - url
+      - pi
+      - region
+      - category
+
+  search_terms:
+    source: ./data/searchterms_pool.csv
+    columns:
+      - term
+      - pi
+      - category
+
+# System defaults
+defaults:
+  location: US-IL-CHICAGO
+  browser: mlx
+  timezone: America/Chicago
+  timezone_utc_offset: "-06:00"
+  captcha_mode: always
+  typing_mode: SIMULATED_FIXINGTYPOS
+
+# Factorial/stratified design
+design:
+  type: factorial
+  seed: 42  # For reproducibility
+
+  # Parameter distributions sampled per crawler
+  parameters:
+    # Political orientation: uniform distribution
+    pi:
+      distribution: uniform
+      min: -1
+      max: 1
+
+    # Information processing style: discrete categories
+    kappa:
+      distribution: discrete
+      values:
+        0: 0.25   # Low engagement
+        1: 0.25   # Medium engagement
+        2: 0.50   # High engagement
+
+    # Preference strength: normal distribution
+    alpha:
+      distribution: normal
+      mean: 0.35
+      std: 0.1
+
+    # Consistency parameter: fixed value
+    tau:
+      value: 1.0
+
+    # Error term: Gumbel distribution (for discrete choice models)
+    epsilon:
+      distribution: gumbel
+      mu: -0.4557735
+      beta: 0.0793006
+
+  # Experimental factors
+  factors:
+    # Usage pattern with proportional allocation
+    usage_type:
+      levels:
+        - id: only_visits
+          proportion: 0.25
+        - id: only_searches
+          proportion: 0.25
+        - id: searches_and_visits
+          proportion: 0.50
+      maps_to:
+        preferences.usage_type:
+          only_visits: only_visits
+          only_searches: only_search
+          searches_and_visits: searches_and_visits
+
+    # Browser type (factorial)
+    browser:
+      levels: [chrome, firefox]
+      maps_to:
+        agent.identification:
+          chrome: chrome
+          firefox: firefox
+
+  # Total number of crawlers (for stratified designs)
+  total_crawlers: 100
+
+# Reusable workflow templates
+templates:
+  google_cookie_consent:
+    - try_click:
+        selector: "//button[contains(text(),'Accept all')]"
+        task: cookie_consent
+        flag: consent_google
+    - wait: 2s
+
+  google_search:
+    - visit: https://google.com
+    - wait: 3s
+    - template: google_cookie_consent
+    - type:
+        text: "${query}"
+        selector: "//input[@name='q']"
+        submit: true
+    - wait: 5s
+    - scroll: 30s
+    - wait: 5s
+
+  visit_outlet:
+    - visit: "${url}"
+    - wait: 3s
+    - scroll: 60s
+    - wait: 5s
+
+# Crawler definition (expanded from design)
+crawlers:
+  - from_design: true
+    name: "ws_{usage_type}_{browser}_{cell_index:03d}"
+    description: "Web Search Bot - PI: {pi:.2f}, Kappa: {kappa}"
+
+    configuration:
+      name: "Config_{cell_index:03d}"
+      params:
+        active: true
+
+        # Sampled parameters are automatically injected here:
+        # pi, kappa, alpha, tau, epsilon
+
+        # Media outlets selected based on proximity to crawler's pi
+        media_outlet_urls:
+          from_pool: outlets
+          select: top
+          count: 10
+          score: "{alpha} - {tau} * pow(abs({crawler.pi} - {item.pi}), 2)"
+
+        # Search terms selected based on proximity to crawler's pi
+        search_terms:
+          from_pool: search_terms
+          select: top
+          count: 5
+          score: "{alpha} - {tau} * pow(abs({crawler.pi} - {item.pi}), 2)"
+
+      preferences:
+        - name: location
+          value: "US-IL-CHICAGO"
+          active: true
+        - name: cookie_pref
+          value: '{"accept_all": true, "use_memory": true}'
+          active: true
+
+    proxy:
+      name: "Proxy_{cell_index:03d}"
+      hostname: "proxy.example.com"
+      port: 8080
+      type: http
+      username: "proxyuser"
+      password: "proxypass"
+      location: "US-IL-CHICAGO"
+      active: true
+
+    agent:
+      name: "Agent_{cell_index:03d}"
+      location: "US-IL-CHICAGO"
+      active: true
+      multilogin_profile: {}
+
+    session:
+      name: "Daily Session"
+      start: "2025-02-01T10:00:00-06:00"
+      active: true
+
+      workflow:
+        # Initial search
+        - template: google_search
+          with:
+            query: "current news"
+
+        # Visit media outlets (dynamically selected based on crawler's pi)
+        - visit: https://news.google.com
+        - wait: 5s
+        - scroll: 60s
+
+        # Repeat: search and browse
+        - repeat: 5
+          jobs:
+            - visit: https://google.com
+            - wait: 3s
+            - type:
+                text: "latest headlines"
+                selector: "//input[@name='q']"
+                submit: true
+            - wait: 5s
+            - scroll: 30s
+
+        # Final wait
+        - wait: 10s

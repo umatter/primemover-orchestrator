@@ -1,0 +1,287 @@
+# Mini Trump Search Experiment
+# 6 crawlers: 2 right-wing, 2 left-wing, 2 neutral
+# All search for "donald trump" on Google after different browsing histories
+# NO PROXIES - runs directly from runner IP (for testing)
+#
+version: "1.0"
+
+experiment:
+  name: "Trump Search Mini Study"
+  description: |
+    Mini experiment testing search personalization based on prior browsing history.
+    - 2 bots visit right-wing media before searching
+    - 2 bots visit left-wing media before searching
+    - 2 bots search directly (control group)
+
+defaults:
+  location: US-IL-CHICAGO
+  browser: mlx
+  timezone: America/Chicago
+  timezone_utc_offset: "-06:00"
+  captcha_mode: never
+  typing_mode: SIMULATED_FIXINGTYPOS
+  proxy:
+    hostname: "103.195.116.28"
+    port: 5432
+    username: "e5ffg"
+    password: "35qbtiql"
+    type: http
+
+# =============================================================================
+# Reusable Templates
+# =============================================================================
+templates:
+  google_search_trump:
+    - visit: https://www.google.com
+    - wait: 3s
+    - type:
+        text: "donald trump"
+        selector: "//textarea[@name='q']"
+        submit: true
+    - wait: 5s
+    - scroll: 10s
+    - wait: 3s
+
+  browse_and_scroll:
+    - wait: 5s
+    - scroll: 15s
+    - wait: 3s
+
+# =============================================================================
+# Crawlers
+# =============================================================================
+crawlers:
+  # =========================================================================
+  # RIGHT-WING BOTS (2)
+  # =========================================================================
+  - name: "right_wing_bot_01"
+    description: "Visits conservative media before Trump search"
+    active: true
+    testing: false
+
+    configuration:
+      name: "Right Wing Config"
+      params:
+        pi: 0.7
+        alpha: 0.4
+        tau: 1.0
+        kappa: 1
+
+    agent:
+      name: "Right Agent 01"
+      identification: mlx
+      location: US-TX-HOUSTON
+
+    session:
+      name: "Right Wing Session 01"
+      start: now  # Starts immediately
+      timezone: America/Chicago
+
+      workflow:
+        # Visit Fox News
+        - visit: https://www.foxnews.com
+        - template: browse_and_scroll
+
+        # Visit Breitbart
+        - visit: https://www.breitbart.com
+        - template: browse_and_scroll
+
+        # Visit Daily Wire
+        - visit: https://www.dailywire.com
+        - template: browse_and_scroll
+
+        # Visit New York Post
+        - visit: https://nypost.com
+        - template: browse_and_scroll
+
+        # Now search on Google
+        - template: google_search_trump
+
+  - name: "right_wing_bot_02"
+    description: "Visits conservative media before Trump search"
+    active: true
+    testing: false
+
+    configuration:
+      name: "Right Wing Config"
+      params:
+        pi: 0.8
+        alpha: 0.35
+        tau: 1.0
+        kappa: 1
+
+    agent:
+      name: "Right Agent 02"
+      identification: mlx
+      location: US-FL-MIAMI
+
+    session:
+      name: "Right Wing Session 02"
+      start: +2m  # 2 minutes after first bot
+      timezone: America/Chicago
+
+      workflow:
+        # Visit Fox News
+        - visit: https://www.foxnews.com
+        - template: browse_and_scroll
+
+        # Visit Washington Examiner
+        - visit: https://www.washingtonexaminer.com
+        - template: browse_and_scroll
+
+        # Visit The Federalist
+        - visit: https://thefederalist.com
+        - template: browse_and_scroll
+
+        # Visit Newsmax
+        - visit: https://www.newsmax.com
+        - template: browse_and_scroll
+
+        # Now search on Google
+        - template: google_search_trump
+
+  # =========================================================================
+  # LEFT-WING BOTS (2)
+  # =========================================================================
+  - name: "left_wing_bot_01"
+    description: "Visits progressive media before Trump search"
+    active: true
+    testing: false
+
+    configuration:
+      name: "Left Wing Config"
+      params:
+        pi: -0.7
+        alpha: 0.4
+        tau: 1.0
+        kappa: 1
+
+    agent:
+      name: "Left Agent 01"
+      identification: mlx
+      location: US-CA-LOS_ANGELES
+
+    session:
+      name: "Left Wing Session 01"
+      start: +4m  # 4 minutes after first bot
+      timezone: America/Chicago
+
+      workflow:
+        # Visit MSNBC
+        - visit: https://www.msnbc.com
+        - template: browse_and_scroll
+
+        # Visit Huffington Post
+        - visit: https://www.huffpost.com
+        - template: browse_and_scroll
+
+        # Visit The Guardian US
+        - visit: https://www.theguardian.com/us
+        - template: browse_and_scroll
+
+        # Visit Vox
+        - visit: https://www.vox.com
+        - template: browse_and_scroll
+
+        # Now search on Google
+        - template: google_search_trump
+
+  - name: "left_wing_bot_02"
+    description: "Visits progressive media before Trump search"
+    active: true
+    testing: false
+
+    configuration:
+      name: "Left Wing Config"
+      params:
+        pi: -0.8
+        alpha: 0.35
+        tau: 1.0
+        kappa: 1
+
+    agent:
+      name: "Left Agent 02"
+      identification: mlx
+      location: US-NY-NEW_YORK
+
+    session:
+      name: "Left Wing Session 02"
+      start: +6m  # 6 minutes after first bot
+      timezone: America/Chicago
+
+      workflow:
+        # Visit CNN
+        - visit: https://www.cnn.com
+        - template: browse_and_scroll
+
+        # Visit NPR
+        - visit: https://www.npr.org
+        - template: browse_and_scroll
+
+        # Visit Slate
+        - visit: https://slate.com
+        - template: browse_and_scroll
+
+        # Visit Mother Jones
+        - visit: https://www.motherjones.com
+        - template: browse_and_scroll
+
+        # Now search on Google
+        - template: google_search_trump
+
+  # =========================================================================
+  # NEUTRAL BOTS (2) - Control Group
+  # =========================================================================
+  - name: "neutral_bot_01"
+    description: "Direct Google search - no prior browsing (control)"
+    active: true
+    testing: false
+
+    configuration:
+      name: "Neutral Config"
+      params:
+        pi: 0.0
+        alpha: 0.4
+        tau: 1.0
+        kappa: 0
+
+    agent:
+      name: "Neutral Agent 01"
+      identification: mlx
+      location: US-IL-CHICAGO
+
+    session:
+      name: "Neutral Session 01"
+      start: +8m  # 8 minutes after first bot
+      timezone: America/Chicago
+
+      workflow:
+        # Direct Google search - no prior media browsing
+        - template: google_search_trump
+
+  - name: "neutral_bot_02"
+    description: "Direct Google search - no prior browsing (control)"
+    active: true
+    testing: false
+
+    configuration:
+      name: "Neutral Config"
+      params:
+        pi: 0.0
+        alpha: 0.4
+        tau: 1.0
+        kappa: 0
+
+    agent:
+      name: "Neutral Agent 02"
+      identification: mlx
+      location: US-CO-DENVER
+
+    session:
+      name: "Neutral Session 02"
+      start: +10m  # 10 minutes after first bot
+      timezone: America/Chicago
+
+      workflow:
+        # Direct Google search - no prior media browsing
+        - template: google_search_trump

@@ -1,0 +1,26 @@
+term,pi,category
+climate change,-0.25,environment
+global warming,-0.30,environment
+renewable energy,-0.15,environment
+carbon tax,-0.20,environment
+paris climate agreement,-0.35,environment
+fossil fuels,0.10,environment
+immigration reform,-0.10,politics
+border security,0.30,politics
+illegal immigration,0.35,politics
+path to citizenship,-0.25,politics
+gun control,-0.40,politics
+second amendment,0.45,politics
+gun rights,0.40,politics
+healthcare reform,-0.15,healthcare
+universal healthcare,-0.45,healthcare
+obamacare repeal,0.35,healthcare
+medicare for all,-0.50,healthcare
+tax cuts,0.25,economy
+minimum wage,-0.20,economy
+income inequality,-0.30,economy
+free market,0.30,economy
+abortion rights,-0.50,social
+pro-life,0.55,social
+religious freedom,0.35,social
+LGBTQ rights,-0.40,social

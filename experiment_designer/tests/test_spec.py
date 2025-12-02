@@ -1,0 +1,513 @@
+"""
+Tests for the experiment_designer spec module.
+
+Run with: python -m pytest experiment_designer/tests/test_spec.py -v
+Or: python experiment_designer/tests/test_spec.py
+"""
+
+import json
+import unittest
+from pathlib import Path
+import sys
+
+# Add parent directory to path
+sys.path.insert(0, str(Path(__file__).parent.parent.parent))
+
+from experiment_designer.spec import (
+    SpecParser,
+    SpecConverter,
+    SpecValidator,
+    DesignExpander,
+    JobRegistry,
+)
+
+
+class TestJobRegistry(unittest.TestCase):
+    """Tests for JobRegistry."""
+
+    def test_list_all_returns_jobs(self):
+        """Test that list_all returns job types."""
+        jobs = JobRegistry.list_all()
+        self.assertGreater(len(jobs), 10)
+
+    def test_get_schema_for_valid_type(self):
+        """Test getting schema for a valid job type."""
+        schema = JobRegistry.get_schema("visit")
+        self.assertIsNotNone(schema)
+        self.assertEqual(schema.api_type, "visitjob")
+
+    def test_get_schema_for_invalid_type(self):
+        """Test getting schema for an invalid job type."""
+        schema = JobRegistry.get_schema("nonexistent")
+        self.assertIsNone(schema)
+
+    def test_get_api_type_mapping(self):
+        """Test API type mappings."""
+        self.assertEqual(JobRegistry.get_api_type("visit"), "visitjob")
+        self.assertEqual(JobRegistry.get_api_type("wait"), "waitjob")
+        self.assertEqual(JobRegistry.get_api_type("click"), "clickjob")
+        self.assertEqual(JobRegistry.get_api_type("type"), "entertextfieldjob")
+        self.assertEqual(JobRegistry.get_api_type("scroll"), "scrollbydurationjob")
+
+
+class TestSpecParser(unittest.TestCase):
+    """Tests for SpecParser."""
+
+    def setUp(self):
+        self.parser = SpecParser()
+
+    def test_parse_minimal_spec(self):
+        """Test parsing a minimal valid spec."""
+        yaml_content = """
+experiment:
+  name: Test Experiment
+
+crawlers:
+  - name: Test Crawler
+"""
+        parsed = self.parser.parse(yaml_content)
+        self.assertEqual(len(parsed.errors), 0)
+        self.assertEqual(parsed.experiment["name"], "Test Experiment")
+        self.assertEqual(len(parsed.crawlers), 1)
+
+    def test_parse_invalid_yaml(self):
+        """Test parsing invalid YAML."""
+        yaml_content = "invalid: yaml: content:"
+        parsed = self.parser.parse(yaml_content)
+        self.assertGreater(len(parsed.errors), 0)
+
+    def test_parse_missing_experiment_name(self):
+        """Test that missing experiment name causes error."""
+        yaml_content = """
+experiment:
+  description: No name
+
+crawlers:
+  - name: Test
+"""
+        parsed = self.parser.parse(yaml_content)
+        self.assertIn("experiment.name is required", parsed.errors)
+
+    def test_duration_parsing(self):
+        """Test duration string parsing."""
+        yaml_content = """
+experiment:
+  name: Test
+
+crawlers:
+  - name: Test
+    session:
+      workflow:
+        - wait: 10s
+        - wait: 5m
+        - wait: 1h
+        - wait: 30
+"""
+        parsed = self.parser.parse(yaml_content)
+        jobs = parsed.crawlers[0]["queues"][0]["jobs"]
+
+        # Check that durations are converted correctly
+        self.assertEqual(len(jobs), 4)
+
+        # Get the seconds behavior for each wait job
+        def get_seconds(job):
+            for b in job.get("behaviors", []):
+                if b["name"] == "seconds":
+                    return b["value"]
+            return None
+
+        self.assertEqual(get_seconds(jobs[0]), 10)   # 10s
+        self.assertEqual(get_seconds(jobs[1]), 300)  # 5m
+        self.assertEqual(get_seconds(jobs[2]), 3600) # 1h
+        self.assertEqual(get_seconds(jobs[3]), 30)   # 30
+
+    def test_shorthand_expansion(self):
+        """Test shorthand syntax expansion."""
+        yaml_content = """
+experiment:
+  name: Test
+
+crawlers:
+  - name: Test
+    session:
+      workflow:
+        - visit: https://example.com
+        - click: //button[@id='submit']
+"""
+        parsed = self.parser.parse(yaml_content)
+        jobs = parsed.crawlers[0]["queues"][0]["jobs"]
+
+        self.assertEqual(jobs[0]["type"], "visitjob")
+        self.assertEqual(jobs[1]["type"], "clickjob")
+
+    def test_template_expansion(self):
+        """Test template reference expansion."""
+        yaml_content = """
+experiment:
+  name: Test
+
+templates:
+  my_template:
+    - visit: https://example.com
+    - wait: 5s
+
+crawlers:
+  - name: Test
+    session:
+      workflow:
+        - template: my_template
+"""
+        parsed = self.parser.parse(yaml_content)
+        jobs = parsed.crawlers[0]["queues"][0]["jobs"]
+
+        self.assertEqual(len(jobs), 2)
+        self.assertEqual(jobs[0]["type"], "visitjob")
+        self.assertEqual(jobs[1]["type"], "waitjob")
+
+    def test_template_with_variables(self):
+        """Test template expansion with variable substitution."""
+        yaml_content = """
+experiment:
+  name: Test
+
+templates:
+  search:
+    - type:
+        text: "${query}"
+        selector: "//input"
+        submit: true
+
+crawlers:
+  - name: Test
+    session:
+      workflow:
+        - template: search
+          with:
+            query: "hello world"
+"""
+        parsed = self.parser.parse(yaml_content)
+        jobs = parsed.crawlers[0]["queues"][0]["jobs"]
+
+        # Find the text behavior
+        text_value = None
+        for b in jobs[0].get("behaviors", []):
+            if b["name"] == "text":
+                text_value = b["value"]
+                break
+
+        self.assertEqual(text_value, "hello world")
+
+
+class TestDesignExpander(unittest.TestCase):
+    """Tests for DesignExpander."""
+
+    def setUp(self):
+        self.expander = DesignExpander()
+
+    def test_expand_simple_design(self):
+        """Test expanding a simple 2x2 design."""
+        design = {
+            "type": "factorial",
+            "factors": {
+                "a": {"levels": ["a1", "a2"]},
+                "b": {"levels": ["b1", "b2"]},
+            },
+            "replications": 1
+        }
+        crawler_template = {
+            "name": "test_{a}_{b}",
+            "description": "Test crawler"
+        }
+
+        crawlers = self.expander.expand(design, crawler_template)
+
+        self.assertEqual(len(crawlers), 4)  # 2 x 2 = 4
+        names = [c["name"] for c in crawlers]
+        self.assertIn("test_a1_b1", names)
+        self.assertIn("test_a1_b2", names)
+        self.assertIn("test_a2_b1", names)
+        self.assertIn("test_a2_b2", names)
+
+    def test_expand_with_replications(self):
+        """Test design expansion with replications."""
+        design = {
+            "type": "factorial",
+            "factors": {
+                "condition": {"levels": ["control", "treatment"]},
+            },
+            "replications": 3
+        }
+        crawler_template = {
+            "name": "crawler_{condition}_{replica}",
+        }
+
+        crawlers = self.expander.expand(design, crawler_template)
+
+        self.assertEqual(len(crawlers), 6)  # 2 x 3 = 6
+
+    def test_expand_with_maps_to(self):
+        """Test design expansion with maps_to parameter mapping."""
+        design = {
+            "type": "factorial",
+            "factors": {
+                "orientation": {
+                    "levels": ["left", "right"],
+                    "maps_to": {
+                        "configuration.params.pi": {
+                            "left": -0.5,
+                            "right": 0.5
+                        }
+                    }
+                }
+            },
+            "replications": 1
+        }
+        crawler_template = {
+            "name": "test_{orientation}",
+            "configuration": {"params": {}}
+        }
+
+        crawlers = self.expander.expand(design, crawler_template)
+
+        self.assertEqual(len(crawlers), 2)
+
+        # Check parameter values were mapped correctly
+        for c in crawlers:
+            if c["name"] == "test_left":
+                self.assertEqual(c["configuration"]["params"]["pi"], -0.5)
+            elif c["name"] == "test_right":
+                self.assertEqual(c["configuration"]["params"]["pi"], 0.5)
+
+    def test_preview_design(self):
+        """Test design preview."""
+        design = {
+            "type": "factorial",
+            "factors": {
+                "a": {"levels": ["a1", "a2", "a3"], "maps_to": {"x": {}}},
+                "b": {"levels": ["b1", "b2"]},
+            },
+            "replications": 5
+        }
+
+        preview = self.expander.preview(design)
+
+        self.assertTrue(preview["has_design"])
+        self.assertEqual(preview["num_factors"], 2)
+        self.assertEqual(preview["total_cells"], 6)  # 3 x 2
+        self.assertEqual(preview["replications"], 5)
+        self.assertEqual(preview["total_crawlers"], 30)  # 6 x 5
+
+
+class TestSpecConverter(unittest.TestCase):
+    """Tests for SpecConverter."""
+
+    def setUp(self):
+        self.parser = SpecParser()
+        self.converter = SpecConverter()
+
+    def test_convert_minimal_spec(self):
+        """Test converting a minimal spec to JSON."""
+        yaml_content = """
+experiment:
+  name: Test
+
+crawlers:
+  - name: Test Crawler
+    proxy:
+      hostname: proxy.example.com
+      port: 8080
+    session:
+      workflow:
+        - visit: https://example.com
+"""
+        parsed = self.parser.parse(yaml_content)
+        result = self.converter.convert(parsed)
+
+        self.assertEqual(len(result.errors), 0)
+        self.assertEqual(result.crawler_count, 1)
+
+        # Check JSON structure
+        crawler = result.json_data[0]
+        self.assertEqual(crawler["name"], "Test Crawler")
+        self.assertIn("configuration", crawler)
+        self.assertIn("proxy", crawler)
+        self.assertIn("agent", crawler)
+        self.assertIn("queues", crawler)
+
+    def test_convert_with_design(self):
+        """Test converting a spec with factorial design."""
+        yaml_content = """
+experiment:
+  name: Test
+
+design:
+  type: factorial
+  factors:
+    condition:
+      levels: [control, treatment]
+  replications: 2
+
+crawlers:
+  - from_design: true
+    name: "test_{condition}_{replica}"
+    proxy:
+      hostname: localhost
+      port: 8080
+    session:
+      workflow:
+        - visit: https://example.com
+"""
+        parsed = self.parser.parse(yaml_content)
+        result = self.converter.convert(parsed)
+
+        self.assertEqual(len(result.errors), 0)
+        self.assertEqual(result.crawler_count, 4)  # 2 conditions x 2 replications
+
+    def test_json_output_format(self):
+        """Test that JSON output is properly formatted."""
+        yaml_content = """
+experiment:
+  name: Test
+
+crawlers:
+  - name: Test
+    configuration:
+      params:
+        pi: -0.5
+        alpha: 1
+    proxy:
+      hostname: localhost
+      port: 8080
+    session:
+      workflow:
+        - visit: https://example.com
+"""
+        parsed = self.parser.parse(yaml_content)
+        result = self.converter.convert(parsed)
+
+        # Check it's valid JSON
+        json_str = result.to_json()
+        json_data = json.loads(json_str)
+
+        self.assertIsInstance(json_data, list)
+        self.assertEqual(len(json_data), 1)
+
+
+class TestSpecValidator(unittest.TestCase):
+    """Tests for SpecValidator."""
+
+    def setUp(self):
+        self.validator = SpecValidator()
+
+    def test_validate_valid_spec(self):
+        """Test validating a valid spec."""
+        spec = {
+            "experiment": {"name": "Test"},
+            "crawlers": [{"name": "Test Crawler"}]
+        }
+        result = self.validator.validate(spec)
+        self.assertTrue(result.valid)
+
+    def test_validate_missing_experiment_name(self):
+        """Test validation catches missing experiment name."""
+        spec = {
+            "experiment": {},
+            "crawlers": [{"name": "Test"}]
+        }
+        result = self.validator.validate(spec)
+        self.assertFalse(result.valid)
+        self.assertTrue(any("experiment.name" in e for e in result.errors))
+
+    def test_validate_missing_crawlers(self):
+        """Test validation catches missing crawlers."""
+        spec = {
+            "experiment": {"name": "Test"},
+            "crawlers": []
+        }
+        result = self.validator.validate(spec)
+        self.assertFalse(result.valid)
+        self.assertTrue(any("crawler" in e.lower() for e in result.errors))
+
+    def test_validate_design_factor_levels(self):
+        """Test validation of design factors."""
+        spec = {
+            "experiment": {"name": "Test"},
+            "design": {
+                "factors": {
+                    "empty_factor": {"levels": []}  # Should fail
+                }
+            },
+            "crawlers": [{"name": "Test"}]
+        }
+        result = self.validator.validate(spec)
+        self.assertFalse(result.valid)
+
+    def test_validate_template_reference(self):
+        """Test validation of template references."""
+        spec = {
+            "experiment": {"name": "Test"},
+            "templates": {},
+            "crawlers": [{
+                "name": "Test",
+                "session": {
+                    "workflow": [
+                        {"template": "nonexistent_template"}
+                    ]
+                }
+            }]
+        }
+        result = self.validator.validate(spec)
+        self.assertTrue(any("template" in e.lower() for e in result.errors))
+
+
+class TestEndToEnd(unittest.TestCase):
+    """End-to-end tests using real spec files."""
+
+    def test_youtube_factorial_study(self):
+        """Test the example YouTube factorial study spec."""
+        spec_path = Path(__file__).parent.parent.parent / "examples" / "specs" / "youtube-factorial-study.yaml"
+
+        if not spec_path.exists():
+            self.skipTest(f"Example spec not found: {spec_path}")
+
+        with open(spec_path, 'r') as f:
+            yaml_content = f.read()
+
+        parser = SpecParser()
+        parsed = parser.parse(yaml_content)
+
+        self.assertEqual(len(parsed.errors), 0, f"Parse errors: {parsed.errors}")
+
+        converter = SpecConverter()
+        result = converter.convert(parsed)
+
+        self.assertEqual(len(result.errors), 0, f"Convert errors: {result.errors}")
+        self.assertEqual(result.crawler_count, 30)  # 3 x 2 x 5
+
+        # Verify JSON is valid
+        json_str = result.to_json()
+        json_data = json.loads(json_str)
+        self.assertEqual(len(json_data), 30)
+
+
+def run_tests():
+    """Run all tests."""
+    loader = unittest.TestLoader()
+    suite = unittest.TestSuite()
+
+    # Add all test classes
+    suite.addTests(loader.loadTestsFromTestCase(TestJobRegistry))
+    suite.addTests(loader.loadTestsFromTestCase(TestSpecParser))
+    suite.addTests(loader.loadTestsFromTestCase(TestDesignExpander))
+    suite.addTests(loader.loadTestsFromTestCase(TestSpecConverter))
+    suite.addTests(loader.loadTestsFromTestCase(TestSpecValidator))
+    suite.addTests(loader.loadTestsFromTestCase(TestEndToEnd))
+
+    runner = unittest.TextTestRunner(verbosity=2)
+    result = runner.run(suite)
+
+    return 0 if result.wasSuccessful() else 1
+
+
+if __name__ == "__main__":
+    sys.exit(run_tests())

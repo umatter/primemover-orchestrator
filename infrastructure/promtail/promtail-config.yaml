@@ -1,0 +1,93 @@
+server:
+  http_listen_port: 9080
+  grpc_listen_port: 0
+
+positions:
+  filename: /var/promtail/positions.yaml
+
+clients:
+  - url: http://loki:3100/loki/api/v1/push
+
+scrape_configs:
+  # ==========================================================================
+  # PrimeMover API Logs (Laravel)
+  # ==========================================================================
+  - job_name: primemover-api
+    static_configs:
+      - targets:
+          - localhost
+        labels:
+          component: api
+          environment: development
+          __path__: /var/log/primemover-api/*.log
+    pipeline_stages:
+      # Match Laravel log format: [2025-12-02 10:30:00] local.INFO: message {json}
+      - multiline:
+          firstline: '^\[\d{4}-\d{2}-\d{2}'
+          max_wait_time: 3s
+      - regex:
+          expression: '^\[(?P<timestamp>\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})\] (?P<env>\w+)\.(?P<level>\w+): (?P<message>.*?)(?:\s+(?P<context>\{.*\}))?$'
+      - labels:
+          level:
+          env:
+      - timestamp:
+          source: timestamp
+          format: "2006-01-02 15:04:05"
+      # Extract correlation IDs from JSON context if present
+      - json:
+          source: context
+          expressions:
+            experiment_id: experiment_id
+            crawler_id: crawler_id
+            queue_id: queue_id
+            job_id: job_id
+
+  # ==========================================================================
+  # PrimeMover Runner Logs (Java/Logback)
+  # ==========================================================================
+  - job_name: primemover-runner
+    static_configs:
+      - targets:
+          - localhost
+        labels:
+          component: runner
+          environment: development
+          __path__: /var/log/primemover-runner/*.log
+    pipeline_stages:
+      # Match Logback format: 2025-12-02T10:25:21.079+01:00  DEBUG 514253 --- [thread] class  : Message
+      - multiline:
+          firstline: '^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}'
+          max_wait_time: 3s
+      - regex:
+          expression: '^(?P<timestamp>\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3})[^\s]*\s+(?P<level>\w+)\s+(?P<pid>\d+)\s+---\s+\[(?P<thread>[^\]]+)\]\s+(?P<logger>[^\s]+)\s+:\s+(?P<message>.*)$'
+      - labels:
+          level:
+      - timestamp:
+          source: timestamp
+          format: "2006-01-02T15:04:05.000"
+      # Extract MDC context from log message (crawler.id, joblist.id, correlationId)
+      - regex:
+          source: message
+          expression: 'crawler\.id=(?P<crawler_id>\d+)'
+      - regex:
+          source: message
+          expression: 'joblist\.id=(?P<queue_id>\d+)'
+      - regex:
+          source: message
+          expression: 'correlationId=(?P<correlation_id>[^\s,]+)'
+
+  # ==========================================================================
+  # System logs (optional)
+  # ==========================================================================
+  - job_name: system
+    static_configs:
+      - targets:
+          - localhost
+        labels:
+          component: system
+          __path__: /var/log/syslog
+    pipeline_stages:
+      - match:
+          selector: '{component="system"}'
+          action: drop
+          drop_counter_reason: disabled

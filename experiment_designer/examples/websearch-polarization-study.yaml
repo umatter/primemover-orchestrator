@@ -1,0 +1,429 @@
+# Web Search Personalization and Political Polarization Study
+# Based on: examples/experiment designs/websearch_polarization.Rmd (July 2021)
+#
+# Key design elements:
+# - N = 300 bots across 3 proxy providers
+# - Factorial design: political_type × usage_type × language × privacy_setting × kappa
+# - Per-city pairing: liberal and conservative bots have mirrored π values
+# - Daily workflow: partisan visits, partisan searches, neutral visits, test searches
+#
+version: "1.0"
+
+experiment:
+  name: "Web Search Polarization Study 2025"
+  description: |
+    Investigating algorithmic personalization in web search results and its
+    relationship to political polarization. Bots with different political
+    orientations (π) browse partisan news sites, conduct partisan searches,
+    and perform neutral test searches to measure personalization effects.
+
+    Based on methodology from websearch_polarization.Rmd (July 2021).
+
+# =============================================================================
+# Default Configuration
+# =============================================================================
+defaults:
+  browser: mlx
+  timezone: America/Chicago
+  timezone_utc_offset: "-06:00"
+  captcha_mode: always
+  typing_mode: SIMULATED_FIXINGTYPOS
+  selection_type: XPATH
+  active: true
+
+# =============================================================================
+# External Data Pools
+# =============================================================================
+data_pools:
+  # Partisan news outlets with ideological scores
+  outlets:
+    type: csv
+    source: "data/outlets_pool.csv"
+    description: |
+      News outlets with columns: domain, url, pi (ideology score -1 to +1),
+      reach, USshare, local (boolean), states_served
+
+  # Neutral domains for non-partisan browsing
+  neutral_domains:
+    type: csv
+    source: "data/neutraldomains_pool.csv"
+    description: "Most visited neutral websites (non-news)"
+
+  # Partisan search terms with ideology scores
+  search_terms:
+    type: csv
+    source: "data/searchterms_pool.csv"
+    description: |
+      Search terms with columns: term, pi (ideology score)
+      Used to build each bot's vocabulary L based on distance to bot's π
+
+  # Neutral/test search terms (updated weekly from GDELT + Google Trends)
+  neutral_search_terms:
+    type: json
+    source: "s3://primemover-data/neutralsearchterms_pool.json"
+    description: |
+      21 neutral search terms: 15 from GDELT (trending persons/orgs) +
+      6 from Google Trends. Updated weekly. All bots use same 3 terms/day.
+
+  # Proxy configurations per provider
+  proxies_geosurf:
+    type: csv
+    source: "data/proxies_geosurf.csv"
+    description: "Geosurf rotating residential proxies (30-min sticky)"
+
+  proxies_rotating:
+    type: csv
+    source: "data/proxies_rotating.csv"
+    description: "RotatingProxies private residential (monthly rotation)"
+
+  proxies_private:
+    type: csv
+    source: "data/proxies_private.csv"
+    description: "PrivateProxies private residential (monthly rotation)"
+
+# =============================================================================
+# Reusable Workflow Templates
+# =============================================================================
+templates:
+  # Initial browserleaks fingerprint collection (day 1 only)
+  browserleaks_check:
+    - visit: https://browserleaks.com/
+    - wait: 5s
+    - visit: https://browserleaks.com/javascript
+    - wait: 3s
+    - visit: https://browserleaks.com/canvas
+    - wait: 3s
+    - visit: https://browserleaks.com/webgl
+    - wait: 3s
+    - visit: https://browserleaks.com/fonts
+    - wait: 3s
+
+  # Visit a partisan news outlet (selected by Lambda based on u_ijt)
+  partisan_outlet_visit:
+    - lambda_select:
+        task: select_partisan_outlet
+        function: bot-decision-websearch
+        link_type: FUNCTION_NAME
+        description: "Select outlet based on u_ijt = α - τ*d² + ε"
+    - wait:
+        duration: 30
+        random_range: 60
+    - scroll: 30s
+
+  # Conduct partisan search (term selected by Lambda based on v_ikt)
+  partisan_search:
+    - visit: https://google.com
+    - wait: 3s
+    - lambda_select:
+        task: select_search_term
+        function: bot-decision-websearch
+        link_type: FUNCTION_NAME
+        description: "Select term based on v_ikt = α - τ*d² + ε"
+    - wait: 5s
+    # Select from SERP based on w_ijt
+    - lambda_select:
+        task: select_from_serp
+        function: bot-decision-websearch
+        link_type: FUNCTION_NAME
+        description: "Select result based on w_ijt = [1-β(r-1)] + I(j∈K)*(α - τ*d²) + ε"
+    - wait: 20s
+    - scroll: 20s
+
+  # Neutral domain visit
+  neutral_visit:
+    - lambda_select:
+        task: select_neutral_domain
+        function: bot-decision-websearch
+        link_type: FUNCTION_NAME
+        description: "Random selection from neutraldomains_pool"
+    - wait:
+        duration: 20
+        random_range: 40
+    - scroll: 20s
+
+  # Test/neutral search (same terms for all bots)
+  test_search:
+    - visit: https://google.com
+    - wait: 3s
+    - lambda_select:
+        task: get_daily_test_term
+        function: bot-decision-websearch
+        link_type: FUNCTION_NAME
+        description: "Get one of 3 daily neutral search terms"
+    - wait: 5s
+    - lambda_select:
+        task: select_from_serp_neutral
+        function: bot-decision-websearch
+        link_type: FUNCTION_NAME
+        description: "Select from SERP (record for analysis)"
+    - wait: 15s
+
+# =============================================================================
+# Factorial Design
+# =============================================================================
+design:
+  type: factorial
+  seed: 2025
+
+  factors:
+    # Political orientation type (determines π assignment)
+    political_type:
+      levels:
+        - id: liberal
+          proportion: 0.333
+        - id: conservative
+          proportion: 0.333
+        - id: neutral
+          proportion: 0.334
+      maps_to:
+        # Note: actual π values computed at runtime based on city pairing
+        configuration.preferences.political_type:
+          liberal: "liberal"
+          conservative: "conservative"
+          neutral: "neutral"
+
+    # Web usage behavior type
+    usage_type:
+      levels:
+        - id: only_searches
+          proportion: 0.25
+        - id: only_visits
+          proportion: 0.25
+        - id: searches_and_visits
+          proportion: 0.50
+      maps_to:
+        configuration.preferences.usage_type:
+          only_searches: "only_searches"
+          only_visits: "only_visits"
+          searches_and_visits: "searches_and_visits"
+
+    # Browser language setting
+    language:
+      levels:
+        - id: english
+          proportion: 0.75
+        - id: spanish
+          proportion: 0.25
+      maps_to:
+        configuration.preferences.browser_language:
+          english: "en-US,en;q=0.5"
+          spanish: "es-MX,es;q=0.8,en-US;q=0.5,en;q=0.3"
+
+    # Privacy setting (5 groups: 4 with one setting each, 1 with none)
+    privacy_setting:
+      levels:
+        - id: none
+          proportion: 0.20
+        - id: block_geolocation
+          proportion: 0.20
+        - id: do_not_track
+          proportion: 0.20
+        - id: block_canvas
+          proportion: 0.20
+        - id: disable_storage
+          proportion: 0.20
+      maps_to:
+        configuration.preferences.privacy_block_geolocation:
+          none: "false"
+          block_geolocation: "true"
+          do_not_track: "false"
+          block_canvas: "false"
+          disable_storage: "false"
+        configuration.preferences.privacy_do_not_track:
+          none: "false"
+          block_geolocation: "false"
+          do_not_track: "true"
+          block_canvas: "false"
+          disable_storage: "false"
+        configuration.preferences.privacy_block_canvas:
+          none: "false"
+          block_geolocation: "false"
+          do_not_track: "false"
+          block_canvas: "true"
+          disable_storage: "false"
+        configuration.preferences.privacy_disable_storage:
+          none: "false"
+          block_geolocation: "false"
+          do_not_track: "false"
+          block_canvas: "false"
+          disable_storage: "true"
+
+  # Parameter distributions (applied to each crawler)
+  parameters:
+    # Political orientation: uniform(-1, 1)
+    # Note: for liberal/conservative pairs, values are mirrored per city
+    pi:
+      distribution: uniform
+      min: -1.0
+      max: 1.0
+
+    # Preference strength for ideologically close content
+    alpha:
+      distribution: uniform
+      min: 0.2
+      max: 0.5
+
+    # Distance penalty (fixed)
+    tau:
+      value: 1.0
+
+    # Rank decay in SERP selection
+    beta:
+      distribution: uniform
+      min: 0.0
+      max: 0.5
+
+    # Additional parameter (exploration tendency)
+    psi:
+      distribution: uniform
+      min: 0.0
+      max: 0.2
+
+    # Information processing type
+    kappa:
+      distribution: discrete
+      values:
+        0: 0.25   # No updating
+        1: 0.25   # Always update
+        2: 0.50   # Update only from unknown sources
+
+    # Stochastic error term (Gumbel distributed)
+    # Used in utility calculations: ε ~ Gumbel(μ=-0.4557735, β=0.0793006)
+    epsilon_mu:
+      value: -0.4557735
+
+    epsilon_beta:
+      value: 0.0793006
+
+  # Target: 300 bots total across all factor combinations
+  # The actual number depends on proportions and constraints
+  replications: 1
+
+# =============================================================================
+# Crawler Definition
+# =============================================================================
+crawlers:
+  - from_design: true
+    name: "ws_{political_type}_{usage_type}_{language}_{privacy_setting}_{replica:03d}"
+    description: "Web search polarization bot"
+    active: true
+    testing: false
+
+    configuration:
+      name: "Config {political_type}"
+      params:
+        # These will be populated from design.parameters
+        pi: "{pi}"
+        alpha: "{alpha}"
+        tau: "{tau}"
+        beta: "{beta}"
+        psi: "{psi}"
+        kappa: "{kappa}"
+        active: true
+        # Constants from the design
+        known_outlets_count: 10      # |K| = 10
+        search_terms_count: 40       # |L| = 40
+        epsilon_mu: "{epsilon_mu}"
+        epsilon_beta: "{epsilon_beta}"
+      preferences:
+        - name: location
+          value: "{location}"
+        - name: usage_type
+          value: "{usage_type}"
+        - name: political_type
+          value: "{political_type}"
+        - name: browser_language
+          value: "{browser_language}"
+        - name: privacy_block_geolocation
+          value: "{privacy_block_geolocation}"
+        - name: privacy_do_not_track
+          value: "{privacy_do_not_track}"
+        - name: privacy_block_canvas
+          value: "{privacy_block_canvas}"
+        - name: privacy_disable_storage
+          value: "{privacy_disable_storage}"
+
+    # Proxy assigned from pool based on location
+    proxy:
+      from_pool: true
+      pool: "{proxy_pool}"
+      match_field: location
+
+    agent:
+      name: "Agent {political_type} {replica:03d}"
+      identification: mlx
+      location: "{location}"
+
+    # Daily browsing session (10am - 5pm local time)
+    session:
+      name: "Daily Session"
+      start: "2025-03-01T10:00:00"
+      timezone: "{timezone}"
+      timezone_utc_offset: "{timezone_utc_offset}"
+
+      workflow:
+        # Day 1: Browserleaks fingerprint check
+        - template: browserleaks_check
+          condition: "day == 1"
+
+        # Partisan outlet visits (2 per day) - only if usage allows
+        - repeat: 2
+          template: partisan_outlet_visit
+          condition: "usage_type in ['only_visits', 'searches_and_visits']"
+
+        # Neutral domain visits (2 per day)
+        - repeat: 2
+          template: neutral_visit
+
+        # Partisan searches (2 per day) - only if usage allows
+        - repeat: 2
+          template: partisan_search
+          condition: "usage_type in ['only_searches', 'searches_and_visits']"
+
+        # Test searches (2 of 3 daily terms, immediately after main session)
+        - repeat: 2
+          template: test_search
+
+    # Second session: Final test search (synchronized across all bots)
+    additional_sessions:
+      - name: "Synchronized Test Search"
+        start: "2025-03-01T18:00:00"  # ~1 hour after last bot finishes
+        timezone: "{timezone}"
+        workflow:
+          - template: test_search
+            description: "Third daily test search (synchronized)"
+
+# =============================================================================
+# Notes on Implementation
+# =============================================================================
+#
+# RUNTIME REQUIREMENTS:
+# 1. Lambda function 'bot-decision-websearch' must implement:
+#    - select_partisan_outlet: u_ijt = α - τ*d² + ε (probabilistic choice)
+#    - select_search_term: v_ikt = α - τ*d² + ε (probabilistic choice)
+#    - select_from_serp: w_ijt = [1-β(r-1)] + I(j∈K)*(α - τ*d²) + ε
+#    - select_neutral_domain: random from pool
+#    - get_daily_test_term: return one of 3 daily terms
+#
+# 2. Daily updating procedure (during bot rest period):
+#    - Extract π_j values from neutral search SERP selections
+#    - Update π_i based on κ:
+#      * κ=0: No update
+#      * κ=1: π_it = (1-φ)*π_{it-1} + φ*π_j
+#      * κ=2: Same as κ=1, but only if j ∉ K_i
+#    - Update K_i (known outlets) by re-ranking with new scores
+#    - Update L_i (search terms) by recomputing v_ikt with new π_i
+#
+# 3. City pairing for political_type:
+#    - liberal bots: π assigned from uniform(-1, 0)
+#    - conservative bots in same city: π = -π_liberal (mirrored)
+#    - neutral bots: no π-driven behavior
+#
+# MISSING FILES (must be provided):
+# - data/outlets_pool.csv
+# - data/neutraldomains_pool.csv
+# - data/searchterms_pool.csv
+# - data/proxies_geosurf.csv
+# - data/proxies_rotating.csv
+# - data/proxies_private.csv
+# - S3: neutralsearchterms_pool.json (updated weekly)
