@@ -38,6 +38,7 @@ REPO_URLS = {
 @cli.command()
 @click.option("--skip-clone", is_flag=True, help="Skip cloning repositories")
 @click.option("--skip-build", is_flag=True, help="Skip building runner JAR")
+@click.option("--skip-gui", is_flag=True, help="Skip building GUI")
 @click.option("--skip-start", is_flag=True, help="Don't start components after setup")
 @click.option("--api-repo", default=REPO_URLS["api"], help="API repository URL")
 @click.option("--runner-repo", default=REPO_URLS["runner"], help="Runner repository URL")
@@ -47,6 +48,7 @@ def setup(
     ctx: click.Context,
     skip_clone: bool,
     skip_build: bool,
+    skip_gui: bool,
     skip_start: bool,
     api_repo: str,
     runner_repo: str,
@@ -90,6 +92,126 @@ def setup(
 
     console.print(f"[dim]Orchestrator: {orchestrator_path}[/dim]")
     console.print(f"[dim]Parent dir:   {parent_path}[/dim]\n")
+
+    # Step 0: Check prerequisites
+    console.print("[bold]Step 0: Checking prerequisites[/bold]\n")
+
+    prereqs_ok = True
+
+    # Check git
+    if shutil.which("git"):
+        console.print("  [green]✓[/green] git installed")
+    else:
+        console.print("  [red]✗[/red] git not found")
+        prereqs_ok = False
+
+    # Check Docker
+    if shutil.which("docker"):
+        docker_result = subprocess.run(["docker", "info"], capture_output=True)
+        if docker_result.returncode == 0:
+            console.print("  [green]✓[/green] Docker installed and running")
+        else:
+            console.print("  [yellow]⚠[/yellow] Docker installed but not running")
+    else:
+        console.print("  [red]✗[/red] Docker not found")
+        prereqs_ok = False
+
+    # Check docker-compose
+    if shutil.which("docker-compose"):
+        console.print("  [green]✓[/green] docker-compose installed")
+    else:
+        console.print("  [red]✗[/red] docker-compose not found")
+        prereqs_ok = False
+
+    # Check Java
+    java_path = shutil.which("java")
+    if java_path:
+        java_result = subprocess.run(["java", "-version"], capture_output=True, text=True)
+        version_output = java_result.stderr or java_result.stdout
+        import re
+        match = re.search(r'version "(\d+)', version_output)
+        if match:
+            major_version = int(match.group(1))
+            if major_version >= 17:
+                console.print(f"  [green]✓[/green] Java {major_version} installed")
+            else:
+                console.print(f"  [red]✗[/red] Java {major_version} found, but 17+ required")
+                prereqs_ok = False
+        else:
+            console.print("  [green]✓[/green] Java installed")
+    else:
+        console.print("  [red]✗[/red] Java not found (required for runner)")
+        prereqs_ok = False
+
+    # Check Maven
+    if shutil.which("mvn"):
+        console.print("  [green]✓[/green] Maven installed")
+    else:
+        console.print("  [yellow]⚠[/yellow] Maven not found (needed to build runner)")
+
+    # Check Chrome (required for browser automation)
+    chrome_paths = [
+        shutil.which("google-chrome"),
+        shutil.which("google-chrome-stable"),
+        shutil.which("chromium"),
+        shutil.which("chromium-browser"),
+    ]
+    chrome_found = any(chrome_paths)
+    if not chrome_found:
+        # Check common installation paths
+        common_paths = [
+            Path("/usr/bin/google-chrome"),
+            Path("/usr/bin/google-chrome-stable"),
+            Path("/usr/bin/chromium"),
+            Path("/usr/bin/chromium-browser"),
+            Path("/opt/google/chrome/chrome"),
+        ]
+        chrome_found = any(p.exists() for p in common_paths)
+
+    if chrome_found:
+        # Get Chrome version
+        chrome_result = subprocess.run(
+            ["google-chrome", "--version"] if shutil.which("google-chrome") else ["chromium", "--version"],
+            capture_output=True, text=True
+        )
+        if chrome_result.returncode == 0:
+            version = chrome_result.stdout.strip()
+            console.print(f"  [green]✓[/green] Chrome: {version}")
+        else:
+            console.print("  [green]✓[/green] Chrome installed")
+    else:
+        console.print("  [yellow]⚠[/yellow] Chrome not found (required for browser automation)")
+        console.print("    [dim]Install: sudo apt install google-chrome-stable[/dim]")
+
+    # Check Multilogin X (optional)
+    if shutil.which("mlx"):
+        console.print("  [green]✓[/green] Multilogin X (mlx) installed")
+    else:
+        console.print("  [dim]○[/dim] Multilogin X not found (optional, for production browser profiles)")
+
+    # Check Node.js (for GUI)
+    node_path = shutil.which("node")
+    if node_path:
+        node_result = subprocess.run(["node", "--version"], capture_output=True, text=True)
+        if node_result.returncode == 0:
+            console.print(f"  [green]✓[/green] Node.js {node_result.stdout.strip()}")
+        else:
+            console.print("  [green]✓[/green] Node.js installed")
+    else:
+        console.print("  [yellow]⚠[/yellow] Node.js not found (needed to build GUI)")
+
+    # Check npm
+    if shutil.which("npm"):
+        console.print("  [green]✓[/green] npm installed")
+    else:
+        console.print("  [yellow]⚠[/yellow] npm not found (needed to build GUI)")
+
+    if not prereqs_ok:
+        console.print("\n[red]Prerequisites not met. Please install missing tools.[/red]")
+        if not click.confirm("Continue anyway?"):
+            return
+
+    console.print()
 
     # Define expected paths
     repos = {
@@ -154,7 +276,7 @@ def setup(
 
     # Step 3: Build runner JAR
     if not skip_build:
-        console.print("\n[bold]Step 3: Building runner JAR[/bold]\n")
+        console.print("\n[bold]Step 3: Building runner (multi-module Maven project)[/bold]\n")
 
         runner_path = repos["runner"]["path"]
         runner_module = runner_path / "primemover-runner"
@@ -163,7 +285,7 @@ def setup(
             console.print(f"  [yellow]⚠[/yellow] Runner path not found, skipping build")
         elif not shutil.which("mvn"):
             console.print(f"  [yellow]⚠[/yellow] Maven (mvn) not found, skipping build")
-            console.print(f"    [dim]Install Maven and run: cd {runner_module} && mvn package -DskipTests[/dim]")
+            console.print(f"    [dim]Install Maven and run: cd {runner_path} && mvn package -DskipTests[/dim]")
         else:
             # Check if JAR already exists
             target_dir = runner_module / "target"
@@ -176,10 +298,15 @@ def setup(
                     skip_build = True
 
             if not skip_build:
-                console.print(f"  [cyan]⋯[/cyan] Building JAR (this may take a few minutes)...")
+                console.print(f"  [dim]Building from parent directory to include all modules:[/dim]")
+                console.print(f"  [dim]  - primemover-generated (Multilogin API client)[/dim]")
+                console.print(f"  [dim]  - primemover-runner (main application)[/dim]")
+                console.print(f"  [cyan]⋯[/cyan] Running mvn package (this may take a few minutes)...")
+
+                # Run from parent directory to build both modules
                 result = subprocess.run(
                     ["mvn", "package", "-DskipTests"],
-                    cwd=runner_module,
+                    cwd=runner_path,  # Parent directory, not runner_module
                     capture_output=True,
                     text=True,
                 )
@@ -193,9 +320,77 @@ def setup(
                         console.print(f"  [green]✓[/green] Build completed")
                 else:
                     console.print(f"  [red]✗[/red] Build failed")
-                    console.print(f"    [dim]Run manually: cd {runner_module} && mvn package -DskipTests[/dim]")
+                    if "primemover-generated" in result.stdout or "primemover-generated" in result.stderr:
+                        console.print(f"    [dim]Hint: Error may be in primemover-generated module[/dim]")
+                    console.print(f"    [dim]Run manually: cd {runner_path} && mvn package -DskipTests[/dim]")
     else:
-        console.print("\n[bold]Step 3: Building runner JAR[/bold] [dim](skipped)[/dim]\n")
+        console.print("\n[bold]Step 3: Building runner[/bold] [dim](skipped)[/dim]\n")
+
+    # Step 3b: Build GUI
+    if not skip_gui:
+        console.print("\n[bold]Step 3b: Building GUI (Angular)[/bold]\n")
+
+        gui_path = repos["gui"]["path"]
+
+        if not gui_path.exists():
+            console.print(f"  [yellow]⚠[/yellow] GUI path not found, skipping build")
+        elif not shutil.which("npm"):
+            console.print(f"  [yellow]⚠[/yellow] npm not found, skipping GUI build")
+            console.print(f"    [dim]Install Node.js and run: cd {gui_path} && npm install && npm run build[/dim]")
+        else:
+            # Check if already built
+            gui_dist = gui_path / "dist"
+            gui_modules = gui_path / "node_modules"
+
+            if gui_dist.exists():
+                console.print(f"  [green]✓[/green] GUI already built")
+                if not click.confirm("  Rebuild anyway?", default=False):
+                    skip_gui = True
+
+            if not skip_gui:
+                # Install dependencies if needed
+                if not gui_modules.exists():
+                    console.print(f"  [cyan]⋯[/cyan] Installing npm dependencies...")
+                    result = subprocess.run(
+                        ["npm", "install"],
+                        cwd=gui_path,
+                        capture_output=True,
+                        text=True,
+                    )
+                    if result.returncode == 0:
+                        console.print(f"  [green]✓[/green] npm install completed")
+                    else:
+                        console.print(f"  [red]✗[/red] npm install failed")
+                        console.print(f"    [dim]{result.stderr[:200]}[/dim]")
+
+                # Update environment to point to correct API URL
+                env_file_gui = gui_path / "src" / "environments" / "environment.ts"
+                if env_file_gui.exists():
+                    env_content = env_file_gui.read_text()
+                    if "localhost/api/v1" in env_content and "localhost:8090" not in env_content:
+                        console.print(f"  [cyan]⋯[/cyan] Updating API URL to localhost:8090...")
+                        env_content = env_content.replace(
+                            "apiBaseUrl: 'http://localhost/api/v1'",
+                            "apiBaseUrl: 'http://localhost:8090/api/v1'"
+                        )
+                        env_file_gui.write_text(env_content)
+                        console.print(f"  [green]✓[/green] Environment updated")
+
+                # Build
+                console.print(f"  [cyan]⋯[/cyan] Building GUI (this may take a minute)...")
+                result = subprocess.run(
+                    ["npm", "run", "build"],
+                    cwd=gui_path,
+                    capture_output=True,
+                    text=True,
+                )
+                if result.returncode == 0:
+                    console.print(f"  [green]✓[/green] GUI built successfully")
+                else:
+                    console.print(f"  [red]✗[/red] Build failed")
+                    console.print(f"    [dim]Run manually: cd {gui_path} && npm run build[/dim]")
+    else:
+        console.print("\n[bold]Step 3b: Building GUI[/bold] [dim](skipped)[/dim]\n")
 
     # Step 4: Verify setup
     console.print("\n[bold]Step 4: Verifying setup[/bold]\n")
@@ -210,6 +405,38 @@ def setup(
         console.print(f"  [red]✗[/red] API: docker-compose.yml not found")
         all_ok = False
 
+    # Check API .env
+    api_env = repos["api"]["path"] / ".env"
+    if api_env.exists():
+        console.print(f"  [green]✓[/green] API: .env configured")
+    else:
+        api_env_example = repos["api"]["path"] / ".env.example"
+        if api_env_example.exists():
+            console.print(f"  [yellow]⚠[/yellow] API: .env missing (will be created from .env.example)")
+            # Copy .env.example to .env for Docker setup
+            api_env.write_text(api_env_example.read_text())
+            console.print(f"  [green]✓[/green] API: .env created from template")
+        else:
+            console.print(f"  [red]✗[/red] API: .env and .env.example not found")
+
+    # Check if vendor exists (composer install done)
+    api_vendor = repos["api"]["path"] / "vendor"
+    if api_vendor.exists():
+        console.print(f"  [green]✓[/green] API: vendor/ exists (dependencies installed)")
+    else:
+        console.print(f"  [dim]○[/dim] API: vendor/ not found (composer install needed)")
+
+    # Check primemover-generated (Multilogin API client)
+    generated_target = repos["runner"]["path"] / "primemover-generated" / "target"
+    if generated_target.exists():
+        generated_jars = list(generated_target.glob("primemover-generated-*.jar"))
+        if generated_jars:
+            console.print(f"  [green]✓[/green] Generated: {generated_jars[0].name}")
+        else:
+            console.print(f"  [yellow]⚠[/yellow] Generated: JAR not built (Multilogin API client)")
+    else:
+        console.print(f"  [yellow]⚠[/yellow] Generated: not built yet (primemover-generated)")
+
     # Check Runner JAR
     runner_target = repos["runner"]["path"] / "primemover-runner" / "target"
     if runner_target.exists():
@@ -220,6 +447,35 @@ def setup(
             console.print(f"  [yellow]⚠[/yellow] Runner: JAR not built yet")
     else:
         console.print(f"  [yellow]⚠[/yellow] Runner: target/ directory not found")
+
+    # Check runner config
+    runner_config = repos["runner"]["path"] / "primemover-runner" / "config" / "application.properties"
+    if runner_config.exists():
+        console.print(f"  [green]✓[/green] Runner config: application.properties")
+    else:
+        console.print(f"  [red]✗[/red] Runner config: application.properties not found")
+        all_ok = False
+
+    # Check GUI
+    gui_package = repos["gui"]["path"] / "package.json"
+    if gui_package.exists():
+        console.print(f"  [green]✓[/green] GUI: package.json found")
+
+        # Check if node_modules exists
+        gui_modules = repos["gui"]["path"] / "node_modules"
+        if gui_modules.exists():
+            console.print(f"  [green]✓[/green] GUI: node_modules installed")
+        else:
+            console.print(f"  [dim]○[/dim] GUI: node_modules not found (npm install needed)")
+
+        # Check if built
+        gui_dist = repos["gui"]["path"] / "dist"
+        if gui_dist.exists():
+            console.print(f"  [green]✓[/green] GUI: dist/ built")
+        else:
+            console.print(f"  [dim]○[/dim] GUI: not built yet (npm run build needed)")
+    else:
+        console.print(f"  [yellow]⚠[/yellow] GUI: package.json not found")
 
     # Check .env
     if env_file.exists():
@@ -241,14 +497,46 @@ def setup(
             console.print()
             manager.start(api=True, runner=True, monitoring=True)
 
-            console.print("\n[bold]Step 6: Initialize database[/bold]\n")
-            if click.confirm("Run database migrations and seed?", default=True):
-                console.print("[dim]Running: php artisan migrate --seed --force[/dim]\n")
-                success, output = manager.api.run_artisan("migrate --seed --force")
-                if success:
-                    console.print("[green]✓[/green] Database initialized")
-                else:
-                    console.print(f"[yellow]⚠[/yellow] Migration output:\n{output}")
+            console.print("\n[bold]Step 6: Initialize API (Laravel)[/bold]\n")
+            if click.confirm("Run full API initialization?", default=True):
+                # Full initialization sequence for fresh setup
+                init_steps = [
+                    ("Installing PHP dependencies", "composer install --no-interaction"),
+                    ("Generating app key", "key:generate --force"),
+                    ("Generating JWT secret", "jwt:secret --force"),
+                    ("Running migrations", "migrate --force"),
+                    ("Seeding database", "db:seed --force"),
+                    ("Installing Passport (OAuth)", "passport:install --force"),
+                    ("Creating storage link", "storage:link"),
+                ]
+
+                for step_name, command in init_steps:
+                    console.print(f"  [cyan]⋯[/cyan] {step_name}...")
+
+                    # composer install needs special handling (not artisan)
+                    if command.startswith("composer"):
+                        result = subprocess.run(
+                            ["docker-compose", "exec", "-T", "php", "composer", "install", "--no-interaction"],
+                            cwd=repos["api"]["path"],
+                            capture_output=True,
+                            text=True,
+                        )
+                        success = result.returncode == 0
+                        output = result.stdout + result.stderr
+                    else:
+                        success, output = manager.api.run_artisan(command)
+
+                    if success:
+                        console.print(f"  [green]✓[/green] {step_name}")
+                    else:
+                        # Some commands may "fail" but are OK (e.g., storage link already exists)
+                        if "already exists" in output.lower() or "nothing to migrate" in output.lower():
+                            console.print(f"  [green]✓[/green] {step_name} (already done)")
+                        else:
+                            console.print(f"  [yellow]⚠[/yellow] {step_name}: {output[:100]}...")
+
+                console.print("\n[green]API initialization complete![/green]")
+                console.print("[dim]Default login: admin@primemover.example / password[/dim]")
     elif skip_start:
         console.print("\n[bold]Step 5: Starting components[/bold] [dim](skipped)[/dim]\n")
 
@@ -1043,6 +1331,89 @@ def db_status(ctx: click.Context) -> None:
                 console.print(f"  {line.strip()}")
     else:
         console.print(f"[red]Failed to get status:[/red]\n{output}")
+
+
+@db.command("init")
+@click.option("--force", is_flag=True, help="Skip confirmation prompt")
+@click.option("--skip-composer", is_flag=True, help="Skip composer install")
+@click.pass_context
+def db_init(ctx: click.Context, force: bool, skip_composer: bool) -> None:
+    """
+    Run full API initialization (fresh setup).
+
+    This runs all Laravel initialization commands:
+    - composer install (PHP dependencies)
+    - key:generate (app encryption key)
+    - jwt:secret (JWT authentication)
+    - migrate (database tables)
+    - db:seed (default data)
+    - passport:install (OAuth)
+    - storage:link (public storage)
+
+    Use this after cloning the API repo or for a fresh start.
+    """
+    import subprocess
+
+    settings = ctx.obj["settings"]
+    manager = _get_component_manager(settings)
+
+    if not manager.api.is_running():
+        console.print("[red]API is not running. Start it first with 'orchestrator up --api'[/red]")
+        return
+
+    console.print("[bold]Full API Initialization[/bold]\n")
+    console.print("[dim]This will run all Laravel setup commands.[/dim]")
+
+    if not force:
+        if not click.confirm("Proceed with initialization?"):
+            console.print("Cancelled.")
+            return
+
+    # Full initialization sequence
+    init_steps = [
+        ("Installing PHP dependencies", "composer install --no-interaction", skip_composer),
+        ("Generating app key", "key:generate --force", False),
+        ("Generating JWT secret", "jwt:secret --force", False),
+        ("Running migrations", "migrate --force", False),
+        ("Seeding database", "db:seed --force", False),
+        ("Installing Passport (OAuth)", "passport:install --force", False),
+        ("Creating storage link", "storage:link", False),
+    ]
+
+    console.print()
+    for step_name, command, skip in init_steps:
+        if skip:
+            console.print(f"  [dim]○[/dim] {step_name} (skipped)")
+            continue
+
+        console.print(f"  [cyan]⋯[/cyan] {step_name}...")
+
+        # composer install needs special handling (not artisan)
+        if command.startswith("composer"):
+            api_path = settings.get_api_path()
+            result = subprocess.run(
+                ["docker-compose", "exec", "-T", "php", "composer", "install", "--no-interaction"],
+                cwd=api_path,
+                capture_output=True,
+                text=True,
+            )
+            success = result.returncode == 0
+            output = result.stdout + result.stderr
+        else:
+            success, output = manager.api.run_artisan(command)
+
+        if success:
+            console.print(f"  [green]✓[/green] {step_name}")
+        else:
+            # Some commands may "fail" but are OK
+            if "already exists" in output.lower() or "nothing to migrate" in output.lower():
+                console.print(f"  [green]✓[/green] {step_name} (already done)")
+            else:
+                console.print(f"  [yellow]⚠[/yellow] {step_name}")
+                console.print(f"      [dim]{output[:200]}...[/dim]")
+
+    console.print("\n[green bold]API initialization complete![/green bold]")
+    console.print("[dim]Default login: admin@primemover.example / password[/dim]")
 
 
 @db.command("clear-test")
