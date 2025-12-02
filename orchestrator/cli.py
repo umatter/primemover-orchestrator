@@ -24,6 +24,252 @@ def cli(ctx: click.Context) -> None:
 
 
 # =============================================================================
+# SETUP COMMAND
+# =============================================================================
+
+# Default GitHub repository URLs
+REPO_URLS = {
+    "api": "git@github.com:umatter/primemover_api.git",
+    "runner": "git@github.com:umatter/primemover_runner.git",
+    "gui": "git@github.com:umatter/primemover_gui.git",
+}
+
+
+@cli.command()
+@click.option("--skip-clone", is_flag=True, help="Skip cloning repositories")
+@click.option("--skip-build", is_flag=True, help="Skip building runner JAR")
+@click.option("--skip-start", is_flag=True, help="Don't start components after setup")
+@click.option("--api-repo", default=REPO_URLS["api"], help="API repository URL")
+@click.option("--runner-repo", default=REPO_URLS["runner"], help="Runner repository URL")
+@click.option("--gui-repo", default=REPO_URLS["gui"], help="GUI repository URL")
+@click.pass_context
+def setup(
+    ctx: click.Context,
+    skip_clone: bool,
+    skip_build: bool,
+    skip_start: bool,
+    api_repo: str,
+    runner_repo: str,
+    gui_repo: str,
+) -> None:
+    """
+    Set up complete PrimeMover development environment.
+
+    This command is the entry point for new developers. It will:
+
+    1. Clone required repositories (api, runner, gui) as siblings
+    2. Create .env configuration file
+    3. Build the runner JAR (requires Maven)
+    4. Start all components
+
+    \b
+    Example:
+        # Fresh setup (clone orchestrator first, then run setup)
+        git clone git@github.com:umatter/primemover-orchestrator.git
+        cd primemover-orchestrator
+        pip install -e .
+        orchestrator setup
+
+    \b
+        # Setup with existing repos (skip cloning)
+        orchestrator setup --skip-clone
+
+    \b
+        # Setup without starting (manual start later)
+        orchestrator setup --skip-start
+    """
+    import subprocess
+    import shutil
+    from pathlib import Path
+
+    console.print("[bold cyan]PrimeMover Development Environment Setup[/bold cyan]\n")
+
+    # Get the orchestrator directory (where we are)
+    orchestrator_path = Path(__file__).parent.parent.resolve()
+    parent_path = orchestrator_path.parent
+
+    console.print(f"[dim]Orchestrator: {orchestrator_path}[/dim]")
+    console.print(f"[dim]Parent dir:   {parent_path}[/dim]\n")
+
+    # Define expected paths
+    repos = {
+        "api": {"path": parent_path / "primemover_api", "url": api_repo},
+        "runner": {"path": parent_path / "primemover_runner", "url": runner_repo},
+        "gui": {"path": parent_path / "primemover_gui", "url": gui_repo},
+    }
+
+    # Step 1: Clone repositories
+    if not skip_clone:
+        console.print("[bold]Step 1: Cloning repositories[/bold]\n")
+
+        # Check git is available
+        if not shutil.which("git"):
+            console.print("[red]Error: git is not installed[/red]")
+            return
+
+        for name, info in repos.items():
+            path = info["path"]
+            url = info["url"]
+
+            if path.exists():
+                console.print(f"  [green]✓[/green] {name}: already exists at {path}")
+            else:
+                console.print(f"  [cyan]⋯[/cyan] {name}: cloning from {url}...")
+                result = subprocess.run(
+                    ["git", "clone", url, str(path)],
+                    capture_output=True,
+                    text=True,
+                )
+                if result.returncode == 0:
+                    console.print(f"  [green]✓[/green] {name}: cloned successfully")
+                else:
+                    console.print(f"  [red]✗[/red] {name}: clone failed")
+                    console.print(f"    [dim]{result.stderr.strip()}[/dim]")
+                    if not click.confirm("Continue anyway?"):
+                        return
+    else:
+        console.print("[bold]Step 1: Cloning repositories[/bold] [dim](skipped)[/dim]\n")
+
+    # Step 2: Create .env file
+    console.print("\n[bold]Step 2: Creating configuration[/bold]\n")
+
+    env_file = orchestrator_path / ".env"
+    env_example = orchestrator_path / ".env.example"
+
+    if env_file.exists():
+        console.print(f"  [green]✓[/green] .env already exists")
+    elif env_example.exists():
+        # Read template and set correct paths
+        content = env_example.read_text()
+
+        # Update paths to be relative from orchestrator
+        content = content.replace("PM_API_PATH=../primemover_api", "PM_API_PATH=../primemover_api")
+        content = content.replace("PM_RUNNER_PATH=../primemover_runner", "PM_RUNNER_PATH=../primemover_runner")
+        content = content.replace("PM_GUI_PATH=../primemover_gui", "PM_GUI_PATH=../primemover_gui")
+
+        env_file.write_text(content)
+        console.print(f"  [green]✓[/green] Created .env from template")
+    else:
+        console.print(f"  [red]✗[/red] .env.example not found")
+
+    # Step 3: Build runner JAR
+    if not skip_build:
+        console.print("\n[bold]Step 3: Building runner JAR[/bold]\n")
+
+        runner_path = repos["runner"]["path"]
+        runner_module = runner_path / "primemover-runner"
+
+        if not runner_path.exists():
+            console.print(f"  [yellow]⚠[/yellow] Runner path not found, skipping build")
+        elif not shutil.which("mvn"):
+            console.print(f"  [yellow]⚠[/yellow] Maven (mvn) not found, skipping build")
+            console.print(f"    [dim]Install Maven and run: cd {runner_module} && mvn package -DskipTests[/dim]")
+        else:
+            # Check if JAR already exists
+            target_dir = runner_module / "target"
+            existing_jars = list(target_dir.glob("primemover-runner-*.jar")) if target_dir.exists() else []
+            existing_jars = [j for j in existing_jars if "-sources" not in j.name]
+
+            if existing_jars:
+                console.print(f"  [green]✓[/green] JAR already exists: {existing_jars[0].name}")
+                if not click.confirm("  Rebuild anyway?", default=False):
+                    skip_build = True
+
+            if not skip_build:
+                console.print(f"  [cyan]⋯[/cyan] Building JAR (this may take a few minutes)...")
+                result = subprocess.run(
+                    ["mvn", "package", "-DskipTests"],
+                    cwd=runner_module,
+                    capture_output=True,
+                    text=True,
+                )
+                if result.returncode == 0:
+                    # Find the built JAR
+                    new_jars = list(target_dir.glob("primemover-runner-*.jar"))
+                    new_jars = [j for j in new_jars if "-sources" not in j.name]
+                    if new_jars:
+                        console.print(f"  [green]✓[/green] Built: {new_jars[0].name}")
+                    else:
+                        console.print(f"  [green]✓[/green] Build completed")
+                else:
+                    console.print(f"  [red]✗[/red] Build failed")
+                    console.print(f"    [dim]Run manually: cd {runner_module} && mvn package -DskipTests[/dim]")
+    else:
+        console.print("\n[bold]Step 3: Building runner JAR[/bold] [dim](skipped)[/dim]\n")
+
+    # Step 4: Verify setup
+    console.print("\n[bold]Step 4: Verifying setup[/bold]\n")
+
+    all_ok = True
+
+    # Check API
+    api_compose = repos["api"]["path"] / "docker-compose.yml"
+    if api_compose.exists():
+        console.print(f"  [green]✓[/green] API: docker-compose.yml found")
+    else:
+        console.print(f"  [red]✗[/red] API: docker-compose.yml not found")
+        all_ok = False
+
+    # Check Runner JAR
+    runner_target = repos["runner"]["path"] / "primemover-runner" / "target"
+    if runner_target.exists():
+        jars = [j for j in runner_target.glob("primemover-runner-*.jar") if "-sources" not in j.name]
+        if jars:
+            console.print(f"  [green]✓[/green] Runner: {jars[0].name}")
+        else:
+            console.print(f"  [yellow]⚠[/yellow] Runner: JAR not built yet")
+    else:
+        console.print(f"  [yellow]⚠[/yellow] Runner: target/ directory not found")
+
+    # Check .env
+    if env_file.exists():
+        console.print(f"  [green]✓[/green] Config: .env exists")
+    else:
+        console.print(f"  [red]✗[/red] Config: .env missing")
+        all_ok = False
+
+    # Step 5: Start components
+    if not skip_start and all_ok:
+        console.print("\n[bold]Step 5: Starting components[/bold]\n")
+
+        if click.confirm("Start all PrimeMover components now?", default=True):
+            # Reload settings to pick up new .env
+            from orchestrator.config.settings import Settings
+            settings = Settings()
+
+            manager = _get_component_manager(settings)
+            console.print()
+            manager.start(api=True, runner=True, monitoring=True)
+
+            console.print("\n[bold]Step 6: Initialize database[/bold]\n")
+            if click.confirm("Run database migrations and seed?", default=True):
+                console.print("[dim]Running: php artisan migrate --seed --force[/dim]\n")
+                success, output = manager.api.run_artisan("migrate --seed --force")
+                if success:
+                    console.print("[green]✓[/green] Database initialized")
+                else:
+                    console.print(f"[yellow]⚠[/yellow] Migration output:\n{output}")
+    elif skip_start:
+        console.print("\n[bold]Step 5: Starting components[/bold] [dim](skipped)[/dim]\n")
+
+    # Final summary
+    console.print("\n" + "=" * 60)
+    console.print("[bold green]Setup Complete![/bold green]\n")
+
+    console.print("[bold]Quick Start:[/bold]")
+    console.print("  orchestrator status      # Check component status")
+    console.print("  orchestrator up          # Start all components")
+    console.print("  orchestrator db reset    # Reset database")
+    console.print()
+    console.print("[bold]Access:[/bold]")
+    console.print("  API:     http://localhost:8090")
+    console.print("  GUI:     http://localhost:8090/gui")
+    console.print("  Grafana: http://localhost:3000")
+    console.print()
+    console.print("[dim]Credentials: admin@primemover.example / password[/dim]")
+
+
+# =============================================================================
 # STATUS COMMAND
 # =============================================================================
 

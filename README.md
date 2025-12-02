@@ -10,30 +10,60 @@ The orchestrator provides centralized management for:
 - **bot-decision-yt** (Python Lambda) - YouTube video selection
 - **Monitoring Stack** - Grafana, Loki, Prometheus, Tempo
 
-## Quick Start
+## Quick Start (New Developer Onboarding)
 
-### 1. Install
+The orchestrator is the **entry point** for the PrimeMover ecosystem. One command sets up everything:
 
 ```bash
-# Clone and install
+# 1. Clone orchestrator
+git clone git@github.com:umatter/primemover-orchestrator.git
 cd primemover-orchestrator
+
+# 2. Install Python package
 pip install -e .
 
-# Initialize configuration
-orchestrator config init
+# 3. Run setup (clones repos, builds, starts everything)
+orchestrator setup
 ```
 
-### 2. Start Everything
+The `setup` command will:
+1. Clone `primemover_api`, `primemover_runner`, `primemover_gui` as siblings
+2. Create `.env` configuration
+3. Build the runner JAR (requires Maven)
+4. Start all components
+5. Initialize database with seed data
+
+### Setup Options
 
 ```bash
-# Start all PrimeMover components
-orchestrator up
+# Full setup (default)
+orchestrator setup
 
-# Check status
-orchestrator status
+# Skip cloning (repos already exist)
+orchestrator setup --skip-clone
+
+# Skip building runner JAR
+orchestrator setup --skip-build
+
+# Don't start components (manual start later)
+orchestrator setup --skip-start
+
+# Custom repository URLs
+orchestrator setup --api-repo git@github.com:myorg/api.git
 ```
 
-### 3. Access Services
+### After Setup
+
+```bash
+# Check status
+orchestrator status
+
+# Start/stop components
+orchestrator up
+orchestrator down
+```
+
+### Access Services
 
 | Service | URL | Credentials |
 |---------|-----|-------------|
