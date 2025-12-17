@@ -10,57 +10,177 @@ The orchestrator provides centralized management for:
 - **bot-decision-yt** (Python Lambda) - YouTube video selection
 - **Monitoring Stack** - Grafana, Loki, Prometheus, Tempo
 
-## Quick Start (New Developer Onboarding)
+It also includes the **Experiment Designer** (`pmspec`) - a YAML-based DSL for defining experiments with factorial designs, reusable templates, and automated crawler generation.
 
-The orchestrator is the **entry point** for the PrimeMover ecosystem. One command sets up everything:
+## Quick Start: New VM Deployment
+
+Deploy PrimeMover on a fresh Ubuntu VM with a single command:
 
 ```bash
-# 1. Clone orchestrator
-git clone git@github.com:umatter/primemover-orchestrator.git
-cd primemover-orchestrator
-
-# 2. Install Python package
-pip install -e .
-
-# 3. Run setup (clones repos, builds, starts everything)
-orchestrator setup
+# SSH into your VM, then run:
+curl -fsSL https://raw.githubusercontent.com/umatter/primemover-orchestrator/master/scripts/setup-server.sh | bash
 ```
 
-The `setup` command will:
-1. Clone `primemover_api`, `primemover_runner`, `primemover_gui` as siblings
-2. Create `.env` configuration
-3. Build the runner JAR (requires Maven)
-4. Start all components
-5. Initialize database with seed data
+This automated script installs everything: Docker, Java, Maven, XFCE desktop, VNC, Multilogin X, and all PrimeMover components.
+
+**After setup completes (~15-20 min), access services:**
+
+| Service | URL | Credentials |
+|---------|-----|-------------|
+| PrimeMover GUI | `http://VM-IP:8090/gui` | admin@primemover.example / password |
+| API Docs | `http://VM-IP:8090/api/documentation` | - |
+| Grafana | `http://VM-IP:3000` | admin / admin |
+
+**First-time Multilogin setup (connect via VNC):**
+1. VNC to your VM (port 5901, password set during install)
+2. Launch Multilogin X from the applications menu
+3. Log in with your Multilogin account credentials
+
+**Daily operations:**
+```bash
+cd ~/tools/primemover-orchestrator
+source venv/bin/activate
+orchestrator status    # Check health
+orchestrator up        # Start all components
+orchestrator down      # Stop all components
+```
+
+**Use Claude Code remotely from your laptop:**
+```bash
+# On VM: Start MCP server for remote access
+./scripts/mcp-server.sh --http --port 8100
+
+# On laptop: Create SSH tunnel (secure)
+ssh -L 8100:localhost:8100 user@your-vm
+
+# On laptop: Add MCP server to Claude Code
+claude mcp add --transport http primemover http://localhost:8100/mcp
+```
+
+See [Prerequisites](#prerequisites) for manual installation or [Remote MCP Access](#remote-mcp-access-cloud-vm--laptop) for more options.
+
+## Prerequisites
+
+Install these system dependencies before running `make setup`:
+
+### Ubuntu/Debian
+
+```bash
+# Required
+sudo apt update
+sudo apt install -y git docker.io docker-compose python3 python3-venv openjdk-17-jdk maven
+
+# Add yourself to docker group (run docker without sudo)
+sudo usermod -aG docker $USER
+newgrp docker  # or log out and back in
+
+# Optional: GUI development (not needed - GUI builds with Docker)
+# sudo apt install -y nodejs npm
+
+# Optional: Browser automation
+wget -qO- https://dl.google.com/linux/linux_signing_key.pub | sudo gpg --dearmor -o /usr/share/keyrings/google-chrome.gpg
+echo "deb [arch=amd64 signed-by=/usr/share/keyrings/google-chrome.gpg] http://dl.google.com/linux/chrome/deb/ stable main" | sudo tee /etc/apt/sources.list.d/google-chrome.list
+sudo apt update && sudo apt install -y google-chrome-stable
+```
+
+### macOS
+
+```bash
+# Required
+brew install git docker openjdk@17 maven python@3.11
+
+# Optional: GUI development (not needed - GUI builds with Docker)
+# brew install node
+
+# Optional: Browser automation
+brew install --cask google-chrome
+```
+
+### Ubuntu Server / VM (with GUI + VNC)
+
+For running browser automation with Multilogin on a headless server, use our automated setup script:
+
+```bash
+# SSH into your server, then run:
+curl -fsSL https://raw.githubusercontent.com/umatter/primemover-orchestrator/master/scripts/setup-server.sh | bash
+```
+
+Or clone first and run locally:
+```bash
+git clone https://github.com/umatter/primemover-orchestrator.git
+cd primemover-orchestrator
+./scripts/setup-server.sh
+```
+
+This script installs and configures everything via SSH:
+- XFCE desktop + TigerVNC server (for Multilogin)
+- All prerequisites (Docker, Java, Maven, Node.js, Chrome)
+- Multilogin X (browser fingerprint management)
+- Clones and runs `make setup` (builds and starts PrimeMover)
+
+After the script completes, PrimeMover is running. Connect via VNC only when you need to:
+- Log into Multilogin X (first-time setup)
+- Visually monitor browser automation
+
+**Multilogin X First-Time Setup** (connect via VNC):
+1. Launch Multilogin X from the applications menu
+2. Log in with your Multilogin account credentials
+3. For API automation, generate an automation token in your account settings
+
+### Verify Prerequisites
+
+```bash
+make prereqs  # Check all prerequisites
+```
+
+## Quick Start (New Developer Onboarding)
+
+The orchestrator is the **entry point** for the PrimeMover ecosystem:
+
+```bash
+git clone git@github.com:umatter/primemover-orchestrator.git
+cd primemover-orchestrator
+make prereqs   # Verify prerequisites are installed
+make setup     # Full setup: clone repos, build, start
+```
+
+This single `make setup` command will:
+1. Create a Python virtual environment
+2. Install the orchestrator package and dependencies
+3. Clone `primemover_api`, `primemover_runner`, `primemover_gui` as siblings
+4. Create `.env` configuration
+5. Build the runner JAR (requires Maven)
+6. Start all components (API, Runner, Monitoring stack)
+7. Initialize database with seed data
 
 ### Setup Options
 
 ```bash
 # Full setup (default)
-orchestrator setup
+make setup
 
-# Skip cloning (repos already exist)
-orchestrator setup --skip-clone
+# Quick setup when repos already exist
+make setup-quick
 
-# Skip building runner JAR
-orchestrator setup --skip-build
-
-# Don't start components (manual start later)
-orchestrator setup --skip-start
-
-# Custom repository URLs
-orchestrator setup --api-repo git@github.com:myorg/api.git
+# Or use orchestrator directly for more options:
+orchestrator setup --skip-clone     # Skip cloning (repos exist)
+orchestrator setup --skip-build     # Skip Maven build
+orchestrator setup --skip-start     # Don't start after setup
 ```
 
 ### After Setup
 
 ```bash
+# Activate the virtual environment (if not already active)
+source venv/bin/activate
+
 # Check status
-orchestrator status
+make status          # or: orchestrator status -v
 
 # Start/stop components
-orchestrator up
-orchestrator down
+make up              # or: orchestrator up
+make down            # or: orchestrator down
+make restart         # or: orchestrator restart
 ```
 
 ### Access Services
@@ -219,6 +339,94 @@ orchestrator experiment upload spec.yaml --dry-run
 orchestrator experiment upload spec.yaml -e 123  # Add to existing
 ```
 
+## Experiment Designer (YAML DSL)
+
+The orchestrator includes a YAML-based Domain-Specific Language for defining experiments with factorial designs, parameter distributions, and data pools.
+
+### Quick Example
+
+```yaml
+version: "1.0"
+
+experiment:
+  name: "YouTube Recommendation Study"
+
+design:
+  factors:
+    political_orientation:
+      levels: [left, center, right]
+      maps_to:
+        params.pi: {left: -0.5, center: 0, right: 0.5}
+    content_type:
+      levels: [news, entertainment]
+  replications: 5
+  # Generates: 3 × 2 × 5 = 30 crawlers
+
+crawlers:
+  - from_design: true
+    name: "yt_{political_orientation}_{content_type}_{replica:02d}"
+    session:
+      start: now  # Relative timestamps: now, +5m, +1h, +1d
+      workflow:
+        - visit: https://youtube.com
+        - wait: 5s
+        - template: cookie_consent
+```
+
+### pmspec CLI
+
+The `pmspec` command provides the experiment specification tooling:
+
+```bash
+# Validate specification
+pmspec validate spec.yaml --seed 42
+
+# Preview factorial design expansion
+pmspec preview spec.yaml
+
+# Generate API-compatible JSON
+pmspec generate spec.yaml -o output.json --seed 42
+
+# Upload to PrimeMover API
+pmspec upload spec.yaml --dry-run
+pmspec upload spec.yaml --seed 42
+
+# Generate experiment summary
+pmspec summary spec.yaml
+
+# Explore available job types
+pmspec schema jobs
+pmspec schema job lambda_select
+```
+
+### Key Features
+
+| Feature | Description |
+|---------|-------------|
+| **Factorial Designs** | Cross factors with levels, automatic crawler generation |
+| **Proportional Levels** | Stratified sampling (e.g., 25%/25%/50% split) |
+| **Parameter Distributions** | `uniform`, `normal`, `discrete`, `beta`, `gumbel` |
+| **Data Pools** | Select items by scoring expression (e.g., closest to crawler's `pi`) |
+| **Templates** | Reusable workflow components |
+| **Relative Timestamps** | `now`, `+5m`, `+1h`, `+1d` for session scheduling |
+| **Reproducibility** | `--seed` option for deterministic randomization |
+
+### Workflow
+
+1. Describe experiment in plain English
+2. Draft YAML spec (use Claude to help translate)
+3. Validate: `pmspec validate spec.yaml --seed 42`
+4. Preview: `pmspec preview spec.yaml`
+5. Upload via **one of**:
+   - **CLI**: `pmspec upload spec.yaml` (direct upload)
+   - **GUI**: Generate JSON first, then upload via GUI:
+     ```bash
+     pmspec generate spec.yaml -o output.json --seed 42
+     # Then upload output.json via GUI at http://localhost:8090/gui
+     ```
+
+See [docs/experiment-designer.md](docs/experiment-designer.md) for full documentation.
+
 ### Dashboard
 
 ```bash
@@ -257,6 +465,8 @@ orchestrator dashboard
 ```
 
 **Note on Lambda**: The `bot-decision-yt` Lambda runs in AWS, not locally. The Runner invokes it via HTTP during job execution to select YouTube videos. No local setup is required - the orchestrator provides commands to view logs and analyze decisions from the deployed Lambda.
+
+> **Integration Contract**: The orchestrator depends on specific log formats, API endpoints, and directory structures in the API and Runner repositories. Before making changes to those repos, consult [docs/integration-contract.md](docs/integration-contract.md) to avoid breaking the orchestrator.
 
 ## Configuration
 
@@ -313,9 +523,31 @@ primemover-orchestrator/
 └── .env                   # Configuration
 ```
 
-## MCP Integration
+## AI Integration (Claude)
 
-Configure Claude Desktop (`claude_desktop_config.json`):
+The orchestrator provides tools for AI-assisted experiment design and monitoring.
+
+### Using Claude Code (CLI)
+
+Claude Code can directly use the `pmspec` and `orchestrator` CLI tools:
+
+```bash
+# Design experiments with Claude Code
+pmspec validate my-spec.yaml    # Validate YAML spec
+pmspec preview my-spec.yaml     # Preview factorial design
+pmspec generate my-spec.yaml    # Generate API JSON
+pmspec upload my-spec.yaml      # Upload to API
+
+# Monitor and debug
+orchestrator logs query -c runner -t 1h
+orchestrator trace experiment 123
+```
+
+Claude Code doesn't need MCP configuration - it calls CLI tools directly.
+
+### Using Claude Desktop (MCP)
+
+For Claude Desktop, configure the MCP server (`claude_desktop_config.json`):
 
 ```json
 {
@@ -332,15 +564,62 @@ Configure Claude Desktop (`claude_desktop_config.json`):
 }
 ```
 
+### Remote MCP Access (Cloud VM → Laptop)
+
+When PrimeMover is deployed on a cloud VM, you can access the MCP server from Claude Code running on your laptop using HTTP transport:
+
+**1. Start MCP server in HTTP mode on the VM:**
+
+```bash
+# Via script
+./scripts/mcp-server.sh --http --port 8100
+
+# Or via Python directly
+python -m orchestrator.mcp_server.server --http --port 8100
+
+# Or via environment variables
+MCP_TRANSPORT=http MCP_PORT=8100 ./scripts/mcp-server.sh
+```
+
+**2. Configure firewall (allow MCP port):**
+
+```bash
+# Ubuntu UFW
+sudo ufw allow 8100/tcp
+
+# Or use SSH tunnel for secure access (recommended):
+ssh -L 8100:localhost:8100 user@your-vm-host
+```
+
+**3. Add to Claude Code on your laptop:**
+
+```bash
+# If using SSH tunnel (localhost)
+claude mcp add --transport http primemover http://localhost:8100/mcp
+
+# If VM has public IP and firewall configured
+claude mcp add --transport http primemover http://your-vm-ip:8100/mcp
+```
+
+**Security note**: For production deployments, we recommend using an SSH tunnel rather than exposing the MCP port directly to the internet. The SSH tunnel encrypts all traffic and requires authentication.
+
 ### MCP Tools
+
+The orchestrator MCP server is the **single, consolidated MCP server** for all PrimeMover operations:
 
 | Category | Tools |
 |----------|-------|
+| **API - List** | `list_experiments`, `list_all_experiments`, `list_crawlers`, `list_queues` |
+| **API - Get** | `get_experiment`, `get_crawler`, `get_queue`, `get_job` |
+| **API - Export** | `download_experiment`, `download_report` |
 | **Logs** | `query_logs`, `get_error_summary`, `system_status`, `tail_logs` |
 | **Tracing** | `trace_experiment`, `trace_crawler`, `trace_job`, `find_failed_executions` |
-| **Lambda (HAR)** | `get_lambda_invocations`, `analyze_lambda_decisions` |
-| **Lambda (CloudWatch)** | `get_lambda_cloudwatch_logs`, `get_lambda_execution_metrics`, `get_lambda_invocation_details` |
-| **Experiments** | `validate_experiment_spec`, `preview_factorial_design`, `convert_spec_to_json`, `upload_experiment` |
+| **Lambda** | `get_lambda_invocations`, `analyze_lambda_decisions`, `get_lambda_cloudwatch_logs`, `get_lambda_execution_metrics` |
+| **Design** | `validate_experiment_spec`, `preview_factorial_design`, `convert_spec_to_json`, `upload_experiment` |
+| **Summary** | `summarize_yaml_spec`, `summarize_experiment`, `compare_experiments` |
+| **Schema** | `list_job_types`, `get_job_type_schema`, `get_spec_template` |
+
+> **Note**: The `primemover_api` repo has a legacy MCP server that is now deprecated. Use this orchestrator MCP server for all operations.
 
 ## Grafana Dashboards
 
@@ -418,6 +697,24 @@ orchestrator db reset
 
 ## Development
 
+### Using Make (Recommended)
+
+```bash
+make install         # Create venv and install with dev dependencies
+make hooks           # Install pre-commit hooks
+
+make test            # Run tests
+make test-cov        # Run tests with coverage
+make format          # Format code (black + ruff --fix)
+make lint            # Lint code (ruff)
+make typecheck       # Type check (mypy)
+make check           # Run all checks (format, lint, typecheck, test)
+
+make clean           # Remove build artifacts and caches
+```
+
+### Manual Commands
+
 ```bash
 # Create virtual environment
 python -m venv venv
@@ -426,12 +723,40 @@ source venv/bin/activate
 # Install with dev dependencies
 pip install -e ".[dev]"
 
+# Set up pre-commit hooks
+pre-commit install
+
 # Run tests
 pytest
 
-# Format code
-black orchestrator/
-ruff check orchestrator/
+# Run tests with coverage
+pytest --cov=orchestrator --cov=experiment_designer
+```
+
+## Docker
+
+Build and run the orchestrator CLI in a container:
+
+```bash
+# Build image
+make docker-build    # or: docker build -t primemover-orchestrator .
+
+# Run CLI commands
+make docker-run ARGS="--help"
+make docker-run ARGS="status"
+
+# Or directly with docker:
+docker run --rm primemover-orchestrator --help
+
+# Run with environment variables
+docker run --rm \
+  -e PM_API_BASE_URL=http://host.docker.internal:8090/api/v1 \
+  primemover-orchestrator experiment list
+
+# Mount local .env file
+docker run --rm \
+  -v $(pwd)/.env:/app/.env:ro \
+  primemover-orchestrator config show
 ```
 
 ## Troubleshooting

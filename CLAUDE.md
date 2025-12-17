@@ -1,6 +1,6 @@
 # CLAUDE.md
 
-This file provides guidance to Claude Code when working with code in this repository.
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
 ## Overview
 
@@ -66,6 +66,15 @@ orchestrator experiment preview spec.yaml
 orchestrator experiment generate spec.yaml -o out.json
 orchestrator experiment upload spec.yaml --dry-run
 orchestrator experiment list
+
+# Experiment Spec CLI (pmspec) - alternative to `orchestrator experiment`
+pmspec validate spec.yaml --seed 42      # Validate with reproducible randomization
+pmspec preview spec.yaml                  # Preview factorial design expansion
+pmspec generate spec.yaml -o out.json     # Generate API JSON
+pmspec upload spec.yaml --dry-run         # Upload to API
+pmspec summary spec.yaml                  # Generate experiment summary
+pmspec schema jobs                        # List all job types
+pmspec schema job <type>                  # Show job type details
 ```
 
 ### Running Tests
@@ -75,10 +84,11 @@ orchestrator experiment list
 pytest
 
 # Run specific test module
-pytest tests/test_correlation.py -v
+pytest orchestrator/tests/test_correlation.py -v
+pytest experiment_designer/tests/test_spec.py -v
 
 # Run with coverage
-pytest --cov=orchestrator
+pytest --cov=orchestrator --cov=experiment_designer
 ```
 
 ### Development Setup
@@ -91,9 +101,22 @@ source venv/bin/activate
 # Install in development mode
 pip install -e ".[dev]"
 
+# Set up pre-commit hooks
+pre-commit install
+
 # Format code
-black orchestrator/
-ruff check orchestrator/ --fix
+black orchestrator/ experiment_designer/
+ruff check orchestrator/ experiment_designer/ --fix
+
+# Type check
+mypy orchestrator/ experiment_designer/ --ignore-missing-imports
+```
+
+### Docker
+
+```bash
+docker build -t primemover-orchestrator .
+docker run --rm primemover-orchestrator --help
 ```
 
 ## Architecture
@@ -123,18 +146,23 @@ orchestrator/
     └── server.py             # FastMCP server for Claude
 
 experiment_designer/          # YAML experiment DSL
-├── cli.py
-└── spec/
-    ├── parser.py
-    ├── converter.py
-    └── ...
+├── cli.py                    # pmspec CLI
+├── spec/
+│   ├── parser.py             # YAML parsing
+│   ├── converter.py          # JSON conversion
+│   ├── design_expander.py    # Factorial design expansion
+│   ├── distributions.py      # Parameter distributions
+│   ├── data_pools.py         # Data pool scoring
+│   ├── job_registry.py       # Job type definitions
+│   └── validator.py          # Spec validation
+└── summary/                  # Experiment summary generation
 
-grafana/
-├── dashboards/               # Pre-built Grafana dashboards
-└── provisioning/
-
-prometheus/
-└── rules/                    # Alerting rules
+infrastructure/               # Docker service configs
+├── grafana/provisioning/     # Dashboard provisioning
+├── loki/                     # Loki config
+├── prometheus/               # Prometheus config
+├── promtail/                 # Log collection config
+└── tempo/                    # Distributed tracing config
 ```
 
 ## Key Concepts
@@ -180,6 +208,49 @@ def my_command(ctx: click.Context, time_range: str) -> None:
     """Command description."""
     from orchestrator.some_module import SomeClass
     # ... implementation
+```
+
+### MCP Server
+
+The orchestrator provides the **single, consolidated MCP server** for all PrimeMover operations.
+The API repo's MCP server is deprecated - use this one for all operations.
+
+**Available MCP Tools:**
+
+| Category | Tools |
+|----------|-------|
+| **API - List** | `list_experiments`, `list_all_experiments`, `list_crawlers`, `list_queues` |
+| **API - Get** | `get_experiment`, `get_crawler`, `get_queue`, `get_job` |
+| **API - Export** | `download_experiment`, `download_report` |
+| **Logs** | `query_logs`, `get_error_summary`, `system_status`, `tail_logs` |
+| **Tracing** | `trace_experiment`, `trace_crawler`, `trace_job`, `find_failed_executions` |
+| **Lambda** | `get_lambda_invocations`, `analyze_lambda_decisions`, `get_lambda_cloudwatch_logs` |
+| **Design** | `validate_experiment_spec`, `preview_factorial_design`, `convert_spec_to_json`, `upload_experiment` |
+| **Summary** | `summarize_yaml_spec`, `summarize_experiment`, `compare_experiments` |
+| **Schema** | `list_job_types`, `get_job_type_schema`, `get_spec_template` |
+
+**Running the MCP server:**
+```bash
+# Local (stdio mode - default)
+./scripts/mcp-server.sh
+
+# Remote (HTTP mode - for cloud VM access)
+./scripts/mcp-server.sh --http --port 8100
+```
+
+**Remote MCP Access (Cloud VM → Laptop):**
+
+When deployed on a cloud VM, use HTTP transport:
+
+```bash
+# On VM: Start in HTTP mode
+./scripts/mcp-server.sh --http --port 8100
+
+# On laptop: Create SSH tunnel (recommended)
+ssh -L 8100:localhost:8100 user@your-vm-host
+
+# On laptop: Add to Claude Code
+claude mcp add --transport http primemover http://localhost:8100/mcp
 ```
 
 ### Adding a New MCP Tool
@@ -274,7 +345,7 @@ See `docs/experiment-designer.md` for full documentation.
 - Use `pytest` for running tests
 - Mock external services (API, Loki, CloudWatch)
 - Use `@pytest.fixture` for test data
-- Tests are in `tests/` directory
+- Tests are in `orchestrator/tests/` and `experiment_designer/tests/`
 
 ## Common Issues
 
@@ -294,6 +365,14 @@ See `docs/experiment-designer.md` for full documentation.
 **API authentication failed**
 - Verify `PM_API_EMAIL` and `PM_API_PASSWORD`
 - Check API is running and accessible
+
+## CLI Entry Points
+
+Two CLI tools are installed via `pip install -e .`:
+- **`orchestrator`** - Main CLI for lifecycle management, logs, tracing, database ops
+- **`pmspec`** - Experiment specification tool (YAML DSL for experiment design)
+
+Both are defined in `pyproject.toml` under `[project.scripts]`.
 
 ## Related Repositories
 

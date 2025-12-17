@@ -57,12 +57,22 @@ pmspec generate my-study.yaml --seed 42 -o my-study.json
 
 ### Step 5: Upload to PrimeMover
 
+**Option A: Upload via CLI** (recommended)
 ```bash
 # Test with dry run first
 pmspec upload my-study.yaml --seed 42 --dry-run
 
 # Upload to create the experiment
 pmspec upload my-study.yaml --seed 42
+```
+
+**Option B: Upload via GUI**
+```bash
+# Generate JSON file
+pmspec generate my-study.yaml -o my-study.json --seed 42
+
+# Then upload the JSON file via the GUI at http://localhost:8090/gui
+# Navigate to Experiments → Upload and select my-study.json
 ```
 
 ### The `--seed` Option
