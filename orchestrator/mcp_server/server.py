@@ -5,14 +5,144 @@ Provides Claude Code with tools for monitoring, debugging, and managing experime
 """
 
 import json
+import os
+import sys
 from typing import Optional
-
-from mcp.server.fastmcp import FastMCP
 
 from orchestrator.config import get_settings
 
-# Initialize MCP server
-mcp = FastMCP("primemover-orchestrator")
+
+def _get_mcp_config():
+    """Parse command-line args and env vars to get MCP configuration."""
+    transport = "stdio"
+    port = 8100
+    # SECURITY: Default to localhost - require explicit --host flag for external access
+    host = "127.0.0.1"
+
+    if "--http" in sys.argv or os.environ.get("MCP_TRANSPORT") == "http":
+        transport = "streamable-http"
+
+    if "--port" in sys.argv:
+        try:
+            port_idx = sys.argv.index("--port") + 1
+            port = int(sys.argv[port_idx])
+        except (IndexError, ValueError):
+            pass
+
+    if os.environ.get("MCP_PORT"):
+        try:
+            port = int(os.environ.get("MCP_PORT"))
+        except ValueError:
+            pass
+
+    # Allow explicit host binding via --host flag or MCP_HOST env var
+    if "--host" in sys.argv:
+        try:
+            host_idx = sys.argv.index("--host") + 1
+            host = sys.argv[host_idx]
+        except (IndexError, ValueError):
+            pass
+
+    if os.environ.get("MCP_HOST"):
+        host = os.environ.get("MCP_HOST")
+
+    return transport, host, port
+
+
+# Parse config before creating FastMCP instance
+_transport, _host, _port = _get_mcp_config()
+
+# Import FastMCP after parsing args
+from mcp.server.fastmcp import FastMCP
+
+# Initialize MCP server with correct settings for HTTP mode
+if _transport == "streamable-http":
+    mcp = FastMCP("primemover-orchestrator", host=_host, port=_port)
+else:
+    mcp = FastMCP("primemover-orchestrator")
+
+
+# =============================================================================
+# INPUT VALIDATION HELPERS
+# =============================================================================
+
+import re as _re
+
+# Valid time range pattern (e.g., "15m", "1h", "24h", "7d")
+_TIME_RANGE_PATTERN = _re.compile(r"^(\d{1,3})([mhd])$")
+
+# Valid component names
+_VALID_COMPONENTS = {"all", "api", "runner", "lambda", "apache", "mysql", "redis", "php", "memcached"}
+
+# Valid log levels
+_VALID_LEVELS = {"all", "debug", "info", "warning", "warn", "error", "critical"}
+
+# Maximum limits for various parameters
+_MAX_LIMIT = 10000
+_MAX_SEARCH_LENGTH = 500
+_MAX_ID = 2147483647  # Max 32-bit signed integer
+
+
+def _validate_time_range(time_range: str) -> str:
+    """Validate time range format."""
+    if not isinstance(time_range, str):
+        raise ValueError("time_range must be a string")
+    if not _TIME_RANGE_PATTERN.match(time_range.lower()):
+        raise ValueError(f"Invalid time_range format: {time_range}. Use format like '15m', '1h', '24h', '7d'")
+    return time_range.lower()
+
+
+def _validate_component(component: str) -> str:
+    """Validate component name."""
+    if not isinstance(component, str):
+        raise ValueError("component must be a string")
+    component = component.lower()
+    if component not in _VALID_COMPONENTS:
+        raise ValueError(f"Invalid component: {component}. Valid: {', '.join(sorted(_VALID_COMPONENTS))}")
+    return component
+
+
+def _validate_level(level: str) -> str:
+    """Validate log level."""
+    if not isinstance(level, str):
+        raise ValueError("level must be a string")
+    level = level.lower()
+    if level not in _VALID_LEVELS:
+        raise ValueError(f"Invalid level: {level}. Valid: {', '.join(sorted(_VALID_LEVELS))}")
+    return level
+
+
+def _validate_limit(limit: int) -> int:
+    """Validate result limit."""
+    if not isinstance(limit, int):
+        raise ValueError("limit must be an integer")
+    if limit < 1:
+        return 1
+    if limit > _MAX_LIMIT:
+        return _MAX_LIMIT
+    return limit
+
+
+def _validate_id(value: Optional[int], name: str) -> Optional[int]:
+    """Validate an ID parameter."""
+    if value is None:
+        return None
+    if not isinstance(value, int):
+        raise ValueError(f"{name} must be an integer")
+    if value < 1 or value > _MAX_ID:
+        raise ValueError(f"{name} must be between 1 and {_MAX_ID}")
+    return value
+
+
+def _validate_search(search: str) -> str:
+    """Validate and sanitize search string."""
+    if not isinstance(search, str):
+        raise ValueError("search must be a string")
+    if len(search) > _MAX_SEARCH_LENGTH:
+        raise ValueError(f"search string too long (max {_MAX_SEARCH_LENGTH} characters)")
+    # Remove null bytes
+    search = search.replace("\x00", "")
+    return search
 
 
 # =============================================================================
@@ -46,10 +176,23 @@ def query_logs(
         JSON array of log entries with timestamp, component, level, and message
     """
     import httpx
+    from orchestrator.clients.loki import escape_logql_string
+
+    # Validate inputs
+    try:
+        component = _validate_component(component)
+        time_range = _validate_time_range(time_range)
+        level = _validate_level(level)
+        search = _validate_search(search)
+        experiment_id = _validate_id(experiment_id, "experiment_id")
+        crawler_id = _validate_id(crawler_id, "crawler_id")
+        limit = _validate_limit(limit)
+    except ValueError as e:
+        return json.dumps({"error": f"Validation error: {e}"})
 
     settings = get_settings()
 
-    # Build LogQL query
+    # Build LogQL query with proper escaping
     label_selectors = []
     if component != "all":
         label_selectors.append(f'component="{component}"')
@@ -59,10 +202,11 @@ def query_logs(
     labels = "{" + ",".join(label_selectors) + "}" if label_selectors else "{}"
     query = labels
 
-    # Add filters
+    # Add filters with proper escaping
     filters = []
     if search:
-        filters.append(f'|~ "{search}"')
+        escaped_search = escape_logql_string(search)
+        filters.append(f'|~ "{escaped_search}"')
     if experiment_id:
         filters.append(f'| json | experiment_id="{experiment_id}"')
     if crawler_id:
@@ -233,42 +377,346 @@ def system_status() -> str:
     )
 
 
+# =============================================================================
+# API TOOLS - Experiments, Crawlers, Queues, Jobs
+# =============================================================================
+
+
+def _api_request(method: str, endpoint: str, data: dict = None, params: dict = None) -> dict:
+    """
+    Make an authenticated API request.
+
+    Uses httpx.Client context manager to ensure connections are properly closed.
+    """
+    import httpx
+
+    settings = get_settings()
+
+    # Use context manager to ensure connections are closed
+    with httpx.Client(timeout=30.0) as client:
+        # Authenticate
+        auth_response = client.post(
+            f"{settings.pm_api_base_url}/auth/login",
+            json={
+                "email": settings.pm_api_email,
+                "password": settings.pm_api_password,
+            },
+        )
+
+        if auth_response.status_code != 200:
+            raise Exception("API authentication failed")
+
+        token = auth_response.json().get("access_token")
+        headers = {"Authorization": f"Bearer {token}"}
+
+        # Make request
+        url = f"{settings.pm_api_base_url}/{endpoint}"
+
+        if method == "GET":
+            response = client.get(url, headers=headers, params=params)
+        elif method == "POST":
+            response = client.post(url, headers=headers, json=data)
+        else:
+            raise Exception(f"Unsupported method: {method}")
+
+        if response.status_code >= 400:
+            raise Exception(f"API request failed: {response.status_code}")
+
+        return response.json()
+
+
 @mcp.tool()
-def active_experiments() -> str:
+def list_experiments(page: int = 1, per_page: int = 15) -> str:
     """
-    List currently active/running experiments.
-
-    Returns:
-        JSON with active experiments, their crawler counts, and status
-    """
-    # TODO: Implement via API client
-    return json.dumps(
-        {
-            "message": "Not yet implemented - requires API client",
-            "hint": "Will query /api/v1/experiments with active filter",
-        }
-    )
-
-
-@mcp.tool()
-def queue_status(status: str = "unprocessed", experiment_id: Optional[int] = None) -> str:
-    """
-    Get queue execution status.
+    List experiments (paginated).
 
     Args:
-        status: Filter by status - 'all', 'processed', 'unprocessed', 'running'
-        experiment_id: Optional experiment ID filter
+        page: Page number (default: 1)
+        per_page: Items per page (default: 15)
 
     Returns:
-        JSON with queue counts by status
+        JSON with paginated experiments list including id, name, description, crawler_count
     """
-    # TODO: Implement via API client
-    return json.dumps(
-        {
-            "message": "Not yet implemented - requires API client",
-            "hint": f"Will query /api/v1/queues-{status}",
-        }
-    )
+    try:
+        result = _api_request("GET", "experiments", params={"page": page, "per_page": per_page})
+        return json.dumps(result)
+    except Exception as e:
+        return json.dumps({"error": str(e)})
+
+
+@mcp.tool()
+def list_all_experiments() -> str:
+    """
+    Get all experiments without pagination.
+
+    Returns:
+        JSON with complete experiments list
+    """
+    try:
+        result = _api_request("GET", "experiments/experiments-list")
+        return json.dumps(result)
+    except Exception as e:
+        return json.dumps({"error": str(e)})
+
+
+@mcp.tool()
+def list_crawlers(status: str = "") -> str:
+    """
+    List crawlers by status.
+
+    Args:
+        status: Filter by status - 'processed', 'unprocessed', 'reviewed',
+               'inactive', 'testing', 'protected', or empty for all
+
+    Returns:
+        JSON with crawlers list including id, name, experiment_id, status
+    """
+    try:
+        endpoint = "crawlers"
+        if status:
+            valid_statuses = ["processed", "unprocessed", "reviewed", "inactive", "testing", "protected"]
+            if status not in valid_statuses:
+                return json.dumps({
+                    "error": f"Invalid status. Must be one of: {', '.join(valid_statuses)}"
+                })
+            endpoint = f"crawlers-{status}"
+
+        result = _api_request("GET", endpoint)
+        return json.dumps(result)
+    except Exception as e:
+        return json.dumps({"error": str(e)})
+
+
+@mcp.tool()
+def list_queues(status: str = "") -> str:
+    """
+    List queues by status.
+
+    Args:
+        status: Filter by status - 'processed', 'unprocessed', 'reviewed',
+               'unreviewed', or empty for all
+
+    Returns:
+        JSON with queues list including id, crawler_id, status, job_count
+    """
+    try:
+        endpoint = "queues"
+        if status:
+            valid_statuses = ["processed", "unprocessed", "reviewed", "unreviewed"]
+            if status not in valid_statuses:
+                return json.dumps({
+                    "error": f"Invalid status. Must be one of: {', '.join(valid_statuses)}"
+                })
+            endpoint = f"queues-{status}"
+
+        result = _api_request("GET", endpoint)
+        return json.dumps(result)
+    except Exception as e:
+        return json.dumps({"error": str(e)})
+
+
+@mcp.tool()
+def get_experiment(experiment_id: int) -> str:
+    """
+    Get detailed information about a specific experiment.
+
+    Args:
+        experiment_id: Experiment ID
+
+    Returns:
+        JSON with experiment details including all crawlers and their configurations
+    """
+    try:
+        experiment_id = _validate_id(experiment_id, "experiment_id")
+        if experiment_id is None:
+            return json.dumps({"error": "experiment_id is required"})
+        result = _api_request("GET", f"experiments/{experiment_id}")
+        return json.dumps(result)
+    except ValueError as e:
+        return json.dumps({"error": f"Validation error: {e}"})
+    except Exception as e:
+        return json.dumps({"error": str(e)})
+
+
+@mcp.tool()
+def get_crawler(crawler_id: int) -> str:
+    """
+    Get detailed information about a specific crawler.
+
+    Args:
+        crawler_id: Crawler ID
+
+    Returns:
+        JSON with crawler details including configuration, agent, proxy, queues
+    """
+    try:
+        crawler_id = _validate_id(crawler_id, "crawler_id")
+        if crawler_id is None:
+            return json.dumps({"error": "crawler_id is required"})
+        result = _api_request("GET", f"crawlers/{crawler_id}")
+        return json.dumps(result)
+    except ValueError as e:
+        return json.dumps({"error": f"Validation error: {e}"})
+    except Exception as e:
+        return json.dumps({"error": str(e)})
+
+
+@mcp.tool()
+def get_queue(queue_id: int) -> str:
+    """
+    Get detailed information about a specific queue.
+
+    Args:
+        queue_id: Queue ID
+
+    Returns:
+        JSON with queue details including all jobs and their behaviors
+    """
+    try:
+        queue_id = _validate_id(queue_id, "queue_id")
+        if queue_id is None:
+            return json.dumps({"error": "queue_id is required"})
+        result = _api_request("GET", f"queues/{queue_id}")
+        return json.dumps(result)
+    except ValueError as e:
+        return json.dumps({"error": f"Validation error: {e}"})
+    except Exception as e:
+        return json.dumps({"error": str(e)})
+
+
+@mcp.tool()
+def get_job(job_id: int) -> str:
+    """
+    Get detailed information about a specific job.
+
+    Args:
+        job_id: Job ID
+
+    Returns:
+        JSON with job details including type, behaviors, and execution status
+    """
+    try:
+        job_id = _validate_id(job_id, "job_id")
+        if job_id is None:
+            return json.dumps({"error": "job_id is required"})
+        result = _api_request("GET", f"jobs/{job_id}")
+        return json.dumps(result)
+    except ValueError as e:
+        return json.dumps({"error": f"Validation error: {e}"})
+    except Exception as e:
+        return json.dumps({"error": str(e)})
+
+
+@mcp.tool()
+def download_experiment(experiment_id: int) -> str:
+    """
+    Download experiment data as ZIP archive.
+
+    Note: This verifies the download is possible and returns metadata.
+    The actual file is not returned through MCP.
+
+    Args:
+        experiment_id: Experiment ID
+
+    Returns:
+        JSON with success status and file size information
+    """
+    import httpx
+
+    settings = get_settings()
+
+    try:
+        # Authenticate
+        auth_response = httpx.post(
+            f"{settings.pm_api_base_url}/auth/login",
+            json={
+                "email": settings.pm_api_email,
+                "password": settings.pm_api_password,
+            },
+            timeout=30.0,
+        )
+
+        if auth_response.status_code != 200:
+            return json.dumps({"error": "API authentication failed"})
+
+        token = auth_response.json().get("access_token")
+        headers = {"Authorization": f"Bearer {token}"}
+
+        # Download
+        response = httpx.get(
+            f"{settings.pm_api_base_url}/experiments/{experiment_id}/download",
+            headers=headers,
+            timeout=60.0,
+        )
+
+        if response.status_code != 200:
+            return json.dumps({"error": f"Download failed: {response.status_code}"})
+
+        size_mb = len(response.content) / (1024 * 1024)
+        return json.dumps({
+            "success": True,
+            "message": f"Experiment {experiment_id} download available",
+            "size_mb": round(size_mb, 2),
+            "note": "Use CLI 'orchestrator experiment download' to save the file"
+        })
+    except Exception as e:
+        return json.dumps({"error": str(e)})
+
+
+@mcp.tool()
+def download_report(job_id: int) -> str:
+    """
+    Download report for a specific job.
+
+    Note: This verifies the download is possible and returns metadata.
+    The actual file is not returned through MCP.
+
+    Args:
+        job_id: Job ID
+
+    Returns:
+        JSON with success status and file size information
+    """
+    import httpx
+
+    settings = get_settings()
+
+    try:
+        # Authenticate
+        auth_response = httpx.post(
+            f"{settings.pm_api_base_url}/auth/login",
+            json={
+                "email": settings.pm_api_email,
+                "password": settings.pm_api_password,
+            },
+            timeout=30.0,
+        )
+
+        if auth_response.status_code != 200:
+            return json.dumps({"error": "API authentication failed"})
+
+        token = auth_response.json().get("access_token")
+        headers = {"Authorization": f"Bearer {token}"}
+
+        # Download
+        response = httpx.get(
+            f"{settings.pm_api_base_url}/download/report/{job_id}",
+            headers=headers,
+            timeout=60.0,
+        )
+
+        if response.status_code != 200:
+            return json.dumps({"error": f"Download failed: {response.status_code}"})
+
+        size_kb = len(response.content) / 1024
+        return json.dumps({
+            "success": True,
+            "message": f"Report for job {job_id} download available",
+            "size_kb": round(size_kb, 2),
+            "note": "Use CLI 'orchestrator job report' to save the file"
+        })
+    except Exception as e:
+        return json.dumps({"error": str(e)})
 
 
 # =============================================================================
@@ -297,6 +745,15 @@ def trace_experiment(
     Returns:
         JSON with execution trace including timeline, status, and any errors
     """
+    try:
+        # Validate inputs
+        experiment_id = _validate_id(experiment_id, "experiment_id")
+        if experiment_id is None:
+            return json.dumps({"error": "experiment_id is required"})
+        time_range = _validate_time_range(time_range)
+    except ValueError as e:
+        return json.dumps({"error": f"Validation error: {e}"})
+
     try:
         from orchestrator.tracing import TraceBuilder
 
@@ -337,6 +794,15 @@ def trace_crawler(
         JSON with crawler execution trace
     """
     try:
+        # Validate inputs
+        crawler_id = _validate_id(crawler_id, "crawler_id")
+        if crawler_id is None:
+            return json.dumps({"error": "crawler_id is required"})
+        time_range = _validate_time_range(time_range)
+    except ValueError as e:
+        return json.dumps({"error": f"Validation error: {e}"})
+
+    try:
         from orchestrator.tracing import TraceBuilder
 
         builder = TraceBuilder()
@@ -369,6 +835,15 @@ def trace_job(job_id: int, time_range: str = "7d") -> str:
     Returns:
         JSON with job execution trace including Lambda output
     """
+    try:
+        # Validate inputs
+        job_id = _validate_id(job_id, "job_id")
+        if job_id is None:
+            return json.dumps({"error": "job_id is required"})
+        time_range = _validate_time_range(time_range)
+    except ValueError as e:
+        return json.dumps({"error": f"Validation error: {e}"})
+
     try:
         from orchestrator.tracing import TraceBuilder
 
@@ -743,6 +1218,9 @@ def validate_experiment_spec(yaml_content: str, strict: bool = False) -> str:
         return json.dumps({"error": f"experiment_designer not available: {e}"})
 
     # Parse YAML with custom loader
+    # SECURITY: FileTagLoader inherits from yaml.SafeLoader, which prevents
+    # arbitrary code execution. The only custom tag is !file for loading
+    # external data files (CSV/JSON), which are parsed safely.
     FileTagLoader, file_loader = create_file_tag_loader()
 
     try:
@@ -1265,6 +1743,237 @@ crawlers:
     return json.dumps({"template": template, "type": template_type})
 
 
+@mcp.tool()
+def summarize_yaml_spec(yaml_content: str) -> str:
+    """
+    Generate a structured summary from a YAML experiment specification.
+
+    Provides an overview of the experiment design including crawler counts,
+    parameter distributions, workflow structure, and more.
+
+    Args:
+        yaml_content: YAML experiment specification content
+
+    Returns:
+        JSON with structured summary including:
+        - metadata: name, description, version
+        - design: type, factors, replications, total_crawlers
+        - configuration: params ranges, preferences
+        - workflow: job counts by type, estimated duration
+        - statistics: parameter distributions, location/browser breakdown
+    """
+    try:
+        from experiment_designer.summary import SummaryGenerator
+    except ImportError as e:
+        return json.dumps({"error": f"experiment_designer.summary not available: {e}"})
+
+    try:
+        generator = SummaryGenerator()
+        summary = generator.from_yaml_string(yaml_content)
+
+        return json.dumps({
+            "success": True,
+            "summary": summary.to_dict(),
+            "text": summary.to_text(),
+        })
+    except Exception as e:
+        return json.dumps({
+            "success": False,
+            "error": str(e),
+        })
+
+
+@mcp.tool()
+def summarize_experiment(experiment_id: int) -> str:
+    """
+    Generate a summary from an existing API experiment.
+
+    Fetches experiment data from the PrimeMover API and generates
+    a structured summary of its configuration and status.
+
+    Args:
+        experiment_id: Experiment ID in the PrimeMover API
+
+    Returns:
+        JSON with structured summary including:
+        - metadata: id, name, description, created_at, updated_at
+        - statistics: crawler_count, total_jobs, active_crawlers
+        - configuration_summary: param distributions across crawlers
+        - workflow_summary: common job patterns
+        - status: processed/unprocessed queues, completion rate
+    """
+    try:
+        from experiment_designer.summary import SummaryGenerator
+    except ImportError as e:
+        return json.dumps({"error": f"experiment_designer.summary not available: {e}"})
+
+    import httpx
+
+    settings = get_settings()
+
+    try:
+        # Authenticate and fetch experiment
+        auth_response = httpx.post(
+            f"{settings.pm_api_base_url}/auth/login",
+            json={
+                "email": settings.pm_api_email,
+                "password": settings.pm_api_password,
+            },
+            timeout=30.0,
+        )
+
+        if auth_response.status_code != 200:
+            return json.dumps({
+                "success": False,
+                "error": "API authentication failed",
+            })
+
+        token = auth_response.json().get("access_token")
+        headers = {"Authorization": f"Bearer {token}"}
+
+        # Fetch experiment with crawlers
+        exp_response = httpx.get(
+            f"{settings.pm_api_base_url}/experiments/{experiment_id}",
+            headers=headers,
+            timeout=30.0,
+        )
+
+        if exp_response.status_code != 200:
+            return json.dumps({
+                "success": False,
+                "error": f"Failed to fetch experiment: {exp_response.status_code}",
+            })
+
+        experiment_data = exp_response.json().get("data", exp_response.json())
+
+        generator = SummaryGenerator()
+        summary = generator.from_api_data(experiment_data)
+
+        return json.dumps({
+            "success": True,
+            "summary": summary.to_dict(),
+            "text": summary.to_text(),
+        })
+    except Exception as e:
+        return json.dumps({
+            "success": False,
+            "error": str(e),
+        })
+
+
+@mcp.tool()
+def compare_experiments(
+    source1: str,
+    source2: str,
+    type1: str = "yaml",
+    type2: str = "yaml"
+) -> str:
+    """
+    Compare two experiments and return differences.
+
+    Can compare YAML specs, JSON data, or existing API experiments.
+    Useful for verifying that a YAML spec produces expected output,
+    or comparing different versions of an experiment.
+
+    Args:
+        source1: First source - YAML content, JSON content, or experiment ID (as string)
+        source2: Second source - YAML content, JSON content, or experiment ID (as string)
+        type1: Type of source1 - 'yaml', 'json', or 'api'
+        type2: Type of source2 - 'yaml', 'json', or 'api'
+
+    Returns:
+        JSON with comparison results:
+        - identical: boolean indicating if experiments are identical
+        - differences: list of differences by category
+        - crawler_count_diff, job_count_diff: numeric differences
+        - experiment1, experiment2: full summaries of each
+    """
+    try:
+        from experiment_designer.summary import SummaryGenerator, compare_summaries
+    except ImportError as e:
+        return json.dumps({"error": f"experiment_designer.summary not available: {e}"})
+
+    import httpx
+
+    settings = get_settings()
+    generator = SummaryGenerator()
+
+    def get_api_data(experiment_id: str):
+        """Fetch experiment data from API."""
+        auth_response = httpx.post(
+            f"{settings.pm_api_base_url}/auth/login",
+            json={
+                "email": settings.pm_api_email,
+                "password": settings.pm_api_password,
+            },
+            timeout=30.0,
+        )
+        if auth_response.status_code != 200:
+            raise Exception("API authentication failed")
+
+        token = auth_response.json().get("access_token")
+        headers = {"Authorization": f"Bearer {token}"}
+
+        exp_response = httpx.get(
+            f"{settings.pm_api_base_url}/experiments/{experiment_id}",
+            headers=headers,
+            timeout=30.0,
+        )
+        if exp_response.status_code != 200:
+            raise Exception(f"Failed to fetch experiment {experiment_id}")
+
+        return exp_response.json().get("data", exp_response.json())
+
+    try:
+        # Parse first source
+        if type1 == "yaml":
+            summary1 = generator.from_yaml_string(source1)
+        elif type1 == "json":
+            summary1 = generator.from_json_string(source1)
+        elif type1 == "api":
+            exp_data = get_api_data(source1)
+            summary1 = generator.from_api_data(exp_data)
+        else:
+            return json.dumps({
+                "success": False,
+                "error": f"Unknown source type: {type1}. Use 'yaml', 'json', or 'api'",
+            })
+
+        # Parse second source
+        if type2 == "yaml":
+            summary2 = generator.from_yaml_string(source2)
+        elif type2 == "json":
+            summary2 = generator.from_json_string(source2)
+        elif type2 == "api":
+            exp_data = get_api_data(source2)
+            summary2 = generator.from_api_data(exp_data)
+        else:
+            return json.dumps({
+                "success": False,
+                "error": f"Unknown source type: {type2}. Use 'yaml', 'json', or 'api'",
+            })
+
+        # Compare
+        comparison = compare_summaries(summary1, summary2)
+
+        return json.dumps({
+            "success": True,
+            "identical": comparison.is_identical(),
+            "crawler_count_diff": comparison.crawler_count_diff,
+            "job_count_diff": comparison.job_count_diff,
+            "differences": comparison.differences,
+            "crawlers_only_in_a": comparison.crawlers_only_in_a[:10],
+            "crawlers_only_in_b": comparison.crawlers_only_in_b[:10],
+            "experiment1": summary1.to_dict(),
+            "experiment2": summary2.to_dict(),
+        })
+    except Exception as e:
+        return json.dumps({
+            "success": False,
+            "error": str(e),
+        })
+
+
 # =============================================================================
 # RESOURCES
 # =============================================================================
@@ -1288,8 +1997,34 @@ def get_current_settings() -> str:
 
 
 def main():
-    """Run the MCP server."""
-    mcp.run(transport="stdio")
+    """
+    Run the MCP server.
+
+    Supports two transport modes:
+    - stdio (default): For local Claude Code/Desktop integration
+    - streamable-http: For remote access from Claude Code on another machine
+
+    Configure via:
+    - Environment variable: MCP_TRANSPORT=http
+    - Command line: python -m orchestrator.mcp_server.server --http
+    - Command line with port: python -m orchestrator.mcp_server.server --http --port 8100
+    - Command line with host: python -m orchestrator.mcp_server.server --http --host 0.0.0.0
+
+    SECURITY NOTE: By default, HTTP mode binds to localhost (127.0.0.1) only.
+    Use --host 0.0.0.0 to allow external connections (ensure proper network security).
+    """
+    if _transport == "streamable-http":
+        print(f"Starting MCP server in HTTP mode on {_host}:{_port}...", file=sys.stderr)
+
+        # Security warning for external binding
+        if _host == "0.0.0.0":
+            print("WARNING: Server bound to all interfaces (0.0.0.0).", file=sys.stderr)
+            print("         Ensure proper network security is in place.", file=sys.stderr)
+
+        print(f"Connect with: claude mcp add --transport http primemover http://your-server:{_port}/mcp", file=sys.stderr)
+        mcp.run(transport="streamable-http")
+    else:
+        mcp.run(transport="stdio")
 
 
 if __name__ == "__main__":

@@ -189,8 +189,9 @@ def setup(
     else:
         console.print("  [dim]○[/dim] Multilogin X not found (optional, for production browser profiles)")
 
-    # Check Node.js (for GUI)
+    # Check Node.js (for GUI - optional if Docker available)
     node_path = shutil.which("node")
+    has_docker = shutil.which("docker")
     if node_path:
         node_result = subprocess.run(["node", "--version"], capture_output=True, text=True)
         if node_result.returncode == 0:
@@ -198,13 +199,19 @@ def setup(
         else:
             console.print("  [green]✓[/green] Node.js installed")
     else:
-        console.print("  [yellow]⚠[/yellow] Node.js not found (needed to build GUI)")
+        if has_docker:
+            console.print("  [dim]○[/dim] Node.js not found (optional, GUI builds with Docker)")
+        else:
+            console.print("  [yellow]⚠[/yellow] Node.js not found (needed to build GUI without Docker)")
 
     # Check npm
     if shutil.which("npm"):
         console.print("  [green]✓[/green] npm installed")
     else:
-        console.print("  [yellow]⚠[/yellow] npm not found (needed to build GUI)")
+        if has_docker:
+            console.print("  [dim]○[/dim] npm not found (optional, GUI builds with Docker)")
+        else:
+            console.print("  [yellow]⚠[/yellow] npm not found (needed to build GUI without Docker)")
 
     if not prereqs_ok:
         console.print("\n[red]Prerequisites not met. Please install missing tools.[/red]")
@@ -331,82 +338,131 @@ def setup(
         console.print("\n[bold]Step 3b: Building GUI (Angular)[/bold]\n")
 
         gui_path = repos["gui"]["path"]
+        api_public_gui = repos["api"]["path"] / "public" / "gui"
 
         if not gui_path.exists():
             console.print(f"  [yellow]⚠[/yellow] GUI path not found, skipping build")
-        elif not shutil.which("npm"):
-            console.print(f"  [yellow]⚠[/yellow] npm not found, skipping GUI build")
-            console.print(f"    [dim]Install Node.js and run: cd {gui_path} && npm install && npm run build[/dim]")
         else:
-            # Check if already built
-            gui_dist = gui_path / "dist"
-            gui_modules = gui_path / "node_modules"
-
-            if gui_dist.exists():
-                console.print(f"  [green]✓[/green] GUI already built")
+            # Check if already deployed
+            if api_public_gui.exists() and (api_public_gui / "index.html").exists():
+                console.print(f"  [green]✓[/green] GUI already deployed to API")
                 if not click.confirm("  Rebuild anyway?", default=False):
                     skip_gui = True
 
             if not skip_gui:
-                # Install dependencies if needed
-                if not gui_modules.exists():
-                    console.print(f"  [cyan]⋯[/cyan] Installing npm dependencies...")
+                gui_dockerfile = gui_path / "Dockerfile"
+                has_docker = shutil.which("docker")
+                has_npm = shutil.which("npm")
+
+                # Prefer Docker build (no Node.js dependency on host)
+                if gui_dockerfile.exists() and has_docker:
+                    console.print(f"  [cyan]⋯[/cyan] Building GUI with Docker (this may take a few minutes)...")
+
+                    # Build Docker image
                     result = subprocess.run(
-                        ["npm", "install"],
+                        ["docker", "build", "-t", "primemover-gui:build", "."],
+                        cwd=gui_path,
+                        capture_output=True,
+                        text=True,
+                    )
+                    if result.returncode != 0:
+                        console.print(f"  [red]✗[/red] Docker build failed")
+                        console.print(f"    [dim]{result.stderr[:300]}[/dim]")
+                    else:
+                        console.print(f"  [green]✓[/green] Docker image built")
+
+                        # Extract built files from container
+                        console.print(f"  [cyan]⋯[/cyan] Extracting built files...")
+
+                        # Create temporary container and copy files out
+                        container_name = "primemover-gui-extract"
+                        subprocess.run(
+                            ["docker", "rm", "-f", container_name],
+                            capture_output=True,
+                        )
+                        subprocess.run(
+                            ["docker", "create", "--name", container_name, "primemover-gui:build"],
+                            capture_output=True,
+                        )
+
+                        # Remove old deployment if exists
+                        if api_public_gui.exists():
+                            shutil.rmtree(api_public_gui)
+                        api_public_gui.mkdir(parents=True, exist_ok=True)
+
+                        # Copy from container's nginx html directory
+                        result = subprocess.run(
+                            ["docker", "cp", f"{container_name}:/usr/share/nginx/html/.", str(api_public_gui)],
+                            capture_output=True,
+                            text=True,
+                        )
+
+                        # Cleanup container
+                        subprocess.run(
+                            ["docker", "rm", "-f", container_name],
+                            capture_output=True,
+                        )
+
+                        if result.returncode == 0 and (api_public_gui / "index.html").exists():
+                            console.print(f"  [green]✓[/green] GUI deployed to {api_public_gui}")
+                            console.print(f"    [dim]Access at: http://localhost:8090/gui[/dim]")
+                        else:
+                            console.print(f"  [red]✗[/red] Failed to extract files from container")
+
+                # Fallback to native npm build
+                elif has_npm:
+                    console.print(f"  [dim]No Dockerfile found, using npm build...[/dim]")
+                    gui_dist = gui_path / "dist"
+                    gui_modules = gui_path / "node_modules"
+
+                    # Install dependencies if needed
+                    if not gui_modules.exists():
+                        console.print(f"  [cyan]⋯[/cyan] Installing npm dependencies...")
+                        result = subprocess.run(
+                            ["npm", "install"],
+                            cwd=gui_path,
+                            capture_output=True,
+                            text=True,
+                        )
+                        if result.returncode == 0:
+                            console.print(f"  [green]✓[/green] npm install completed")
+                        else:
+                            console.print(f"  [red]✗[/red] npm install failed")
+                            console.print(f"    [dim]{result.stderr[:200]}[/dim]")
+
+                    # Build
+                    console.print(f"  [cyan]⋯[/cyan] Building GUI (this may take a minute)...")
+                    result = subprocess.run(
+                        ["npm", "run", "build"],
                         cwd=gui_path,
                         capture_output=True,
                         text=True,
                     )
                     if result.returncode == 0:
-                        console.print(f"  [green]✓[/green] npm install completed")
+                        console.print(f"  [green]✓[/green] GUI built successfully")
+
+                        # Deploy to API's public/gui folder
+                        gui_dist_src = gui_path / "dist" / "primemover-frontend"
+
+                        if gui_dist_src.exists():
+                            console.print(f"  [cyan]⋯[/cyan] Deploying GUI to API public folder...")
+
+                            # Remove old deployment if exists
+                            if api_public_gui.exists():
+                                shutil.rmtree(api_public_gui)
+
+                            # Copy new build
+                            shutil.copytree(gui_dist_src, api_public_gui)
+                            console.print(f"  [green]✓[/green] GUI deployed to {api_public_gui}")
+                            console.print(f"    [dim]Access at: http://localhost:8090/gui[/dim]")
+                        else:
+                            console.print(f"  [yellow]⚠[/yellow] Build output not found at {gui_dist_src}")
                     else:
-                        console.print(f"  [red]✗[/red] npm install failed")
-                        console.print(f"    [dim]{result.stderr[:200]}[/dim]")
-
-                # Update environment to point to correct API URL
-                env_file_gui = gui_path / "src" / "environments" / "environment.ts"
-                if env_file_gui.exists():
-                    env_content = env_file_gui.read_text()
-                    if "localhost/api/v1" in env_content and "localhost:8090" not in env_content:
-                        console.print(f"  [cyan]⋯[/cyan] Updating API URL to localhost:8090...")
-                        env_content = env_content.replace(
-                            "apiBaseUrl: 'http://localhost/api/v1'",
-                            "apiBaseUrl: 'http://localhost:8090/api/v1'"
-                        )
-                        env_file_gui.write_text(env_content)
-                        console.print(f"  [green]✓[/green] Environment updated")
-
-                # Build
-                console.print(f"  [cyan]⋯[/cyan] Building GUI (this may take a minute)...")
-                result = subprocess.run(
-                    ["npm", "run", "build"],
-                    cwd=gui_path,
-                    capture_output=True,
-                    text=True,
-                )
-                if result.returncode == 0:
-                    console.print(f"  [green]✓[/green] GUI built successfully")
-
-                    # Deploy to API's public/gui folder
-                    gui_dist_src = gui_path / "dist" / "primemover-frontend"
-                    api_public_gui = repos["api"]["path"] / "public" / "gui"
-
-                    if gui_dist_src.exists():
-                        console.print(f"  [cyan]⋯[/cyan] Deploying GUI to API public folder...")
-
-                        # Remove old deployment if exists
-                        if api_public_gui.exists():
-                            shutil.rmtree(api_public_gui)
-
-                        # Copy new build
-                        shutil.copytree(gui_dist_src, api_public_gui)
-                        console.print(f"  [green]✓[/green] GUI deployed to {api_public_gui}")
-                        console.print(f"    [dim]Access at: http://localhost:8090/gui[/dim]")
-                    else:
-                        console.print(f"  [yellow]⚠[/yellow] Build output not found at {gui_dist_src}")
+                        console.print(f"  [red]✗[/red] Build failed")
+                        console.print(f"    [dim]Run manually: cd {gui_path} && npm run build[/dim]")
                 else:
-                    console.print(f"  [red]✗[/red] Build failed")
-                    console.print(f"    [dim]Run manually: cd {gui_path} && npm run build[/dim]")
+                    console.print(f"  [yellow]⚠[/yellow] Neither Docker nor npm available, skipping GUI build")
+                    console.print(f"    [dim]Install Docker or Node.js to build the GUI[/dim]")
     else:
         console.print("\n[bold]Step 3b: Building GUI[/bold] [dim](skipped)[/dim]\n")
 
@@ -476,25 +532,33 @@ def setup(
 
     # Check GUI
     gui_package = repos["gui"]["path"] / "package.json"
+    gui_dockerfile = repos["gui"]["path"] / "Dockerfile"
+    api_public_gui = repos["api"]["path"] / "public" / "gui"
+
     if gui_package.exists():
         console.print(f"  [green]✓[/green] GUI: package.json found")
 
-        # Check if node_modules exists
-        gui_modules = repos["gui"]["path"] / "node_modules"
-        if gui_modules.exists():
-            console.print(f"  [green]✓[/green] GUI: node_modules installed")
+        # Check for Docker support
+        if gui_dockerfile.exists():
+            console.print(f"  [green]✓[/green] GUI: Dockerfile found (Docker build supported)")
         else:
-            console.print(f"  [dim]○[/dim] GUI: node_modules not found (npm install needed)")
+            console.print(f"  [dim]○[/dim] GUI: No Dockerfile (requires npm to build)")
 
-        # Check if built
-        gui_dist = repos["gui"]["path"] / "dist"
-        if gui_dist.exists():
-            console.print(f"  [green]✓[/green] GUI: dist/ built")
-        else:
-            console.print(f"  [dim]○[/dim] GUI: not built yet (npm run build needed)")
+            # Only check node_modules if no Docker
+            gui_modules = repos["gui"]["path"] / "node_modules"
+            if gui_modules.exists():
+                console.print(f"  [green]✓[/green] GUI: node_modules installed")
+            else:
+                console.print(f"  [dim]○[/dim] GUI: node_modules not found (npm install needed)")
 
-        # Check if deployed to API
-        api_public_gui = repos["api"]["path"] / "public" / "gui"
+            # Check if built locally
+            gui_dist = repos["gui"]["path"] / "dist"
+            if gui_dist.exists():
+                console.print(f"  [green]✓[/green] GUI: dist/ built")
+            else:
+                console.print(f"  [dim]○[/dim] GUI: not built yet")
+
+        # Check if deployed to API (most important check)
         if api_public_gui.exists() and (api_public_gui / "index.html").exists():
             console.print(f"  [green]✓[/green] GUI: deployed to API (public/gui)")
         else:
@@ -618,6 +682,7 @@ def _get_component_manager(settings):
         grafana_port=settings.grafana_port,
         runner_java_opts=settings.runner_java_opts,
         runner_spring_profile=settings.runner_spring_profile,
+        runner_log_path=Path(settings.pm_runner_log_path).resolve(),
     )
 
 
@@ -3064,6 +3129,375 @@ def experiment_list(ctx: click.Context, status: str, limit: int) -> None:
         console.print(f"[red]Error fetching experiments: {e}[/red]")
     except Exception as e:
         console.print(f"[red]Error: {e}[/red]")
+
+
+# =============================================================================
+# DEBUG COMMANDS
+# =============================================================================
+
+
+@cli.group()
+@click.pass_context
+def debug(ctx: click.Context) -> None:
+    """Debug failed jobs and diagnose issues."""
+    pass
+
+
+@debug.command("job")
+@click.argument("job_id", type=int)
+@click.option("-v", "--verbose", is_flag=True, help="Show detailed output")
+@click.option("--no-har", is_flag=True, help="Skip HAR file analysis")
+@click.option("--no-cloudwatch", is_flag=True, help="Skip CloudWatch logs")
+@click.option("--no-logs", is_flag=True, help="Skip Loki/file logs")
+@click.option(
+    "-t",
+    "--time-range",
+    default="1h",
+    help="Time range for log queries (default: 1h)",
+)
+@click.option("-e", "--export", type=click.Path(), help="Export report to JSON file")
+@click.option(
+    "-f",
+    "--format",
+    "output_format",
+    type=click.Choice(["rich", "json", "plain"]),
+    default="rich",
+    help="Output format",
+)
+@click.pass_context
+def debug_job(
+    ctx: click.Context,
+    job_id: int,
+    verbose: bool,
+    no_har: bool,
+    no_cloudwatch: bool,
+    no_logs: bool,
+    time_range: str,
+    export: str,
+    output_format: str,
+) -> None:
+    """
+    Debug a failed job by combining data from all sources.
+
+    Collects and displays:
+
+    \b
+    - Job metadata from API (status, timing, crawler info)
+    - Lambda decision output (selected video, xpath, warnings)
+    - HAR file analysis (failed requests, slow requests)
+    - Logs from Loki/files and CloudWatch
+
+    \b
+    Examples:
+        orchestrator debug job 12345
+        orchestrator debug job 12345 -v
+        orchestrator debug job 12345 --export report.json
+        orchestrator debug job 12345 --no-cloudwatch
+    """
+    from orchestrator.debug import JobDebugger
+
+    console.print(f"[bold cyan]Debugging Job {job_id}[/bold cyan]\n")
+
+    debugger = JobDebugger()
+
+    with console.status("[bold green]Collecting debug information..."):
+        report = debugger.debug_job(
+            job_id=job_id,
+            include_har=not no_har,
+            include_cloudwatch=not no_cloudwatch,
+            include_logs=not no_logs,
+            time_range=time_range,
+        )
+
+    if output_format == "json" or export:
+        import json
+
+        report_dict = report.to_dict()
+        json_output = json.dumps(report_dict, indent=2, default=str)
+
+        if export:
+            from pathlib import Path
+
+            Path(export).write_text(json_output)
+            console.print(f"[green]Report exported to {export}[/green]")
+
+        if output_format == "json":
+            console.print(json_output)
+            return
+
+    _print_debug_report(report, verbose)
+
+
+def _print_debug_report(report, verbose: bool = False) -> None:
+    """Print formatted debug report to console."""
+    from rich.panel import Panel
+    from rich.text import Text
+
+    from orchestrator.debug.har_parser import format_bytes, format_ms
+
+    # Job Metadata Section
+    if report.metadata:
+        meta = report.metadata
+        status_color = "green" if meta.status == "completed" else "red"
+
+        meta_table = Table(show_header=False, box=None, padding=(0, 2))
+        meta_table.add_column("Key", style="dim")
+        meta_table.add_column("Value")
+
+        meta_table.add_row("Status", f"[{status_color}]{meta.status}[/{status_color}]")
+        meta_table.add_row("Experiment", f"{meta.experiment_id} ({meta.experiment_name})")
+        meta_table.add_row("Crawler", f"{meta.crawler_id} ({meta.crawler_name})")
+        meta_table.add_row("Queue ID", str(meta.queue_id) if meta.queue_id else "N/A")
+
+        if meta.started_at:
+            meta_table.add_row("Started", meta.started_at.strftime("%Y-%m-%d %H:%M:%S"))
+        if meta.completed_at:
+            meta_table.add_row("Completed", meta.completed_at.strftime("%Y-%m-%d %H:%M:%S"))
+        if meta.duration_seconds:
+            meta_table.add_row("Duration", f"{meta.duration_seconds:.1f}s")
+
+        if meta.error_message:
+            meta_table.add_row("Error", f"[red]{meta.error_message}[/red]")
+
+        console.print(Panel(meta_table, title="[bold]Job Metadata[/bold]", border_style="blue"))
+    else:
+        console.print("[yellow]Job metadata not available (API unreachable?)[/yellow]\n")
+
+    # Lambda Decision Section
+    if report.lambda_decision:
+        ld = report.lambda_decision
+
+        lambda_table = Table(show_header=False, box=None, padding=(0, 2))
+        lambda_table.add_column("Key", style="dim")
+        lambda_table.add_column("Value")
+
+        lambda_table.add_row("Selected Video", ld.selected_title[:60] if ld.selected_title else "N/A")
+        lambda_table.add_row("Video ID", ld.selected_id or "N/A")
+        lambda_table.add_row("XPath", ld.xpath[:80] if ld.xpath else "N/A")
+
+        if ld.scoring:
+            scores = ", ".join(f"{k}: {v:.2f}" for k, v in list(ld.scoring.items())[:3])
+            lambda_table.add_row("Top Scores", scores)
+
+        console.print(Panel(lambda_table, title="[bold]Lambda Decision[/bold]", border_style="green"))
+
+        if ld.warnings:
+            console.print("[yellow]Warnings:[/yellow]")
+            for w in ld.warnings[:5]:
+                console.print(f"  [yellow]⚠[/yellow] {w[:100]}")
+            console.print()
+    elif report.artifacts and report.artifacts.lambda_zip:
+        console.print("[yellow]Lambda output file found but could not be parsed[/yellow]\n")
+
+    # HAR Analysis Section
+    if report.har_summary:
+        har = report.har_summary
+
+        har_table = Table(show_header=False, box=None, padding=(0, 2))
+        har_table.add_column("Key", style="dim")
+        har_table.add_column("Value")
+
+        har_table.add_row("Total Requests", str(har.total_requests))
+        har_table.add_row("Failed Requests", f"[red]{har.failed_count}[/red]" if har.failed_count else "0")
+        har_table.add_row("Slow Requests", f"[yellow]{har.slow_count}[/yellow]" if har.slow_count else "0")
+        har_table.add_row("Total Time", format_ms(har.total_time_ms))
+        har_table.add_row("Total Transfer", format_bytes(har.total_transfer_bytes))
+
+        console.print(Panel(har_table, title="[bold]HAR Analysis[/bold]", border_style="cyan"))
+
+        # Failed requests details
+        if har.failed_requests:
+            console.print("[red]Failed Requests:[/red]")
+            for req in har.failed_requests[:5]:
+                console.print(f"  [red]{req.status}[/red] {req.method} {req.url[:80]}")
+                if verbose and req.response_body:
+                    console.print(f"      [dim]{req.response_body[:200]}[/dim]")
+            if len(har.failed_requests) > 5:
+                console.print(f"  [dim]... and {len(har.failed_requests) - 5} more[/dim]")
+            console.print()
+
+        # Slow requests
+        if har.slow_requests and verbose:
+            console.print("[yellow]Slow Requests:[/yellow]")
+            for req in har.slow_requests[:3]:
+                console.print(f"  [yellow]{format_ms(req.time_ms)}[/yellow] {req.method} {req.url[:70]}")
+            console.print()
+
+        # Domain breakdown (verbose)
+        if verbose and har.domain_stats:
+            console.print("[dim]Domain Breakdown:[/dim]")
+            for domain, stats in list(har.domain_stats.items())[:5]:
+                failed_str = f" [red]({stats.failed_count} failed)[/red]" if stats.failed_count else ""
+                console.print(f"  {domain}: {stats.request_count} requests{failed_str}")
+            console.print()
+
+    elif report.artifacts and report.artifacts.har_file:
+        console.print("[yellow]HAR file found but could not be parsed[/yellow]\n")
+
+    # CloudWatch Info Section
+    if report.cloudwatch:
+        cw = report.cloudwatch
+
+        cw_table = Table(show_header=False, box=None, padding=(0, 2))
+        cw_table.add_column("Key", style="dim")
+        cw_table.add_column("Value")
+
+        cw_table.add_row("Request ID", cw.request_id or "N/A")
+        if cw.duration_ms:
+            cw_table.add_row("Duration", f"{cw.duration_ms:.0f}ms")
+        if cw.billed_duration_ms:
+            cw_table.add_row("Billed Duration", f"{cw.billed_duration_ms:.0f}ms")
+        if cw.memory_used_mb:
+            cw_table.add_row("Memory Used", f"{cw.memory_used_mb:.0f}MB")
+        if cw.init_duration_ms:
+            cw_table.add_row("Cold Start", f"{cw.init_duration_ms:.0f}ms")
+
+        console.print(Panel(cw_table, title="[bold]CloudWatch Metrics[/bold]", border_style="magenta"))
+
+        if cw.errors:
+            console.print("[red]Lambda Errors:[/red]")
+            for err in cw.errors[:3]:
+                console.print(f"  [red]✗[/red] {err[:150]}")
+            console.print()
+
+    # Logs Section
+    if report.logs:
+        console.print(f"[bold]Related Logs[/bold] ({len(report.logs)} entries)")
+
+        log_table = Table(show_header=True, box=None)
+        log_table.add_column("Time", style="dim", width=19)
+        log_table.add_column("Source", width=8)
+        log_table.add_column("Level", width=7)
+        log_table.add_column("Message")
+
+        display_count = 10 if verbose else 5
+        for entry in report.logs[:display_count]:
+            level_color = {"error": "red", "warning": "yellow", "info": "green"}.get(
+                entry.level.lower(), "white"
+            )
+            log_table.add_row(
+                entry.timestamp.strftime("%Y-%m-%d %H:%M:%S"),
+                entry.component,
+                f"[{level_color}]{entry.level}[/{level_color}]",
+                entry.message[:80],
+            )
+
+        console.print(log_table)
+
+        if len(report.logs) > display_count:
+            console.print(f"[dim]... and {len(report.logs) - display_count} more entries[/dim]")
+        console.print()
+
+    # Artifacts Section
+    if report.artifacts:
+        art = report.artifacts
+        console.print("[bold]Artifacts[/bold]")
+
+        if art.job_dir:
+            console.print(f"  [dim]Job Directory:[/dim] {art.job_dir}")
+        if art.har_file:
+            console.print(f"  [dim]HAR File:[/dim] {art.har_file}")
+        if art.lambda_zip:
+            console.print(f"  [dim]Lambda Output:[/dim] {art.lambda_zip}")
+        if art.screenshots:
+            console.print(f"  [dim]Screenshots:[/dim] {len(art.screenshots)} files")
+            if verbose:
+                for ss in art.screenshots[:3]:
+                    console.print(f"    - {ss}")
+        console.print()
+
+    # Summary
+    issues = []
+    if report.metadata and report.metadata.status != "completed":
+        issues.append(f"Job status: {report.metadata.status}")
+    if report.metadata and report.metadata.error_message:
+        issues.append(f"Error: {report.metadata.error_message[:50]}")
+    if report.har_summary and report.har_summary.failed_count > 0:
+        issues.append(f"{report.har_summary.failed_count} failed HTTP requests")
+    if report.lambda_decision and report.lambda_decision.warnings:
+        issues.append(f"{len(report.lambda_decision.warnings)} Lambda warnings")
+    if report.cloudwatch and report.cloudwatch.errors:
+        issues.append(f"{len(report.cloudwatch.errors)} CloudWatch errors")
+
+    if issues:
+        console.print("[bold red]Issues Found:[/bold red]")
+        for issue in issues:
+            console.print(f"  [red]•[/red] {issue}")
+    else:
+        console.print("[bold green]No obvious issues found[/bold green]")
+
+
+# =============================================================================
+# TEST COMMAND (E2E)
+# =============================================================================
+
+
+@cli.command()
+@click.option("-v", "--verbose", is_flag=True, help="Verbose output")
+@click.option("--quick", is_flag=True, help="Run quick subset of tests")
+@click.option("-k", "--filter", "test_filter", help="Filter tests by name pattern")
+@click.pass_context
+def test(ctx: click.Context, verbose: bool, quick: bool, test_filter: str) -> None:
+    """
+    Run end-to-end tests to verify system setup.
+
+    Tests verify all components are running and can communicate:
+
+    \b
+    - API stack (Laravel, MySQL, Redis)
+    - Monitoring stack (Grafana, Loki, Prometheus)
+    - Log aggregation
+    - Runner setup (JAR exists)
+
+    \b
+    Note: These tests do NOT require Multilogin X.
+          Browser automation tests are not included.
+
+    \b
+    Examples:
+        orchestrator test              # Run all e2e tests
+        orchestrator test -v           # Verbose output
+        orchestrator test --quick      # Quick subset
+        orchestrator test -k "api"     # Filter by name
+    """
+    import subprocess
+    import sys
+    from pathlib import Path
+
+    console.print("[bold cyan]Running End-to-End Tests[/bold cyan]\n")
+
+    # Build pytest command
+    test_file = Path(__file__).parent / "tests" / "test_e2e.py"
+
+    if not test_file.exists():
+        console.print(f"[red]Test file not found: {test_file}[/red]")
+        raise SystemExit(1)
+
+    cmd = [sys.executable, "-m", "pytest", str(test_file), "--e2e"]
+
+    if verbose:
+        cmd.append("-v")
+    else:
+        cmd.append("-q")
+
+    if quick:
+        # Run only critical tests
+        cmd.extend(["-k", "health or status or accessible"])
+
+    if test_filter:
+        cmd.extend(["-k", test_filter])
+
+    # Add color output
+    cmd.append("--color=yes")
+
+    console.print(f"[dim]Running: {' '.join(cmd)}[/dim]\n")
+
+    try:
+        result = subprocess.run(cmd, cwd=Path(__file__).parent.parent)
+        sys.exit(result.returncode)
+    except FileNotFoundError:
+        console.print("[red]pytest not found. Install with: pip install pytest[/red]")
+        raise SystemExit(1)
 
 
 # =============================================================================

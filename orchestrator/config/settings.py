@@ -4,9 +4,10 @@ Orchestrator configuration using Pydantic Settings.
 Configuration is loaded from environment variables and .env file.
 """
 
+from __future__ import annotations
+
 from functools import lru_cache
 from pathlib import Path
-from typing import Optional
 
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -87,7 +88,15 @@ class Settings(BaseSettings):
     # ==========================================================================
     grafana_url: str = Field(default="http://localhost:3000", alias="GRAFANA_URL")
     grafana_admin_user: str = Field(default="admin", alias="GRAFANA_ADMIN_USER")
-    grafana_admin_password: str = Field(default="admin", alias="GRAFANA_ADMIN_PASSWORD")
+    # SECURITY: No default password - should be set via environment variable
+    grafana_admin_password: str | None = Field(default=None, alias="GRAFANA_ADMIN_PASSWORD")
+
+    # ==========================================================================
+    # API Stack Service Credentials (for health checks)
+    # ==========================================================================
+    # SECURITY: No default passwords - must be set via environment variables
+    pm_mysql_password: str | None = Field(default=None, alias="PM_MYSQL_PASSWORD")
+    pm_redis_password: str | None = Field(default=None, alias="PM_REDIS_PASSWORD")
 
     loki_url: str = Field(default="http://localhost:3100", alias="LOKI_URL")
     prometheus_url: str = Field(default="http://localhost:9090", alias="PROMETHEUS_URL")
@@ -116,15 +125,16 @@ class Settings(BaseSettings):
         default="http://localhost:8090/api/v1",
         alias="PM_API_BASE_URL",
     )
-    pm_api_email: str = Field(default="admin@primemover.example", alias="PM_API_EMAIL")
-    pm_api_password: str = Field(default="password", alias="PM_API_PASSWORD")
+    # SECURITY: No default credentials - must be set via environment variables
+    pm_api_email: str | None = Field(default=None, alias="PM_API_EMAIL")
+    pm_api_password: str | None = Field(default=None, alias="PM_API_PASSWORD")
 
     # ==========================================================================
     # AWS (for CloudWatch Lambda logs)
     # ==========================================================================
     aws_region: str = Field(default="eu-central-1", alias="AWS_DEFAULT_REGION")
-    aws_access_key_id: Optional[str] = Field(default=None, alias="AWS_ACCESS_KEY_ID")
-    aws_secret_access_key: Optional[str] = Field(default=None, alias="AWS_SECRET_ACCESS_KEY")
+    aws_access_key_id: str | None = Field(default=None, alias="AWS_ACCESS_KEY_ID")
+    aws_secret_access_key: str | None = Field(default=None, alias="AWS_SECRET_ACCESS_KEY")
     lambda_function_name: str = Field(default="bot-decision-yt", alias="LAMBDA_FUNCTION_NAME")
     lambda_log_group: str = Field(
         default="/aws/lambda/bot-decision-yt",

@@ -60,6 +60,18 @@ orchestrator lambda metrics
 orchestrator lambda errors
 orchestrator lambda invocation <request_id>
 
+# Debug (comprehensive job diagnostics)
+orchestrator debug job <id>              # Full debug report
+orchestrator debug job <id> -v           # Verbose output
+orchestrator debug job <id> --export report.json
+orchestrator debug job <id> --no-cloudwatch
+
+# E2E Tests (verify setup without Multilogin)
+orchestrator test                        # Run all e2e tests
+orchestrator test -v                     # Verbose output
+orchestrator test --quick                # Quick health checks only
+orchestrator test -k "api"               # Filter by pattern
+
 # Experiments
 orchestrator experiment validate spec.yaml
 orchestrator experiment preview spec.yaml
@@ -142,6 +154,9 @@ orchestrator/
 ├── tracing/
 │   ├── correlation.py        # Correlation ID utilities
 │   └── trace_builder.py      # Execution trace reconstruction
+├── debug/
+│   ├── har_parser.py         # HAR file selective parsing
+│   └── job_debugger.py       # Multi-source job diagnostics
 └── mcp_server/
     └── server.py             # FastMCP server for Claude
 
@@ -234,8 +249,11 @@ The API repo's MCP server is deprecated - use this one for all operations.
 # Local (stdio mode - default)
 ./scripts/mcp-server.sh
 
-# Remote (HTTP mode - for cloud VM access)
+# Remote (HTTP mode - binds to localhost by default)
 ./scripts/mcp-server.sh --http --port 8100
+
+# Remote with external access (use with SSH tunnel or firewall)
+./scripts/mcp-server.sh --http --port 8100 --host 0.0.0.0
 ```
 
 **Remote MCP Access (Cloud VM → Laptop):**
@@ -243,7 +261,7 @@ The API repo's MCP server is deprecated - use this one for all operations.
 When deployed on a cloud VM, use HTTP transport:
 
 ```bash
-# On VM: Start in HTTP mode
+# On VM: Start in HTTP mode (localhost only by default - secure)
 ./scripts/mcp-server.sh --http --port 8100
 
 # On laptop: Create SSH tunnel (recommended)
@@ -252,6 +270,8 @@ ssh -L 8100:localhost:8100 user@your-vm-host
 # On laptop: Add to Claude Code
 claude mcp add --transport http primemover http://localhost:8100/mcp
 ```
+
+> **Security Note**: HTTP mode defaults to `127.0.0.1`. Use `--host 0.0.0.0` only with proper network security.
 
 ### Adding a New MCP Tool
 
@@ -285,6 +305,20 @@ def my_tool(param: str = "default") -> str:
 
 ## Environment Variables
 
+### Required Credentials (No Defaults)
+
+These must be set in `.env` before starting services:
+
+| Variable | Description |
+|----------|-------------|
+| `PM_API_EMAIL` | API login email (required) |
+| `PM_API_PASSWORD` | API login password (required) |
+| `GRAFANA_ADMIN_PASSWORD` | Grafana admin password (required) |
+| `PM_MYSQL_PASSWORD` | MySQL password for health checks (optional) |
+| `PM_REDIS_PASSWORD` | Redis password for health checks (optional) |
+
+### Service Configuration
+
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `ENV` | development | Environment name |
@@ -293,8 +327,6 @@ def my_tool(param: str = "default") -> str:
 | `PROMETHEUS_URL` | http://localhost:9090 | Prometheus URL |
 | `TEMPO_URL` | http://localhost:3200 | Tempo URL |
 | `PM_API_BASE_URL` | http://localhost:8090/api/v1 | PrimeMover API |
-| `PM_API_EMAIL` | - | API login email |
-| `PM_API_PASSWORD` | - | API login password |
 | `PM_API_LOG_PATH` | ../primemover_api/storage/logs | API log directory |
 | `PM_RUNNER_LOG_PATH` | ../primemover_runner/.../log | Runner log directory |
 | `PM_RUNNER_HAR_PATH` | ../primemover_runner/.../output | HAR output directory |
@@ -362,9 +394,14 @@ See `docs/experiment-designer.md` for full documentation.
 - Start Loki: `docker-compose up -d loki`
 - Check `LOKI_URL` configuration
 
+**Grafana won't start**
+- Set `GRAFANA_ADMIN_PASSWORD` in `.env` (required, no default)
+- Check Docker logs: `docker logs pm-orchestrator-grafana`
+
 **API authentication failed**
-- Verify `PM_API_EMAIL` and `PM_API_PASSWORD`
+- Verify `PM_API_EMAIL` and `PM_API_PASSWORD` are set in `.env` (no defaults)
 - Check API is running and accessible
+- Ensure credentials match those configured in the API's database
 
 ## CLI Entry Points
 

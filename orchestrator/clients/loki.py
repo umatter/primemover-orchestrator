@@ -4,13 +4,75 @@ Loki client for querying logs.
 Provides a high-level interface for LogQL queries against Loki.
 """
 
+import logging
 import re
+import time as time_module
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from enum import Enum
-from typing import Iterator, Optional
+from functools import wraps
+from typing import Callable, Iterator, Optional, TypeVar
 
 import httpx
+
+logger = logging.getLogger(__name__)
+
+# Retry configuration
+DEFAULT_MAX_RETRIES = 3
+DEFAULT_INITIAL_DELAY = 0.5  # seconds
+DEFAULT_MAX_DELAY = 10.0  # seconds
+DEFAULT_BACKOFF_FACTOR = 2.0
+
+# Type variable for generic return type
+T = TypeVar("T")
+
+
+def with_retry(
+    max_retries: int = DEFAULT_MAX_RETRIES,
+    initial_delay: float = DEFAULT_INITIAL_DELAY,
+    max_delay: float = DEFAULT_MAX_DELAY,
+    backoff_factor: float = DEFAULT_BACKOFF_FACTOR,
+    retryable_exceptions: tuple = (httpx.TransportError, httpx.TimeoutException),
+) -> Callable[[Callable[..., T]], Callable[..., T]]:
+    """
+    Decorator that adds retry logic with exponential backoff.
+
+    Args:
+        max_retries: Maximum number of retry attempts
+        initial_delay: Initial delay between retries (seconds)
+        max_delay: Maximum delay between retries (seconds)
+        backoff_factor: Multiplier for delay after each retry
+        retryable_exceptions: Tuple of exception types to retry on
+    """
+
+    def decorator(func: Callable[..., T]) -> Callable[..., T]:
+        @wraps(func)
+        def wrapper(*args, **kwargs) -> T:
+            delay = initial_delay
+            last_exception = None
+
+            for attempt in range(max_retries + 1):
+                try:
+                    return func(*args, **kwargs)
+                except retryable_exceptions as e:
+                    last_exception = e
+                    if attempt < max_retries:
+                        logger.debug(
+                            f"Retry {attempt + 1}/{max_retries} for {func.__name__} "
+                            f"after {delay:.1f}s due to: {e}"
+                        )
+                        time_module.sleep(delay)
+                        delay = min(delay * backoff_factor, max_delay)
+                    else:
+                        logger.warning(
+                            f"All {max_retries} retries exhausted for {func.__name__}: {e}"
+                        )
+
+            raise last_exception  # type: ignore
+
+        return wrapper
+
+    return decorator
 
 
 class LogLevel(str, Enum):
@@ -139,6 +201,71 @@ def parse_time_range(time_range: str) -> timedelta:
         raise ValueError(f"Unknown time unit: {unit}")
 
 
+def escape_logql_string(value: str) -> str:
+    """
+    Escape a string for safe use in LogQL queries.
+
+    Escapes characters that have special meaning in LogQL:
+    - Double quotes (") -> \\"
+    - Backslashes (\\) -> \\\\
+    - Newlines -> \\n
+    - Carriage returns -> \\r
+    - Tabs -> \\t
+
+    Also validates the string doesn't contain characters that could
+    break out of the LogQL context.
+
+    Args:
+        value: The string to escape
+
+    Returns:
+        Escaped string safe for LogQL queries
+
+    Raises:
+        ValueError: If the string contains invalid characters
+    """
+    if not isinstance(value, str):
+        raise ValueError(f"Expected string, got {type(value)}")
+
+    # Check for null bytes which could be used for injection
+    if "\x00" in value:
+        raise ValueError("String contains null bytes")
+
+    # Escape backslashes first (order matters)
+    escaped = value.replace("\\", "\\\\")
+    # Escape double quotes
+    escaped = escaped.replace('"', '\\"')
+    # Escape control characters
+    escaped = escaped.replace("\n", "\\n")
+    escaped = escaped.replace("\r", "\\r")
+    escaped = escaped.replace("\t", "\\t")
+
+    return escaped
+
+
+def validate_logql_label(value: str) -> str:
+    """
+    Validate and sanitize a label value for LogQL.
+
+    Args:
+        value: The label value to validate
+
+    Returns:
+        Sanitized label value
+
+    Raises:
+        ValueError: If the value contains invalid characters
+    """
+    if not isinstance(value, str):
+        raise ValueError(f"Expected string, got {type(value)}")
+
+    # Labels should be alphanumeric with underscores/hyphens
+    if not re.match(r"^[a-zA-Z0-9_-]+$", value):
+        raise ValueError(f"Invalid label value: {value}")
+
+    return value
+
+
 class LokiClient:
     """Client for querying Loki logs."""
 
@@ -181,12 +308,20 @@ class LokiClient:
     def __exit__(self, exc_type, exc_val, exc_tb):
         self.close()
 
+    @with_retry()
+    def _get_with_retry(self, endpoint: str, **kwargs) -> httpx.Response:
+        """Execute GET request with retry logic."""
+        response = self._client.get(endpoint, **kwargs)
+        response.raise_for_status()
+        return response
+
     def is_healthy(self) -> bool:
         """Check if Loki is healthy."""
         try:
             response = self._client.get("/ready")
             return response.status_code == 200
-        except Exception:
+        except Exception as e:
+            logger.debug(f"Loki health check failed: {e}")
             return False
 
     def query(
@@ -235,9 +370,7 @@ class LokiClient:
             "end": end_ns,
         }
 
-        response = self._client.get("/loki/api/v1/query_range", params=params)
-        response.raise_for_status()
-
+        response = self._get_with_retry("/loki/api/v1/query_range", params=params)
         data = response.json()
         execution_time_ms = (time.time() - start_time) * 1000
 
@@ -298,11 +431,16 @@ class LokiClient:
         crawler_id: Optional[int] = None,
         job_id: Optional[int] = None,
     ) -> str:
-        """Build a LogQL query from filters."""
-        # Label selectors
+        """Build a LogQL query from filters with proper escaping."""
+        # Label selectors - validate component names
         labels = []
         if component and component != "all":
-            labels.append(f'component="{component}"')
+            try:
+                validated_component = validate_logql_label(component)
+                labels.append(f'component="{validated_component}"')
+            except ValueError:
+                # Skip invalid component names
+                pass
 
         label_selector = "{" + ",".join(labels) + "}" if labels else "{}"
 
@@ -310,23 +448,27 @@ class LokiClient:
         filters = []
 
         if search:
-            # Escape special regex characters
-            escaped = re.escape(search)
+            # Escape for LogQL string context, then also escape regex metacharacters
+            escaped = escape_logql_string(search)
+            # Also escape regex metacharacters for the regex match
+            escaped = re.escape(escaped)
             filters.append(f'|~ "(?i){escaped}"')
 
         if level and level != "all":
-            # Match level in various formats
-            filters.append(f'|~ "(?i)(level|lvl)[=:]*\\s*{level}"')
+            # Validate level is alphanumeric only
+            if re.match(r"^[a-zA-Z]+$", level):
+                filters.append(f'|~ "(?i)(level|lvl)[=:]*\\s*{level}"')
 
-        # Parse JSON for correlation IDs
+        # Parse JSON for correlation IDs - IDs are validated as integers
         if experiment_id or crawler_id or job_id:
             filters.append("| json")
 
-            if experiment_id:
+            # Integer IDs are safe - no injection possible
+            if experiment_id is not None and isinstance(experiment_id, int):
                 filters.append(f'| experiment_id="{experiment_id}"')
-            if crawler_id:
+            if crawler_id is not None and isinstance(crawler_id, int):
                 filters.append(f'| crawler_id="{crawler_id}"')
-            if job_id:
+            if job_id is not None and isinstance(job_id, int):
                 filters.append(f'| job_id="{job_id}"')
 
         query = label_selector
@@ -410,7 +552,8 @@ class LokiClient:
 
                 time.sleep(1)  # Poll interval
 
-            except Exception:
+            except Exception as e:
+                logger.debug(f"Loki tail error, retrying: {e}")
                 time.sleep(5)  # Retry delay on error
 
     def get_label_values(self, label: str) -> list[str]:

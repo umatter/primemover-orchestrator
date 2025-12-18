@@ -80,6 +80,7 @@ class ComponentManager:
         grafana_port: int = 3000,
         runner_java_opts: Optional[str] = None,
         runner_spring_profile: str = "local",
+        runner_log_path: Optional[Path] = None,
     ):
         """
         Initialize ComponentManager with component paths and configuration.
@@ -94,6 +95,7 @@ class ComponentManager:
             grafana_port: Grafana port
             runner_java_opts: JVM options for runner
             runner_spring_profile: Spring profile for runner
+            runner_log_path: Custom log directory for runner
         """
         self.console = Console()
 
@@ -115,6 +117,7 @@ class ComponentManager:
                 path=Path(runner_path),
                 java_opts=runner_java_opts,
                 spring_profile=runner_spring_profile,
+                log_path=runner_log_path,
             )
 
         if orchestrator_path:

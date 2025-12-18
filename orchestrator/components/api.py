@@ -12,6 +12,12 @@ from typing import Optional
 import httpx
 
 from orchestrator.components.base import BaseComponent, ComponentHealth, ComponentStatus
+from orchestrator.config import get_settings
+
+# Subprocess timeout constants (seconds)
+COMPOSE_TIMEOUT = 300  # 5 min for docker-compose operations (build can be slow)
+HEALTH_CHECK_TIMEOUT = 10  # 10 sec for health checks
+DOCKER_INSPECT_TIMEOUT = 30  # 30 sec for docker inspect
 
 
 class ApiComponent(BaseComponent):
@@ -58,7 +64,10 @@ class ApiComponent(BaseComponent):
         self._compose_file = path / "docker-compose.yml"
 
     def _run_compose(
-        self, args: list[str], capture_output: bool = True
+        self,
+        args: list[str],
+        capture_output: bool = True,
+        timeout: int = COMPOSE_TIMEOUT,
     ) -> subprocess.CompletedProcess:
         """
         Run docker-compose command in API directory.
@@ -66,9 +75,13 @@ class ApiComponent(BaseComponent):
         Args:
             args: Arguments to pass to docker-compose
             capture_output: Whether to capture stdout/stderr
+            timeout: Command timeout in seconds (default: 5 minutes)
 
         Returns:
             CompletedProcess result
+
+        Raises:
+            subprocess.TimeoutExpired: If command exceeds timeout
         """
         cmd = ["docker-compose", "-f", str(self._compose_file)] + args
         return subprocess.run(
@@ -76,6 +89,7 @@ class ApiComponent(BaseComponent):
             capture_output=capture_output,
             text=True,
             cwd=self.path,
+            timeout=timeout,
         )
 
     def start(self) -> ComponentHealth:
@@ -247,18 +261,24 @@ class ApiComponent(BaseComponent):
             errors.append(f"docker-compose.yml not found at: {self._compose_file}")
 
         # Check Docker is available
-        docker_check = subprocess.run(
-            ["docker", "info"], capture_output=True, text=True
-        )
-        if docker_check.returncode != 0:
-            errors.append("Docker is not running or not accessible")
+        try:
+            docker_check = subprocess.run(
+                ["docker", "info"], capture_output=True, text=True, timeout=HEALTH_CHECK_TIMEOUT
+            )
+            if docker_check.returncode != 0:
+                errors.append("Docker is not running or not accessible")
+        except subprocess.TimeoutExpired:
+            errors.append("Docker check timed out - Docker may be unresponsive")
 
         # Check docker-compose is available
-        compose_check = subprocess.run(
-            ["docker-compose", "--version"], capture_output=True, text=True
-        )
-        if compose_check.returncode != 0:
-            errors.append("docker-compose is not installed or not accessible")
+        try:
+            compose_check = subprocess.run(
+                ["docker-compose", "--version"], capture_output=True, text=True, timeout=HEALTH_CHECK_TIMEOUT
+            )
+            if compose_check.returncode != 0:
+                errors.append("docker-compose is not installed or not accessible")
+        except subprocess.TimeoutExpired:
+            errors.append("docker-compose check timed out")
 
         return len(errors) == 0, errors
 
@@ -301,17 +321,22 @@ class ApiComponent(BaseComponent):
         # Parse docker-compose ps output
         for service in self.SERVICES:
             container_name = f"{self.CONTAINER_PREFIX}-{service}"
-            inspect_result = subprocess.run(
-                [
-                    "docker",
-                    "inspect",
-                    "--format",
-                    '{"running": {{.State.Running}}, "status": "{{.State.Status}}"}',
-                    container_name,
-                ],
-                capture_output=True,
-                text=True,
-            )
+            try:
+                inspect_result = subprocess.run(
+                    [
+                        "docker",
+                        "inspect",
+                        "--format",
+                        '{"running": {{.State.Running}}, "status": "{{.State.Status}}"}',
+                        container_name,
+                    ],
+                    capture_output=True,
+                    text=True,
+                    timeout=DOCKER_INSPECT_TIMEOUT,
+                )
+            except subprocess.TimeoutExpired:
+                containers[service] = {"running": False, "status": "timeout"}
+                continue
             if inspect_result.returncode == 0:
                 import json
 
@@ -358,23 +383,32 @@ class ApiComponent(BaseComponent):
 
     def _check_mysql_health(self) -> bool:
         """Check if MySQL is accepting connections."""
-        result = subprocess.run(
-            [
-                "docker",
-                "exec",
-                f"{self.CONTAINER_PREFIX}-mysql",
-                "mysqladmin",
-                "ping",
-                "-h",
-                "localhost",
-                "-u",
-                "root",
-                "-psecret",
-            ],
-            capture_output=True,
-            text=True,
-        )
-        return result.returncode == 0
+        settings = get_settings()
+        mysql_password = settings.pm_mysql_password
+
+        cmd = [
+            "docker",
+            "exec",
+            f"{self.CONTAINER_PREFIX}-mysql",
+            "mysqladmin",
+            "ping",
+            "-h",
+            "localhost",
+            "-u",
+            "root",
+        ]
+
+        # Only add password flag if password is configured
+        if mysql_password:
+            cmd.append(f"-p{mysql_password}")
+
+        try:
+            result = subprocess.run(
+                cmd, capture_output=True, text=True, timeout=HEALTH_CHECK_TIMEOUT
+            )
+            return result.returncode == 0
+        except subprocess.TimeoutExpired:
+            return False
 
     def _check_http_health(self) -> bool:
         """Check if HTTP endpoint is responding."""
@@ -397,20 +431,29 @@ class ApiComponent(BaseComponent):
 
     def _check_redis_health(self) -> bool:
         """Check if Redis is accepting connections."""
-        result = subprocess.run(
-            [
-                "docker",
-                "exec",
-                f"{self.CONTAINER_PREFIX}-redis",
-                "redis-cli",
-                "-a",
-                "secret",
-                "ping",
-            ],
-            capture_output=True,
-            text=True,
-        )
-        return result.returncode == 0 and "PONG" in result.stdout
+        settings = get_settings()
+        redis_password = settings.pm_redis_password
+
+        cmd = [
+            "docker",
+            "exec",
+            f"{self.CONTAINER_PREFIX}-redis",
+            "redis-cli",
+        ]
+
+        # Only add password flag if password is configured
+        if redis_password:
+            cmd.extend(["-a", redis_password])
+
+        cmd.append("ping")
+
+        try:
+            result = subprocess.run(
+                cmd, capture_output=True, text=True, timeout=HEALTH_CHECK_TIMEOUT
+            )
+            return result.returncode == 0 and "PONG" in result.stdout
+        except subprocess.TimeoutExpired:
+            return False
 
     def get_health_details(self) -> dict:
         """

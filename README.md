@@ -23,13 +23,26 @@ curl -fsSL https://raw.githubusercontent.com/umatter/primemover-orchestrator/mas
 
 This automated script installs everything: Docker, Java, Maven, XFCE desktop, VNC, Multilogin X, and all PrimeMover components.
 
-**After setup completes (~15-20 min), access services:**
+**After setup completes (~15-20 min), verify everything works:**
+```bash
+cd ~/tools/primemover-orchestrator
+source venv/bin/activate
+orchestrator test          # Run e2e tests (no Multilogin required)
+```
+
+**Configure required credentials** (edit `.env`):
+```bash
+cd ~/tools/primemover-orchestrator
+nano .env  # Set PM_API_EMAIL, PM_API_PASSWORD, GRAFANA_ADMIN_PASSWORD
+```
+
+**Access services:**
 
 | Service | URL | Credentials |
 |---------|-----|-------------|
-| PrimeMover GUI | `http://VM-IP:8090/gui` | admin@primemover.example / password |
+| PrimeMover GUI | `http://VM-IP:8090/gui` | (set in .env: PM_API_EMAIL/PASSWORD) |
 | API Docs | `http://VM-IP:8090/api/documentation` | - |
-| Grafana | `http://VM-IP:3000` | admin / admin |
+| Grafana | `http://VM-IP:3000` | admin / (set in .env: GRAFANA_ADMIN_PASSWORD) |
 
 **First-time Multilogin setup (connect via VNC):**
 1. VNC to your VM (port 5901, password set during install)
@@ -188,9 +201,9 @@ make restart         # or: orchestrator restart
 | Service | URL | Credentials |
 |---------|-----|-------------|
 | PrimeMover API | http://localhost:8090 | - |
-| PrimeMover GUI | http://localhost:8090/gui | admin@primemover.example / password |
+| PrimeMover GUI | http://localhost:8090/gui | (set in .env: PM_API_EMAIL/PASSWORD) |
 | API Documentation | http://localhost:8090/api/documentation | - |
-| Grafana | http://localhost:3000 | admin / admin |
+| Grafana | http://localhost:3000 | admin / (set in .env: GRAFANA_ADMIN_PASSWORD) |
 | Prometheus | http://localhost:9090 | - |
 
 ## CLI Command Reference
@@ -338,6 +351,31 @@ orchestrator experiment upload spec.yaml
 orchestrator experiment upload spec.yaml --dry-run
 orchestrator experiment upload spec.yaml -e 123  # Add to existing
 ```
+
+### End-to-End Testing
+
+```bash
+# Run all e2e tests (verifies setup without Multilogin)
+orchestrator test
+
+# Verbose output
+orchestrator test -v
+
+# Quick health checks only
+orchestrator test --quick
+
+# Filter by test name pattern
+orchestrator test -k "api"
+orchestrator test -k "monitoring"
+```
+
+E2E tests verify:
+- **API stack**: Laravel, MySQL, Redis accessible, authentication works
+- **Monitoring**: Grafana, Loki, Prometheus healthy
+- **Log aggregation**: Log paths exist, queries work
+- **Runner**: JAR exists, configuration present
+
+These tests do NOT require Multilogin X - they only test infrastructure.
 
 ## Experiment Designer (YAML DSL)
 
@@ -489,10 +527,17 @@ GRAFANA_PORT=3000
 LOKI_PORT=3100
 PROMETHEUS_PORT=9090
 
-# API Credentials
+# REQUIRED: API Credentials (no defaults - must be set)
 PM_API_BASE_URL=http://localhost:8090/api/v1
-PM_API_EMAIL=admin@primemover.example
-PM_API_PASSWORD=password
+PM_API_EMAIL=your-email@example.com
+PM_API_PASSWORD=your-password
+
+# REQUIRED: Grafana password (no default - must be set)
+GRAFANA_ADMIN_PASSWORD=your-strong-password
+
+# Optional: For health checks (match your docker-compose)
+PM_MYSQL_PASSWORD=
+PM_REDIS_PASSWORD=
 
 # AWS (for Lambda CloudWatch logs)
 AWS_DEFAULT_REGION=eu-central-1
@@ -500,6 +545,8 @@ AWS_ACCESS_KEY_ID=
 AWS_SECRET_ACCESS_KEY=
 LAMBDA_LOG_GROUP=/aws/lambda/bot-decision-yt
 ```
+
+> **Security Note**: Credentials are no longer hardcoded with defaults. You must configure `PM_API_EMAIL`, `PM_API_PASSWORD`, and `GRAFANA_ADMIN_PASSWORD` before starting services.
 
 ### Directory Structure
 
@@ -556,13 +603,15 @@ For Claude Desktop, configure the MCP server (`claude_desktop_config.json`):
       "command": "/path/to/primemover-orchestrator/scripts/mcp-server.sh",
       "env": {
         "PM_API_BASE_URL": "http://localhost:8090/api/v1",
-        "PM_API_EMAIL": "admin@primemover.example",
-        "PM_API_PASSWORD": "password"
+        "PM_API_EMAIL": "your-email@example.com",
+        "PM_API_PASSWORD": "your-password"
       }
     }
   }
 }
 ```
+
+> **Note**: Replace placeholder credentials with your actual values. Never commit credentials to version control.
 
 ### Remote MCP Access (Cloud VM → Laptop)
 
@@ -571,8 +620,11 @@ When PrimeMover is deployed on a cloud VM, you can access the MCP server from Cl
 **1. Start MCP server in HTTP mode on the VM:**
 
 ```bash
-# Via script
+# Via script (binds to localhost by default - secure)
 ./scripts/mcp-server.sh --http --port 8100
+
+# To allow external connections (use with SSH tunnel or firewall):
+./scripts/mcp-server.sh --http --port 8100 --host 0.0.0.0
 
 # Or via Python directly
 python -m orchestrator.mcp_server.server --http --port 8100
@@ -580,6 +632,8 @@ python -m orchestrator.mcp_server.server --http --port 8100
 # Or via environment variables
 MCP_TRANSPORT=http MCP_PORT=8100 ./scripts/mcp-server.sh
 ```
+
+> **Security Note**: By default, HTTP mode binds to `127.0.0.1` (localhost only). Use `--host 0.0.0.0` only when you have proper network security (SSH tunnel or firewall).
 
 **2. Configure firewall (allow MCP port):**
 
@@ -655,9 +709,14 @@ orchestrator up
 # 4. Initialize database
 orchestrator db migrate --seed
 
-# 5. Verify
+# 5. Verify status
 orchestrator status -v
+
+# 6. Run e2e tests (optional - verifies everything works)
+orchestrator test
 ```
+
+**Note:** The `orchestrator test` command runs end-to-end tests that verify all infrastructure is working (API, database, monitoring). These tests do NOT require Multilogin X to be set up.
 
 ### Daily Development
 
@@ -675,6 +734,11 @@ orchestrator restart --runner --no-api --no-monitoring
 ### Debugging Failed Jobs
 
 ```bash
+# Comprehensive debug report for a specific job (recommended)
+orchestrator debug job <job_id>           # Full report
+orchestrator debug job <job_id> -v        # Verbose output
+orchestrator debug job <job_id> --export report.json
+
 # Find recent errors
 orchestrator logs errors -t 1h
 
@@ -684,6 +748,13 @@ orchestrator trace experiment 123 --jobs
 # Check Lambda decisions
 orchestrator lambda show <job_id>
 ```
+
+The `debug job` command combines data from all sources into a single diagnostic report:
+- Job metadata from API (status, timing, errors)
+- Lambda decision output (selected video, xpath, warnings)
+- HAR analysis (failed/slow HTTP requests)
+- CloudWatch Lambda execution metrics
+- Related logs from Loki/files
 
 ### Reset Test Environment
 

@@ -13,6 +13,11 @@ import httpx
 
 from orchestrator.components.base import BaseComponent, ComponentHealth, ComponentStatus
 
+# Subprocess timeout constants (seconds)
+COMPOSE_TIMEOUT = 300  # 5 min for docker-compose operations
+HEALTH_CHECK_TIMEOUT = 10  # 10 sec for health checks
+DOCKER_INSPECT_TIMEOUT = 30  # 30 sec for docker inspect
+
 
 class MonitoringComponent(BaseComponent):
     """
@@ -61,7 +66,10 @@ class MonitoringComponent(BaseComponent):
         self._compose_file = path / "docker-compose.yml"
 
     def _run_compose(
-        self, args: list[str], capture_output: bool = True
+        self,
+        args: list[str],
+        capture_output: bool = True,
+        timeout: int = COMPOSE_TIMEOUT,
     ) -> subprocess.CompletedProcess:
         """
         Run docker-compose command in orchestrator directory.
@@ -69,9 +77,13 @@ class MonitoringComponent(BaseComponent):
         Args:
             args: Arguments to pass to docker-compose
             capture_output: Whether to capture stdout/stderr
+            timeout: Command timeout in seconds (default: 5 minutes)
 
         Returns:
             CompletedProcess result
+
+        Raises:
+            subprocess.TimeoutExpired: If command exceeds timeout
         """
         cmd = ["docker-compose", "-f", str(self._compose_file)] + args
         return subprocess.run(
@@ -79,6 +91,7 @@ class MonitoringComponent(BaseComponent):
             capture_output=capture_output,
             text=True,
             cwd=self.path,
+            timeout=timeout,
         )
 
     def start(self) -> ComponentHealth:
@@ -117,6 +130,9 @@ class MonitoringComponent(BaseComponent):
 
         # Wait for services to be healthy
         if self._wait_for_health():
+            # Try to connect promtail to API network (optional - best effort)
+            api_network_connected = self.connect_to_api_network()
+
             return ComponentHealth(
                 status=ComponentStatus.RUNNING,
                 message="Monitoring stack started successfully",
@@ -124,6 +140,7 @@ class MonitoringComponent(BaseComponent):
                 details={
                     "containers": self._get_container_status(),
                     "urls": self._get_service_urls(),
+                    "api_network_connected": api_network_connected,
                 },
             )
         else:
@@ -260,18 +277,24 @@ class MonitoringComponent(BaseComponent):
                     errors.append(f"Missing config: {infra_dir / config}")
 
         # Check Docker is available
-        docker_check = subprocess.run(
-            ["docker", "info"], capture_output=True, text=True
-        )
-        if docker_check.returncode != 0:
-            errors.append("Docker is not running or not accessible")
+        try:
+            docker_check = subprocess.run(
+                ["docker", "info"], capture_output=True, text=True, timeout=HEALTH_CHECK_TIMEOUT
+            )
+            if docker_check.returncode != 0:
+                errors.append("Docker is not running or not accessible")
+        except subprocess.TimeoutExpired:
+            errors.append("Docker check timed out - Docker may be unresponsive")
 
         # Check docker-compose is available
-        compose_check = subprocess.run(
-            ["docker-compose", "--version"], capture_output=True, text=True
-        )
-        if compose_check.returncode != 0:
-            errors.append("docker-compose is not installed or not accessible")
+        try:
+            compose_check = subprocess.run(
+                ["docker-compose", "--version"], capture_output=True, text=True, timeout=HEALTH_CHECK_TIMEOUT
+            )
+            if compose_check.returncode != 0:
+                errors.append("docker-compose is not installed or not accessible")
+        except subprocess.TimeoutExpired:
+            errors.append("docker-compose check timed out")
 
         return len(errors) == 0, errors
 
@@ -294,18 +317,22 @@ class MonitoringComponent(BaseComponent):
         Returns:
             True if successful
         """
-        result = subprocess.run(
-            [
-                "docker",
-                "network",
-                "connect",
-                api_network,
-                f"{self.CONTAINER_PREFIX}-promtail",
-            ],
-            capture_output=True,
-            text=True,
-        )
-        return result.returncode == 0
+        try:
+            result = subprocess.run(
+                [
+                    "docker",
+                    "network",
+                    "connect",
+                    api_network,
+                    f"{self.CONTAINER_PREFIX}-promtail",
+                ],
+                capture_output=True,
+                text=True,
+                timeout=DOCKER_INSPECT_TIMEOUT,
+            )
+            return result.returncode == 0
+        except subprocess.TimeoutExpired:
+            return False
 
     def _get_container_status(self) -> dict:
         """Get status of all monitoring containers."""
@@ -315,17 +342,27 @@ class MonitoringComponent(BaseComponent):
 
         for service in self.SERVICES:
             container_name = f"{self.CONTAINER_PREFIX}-{service}"
-            inspect_result = subprocess.run(
-                [
-                    "docker",
-                    "inspect",
-                    "--format",
-                    '{"running": {{.State.Running}}, "status": "{{.State.Status}}", "health": "{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}"}',
-                    container_name,
-                ],
-                capture_output=True,
-                text=True,
-            )
+            try:
+                inspect_result = subprocess.run(
+                    [
+                        "docker",
+                        "inspect",
+                        "--format",
+                        '{"running": {{.State.Running}}, "status": "{{.State.Status}}", "health": "{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}"}',
+                        container_name,
+                    ],
+                    capture_output=True,
+                    text=True,
+                    timeout=DOCKER_INSPECT_TIMEOUT,
+                )
+            except subprocess.TimeoutExpired:
+                containers[service] = {
+                    "name": container_name,
+                    "running": False,
+                    "status": "timeout",
+                }
+                continue
+
             if inspect_result.returncode == 0:
                 try:
                     info = json.loads(inspect_result.stdout.strip())

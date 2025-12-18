@@ -77,7 +77,221 @@ scrape_configs:
           expression: 'correlationId=(?P<correlation_id>[^\s,]+)'
 
   # ==========================================================================
-  # System logs (optional)
+  # Apache Access Logs
+  # ==========================================================================
+  - job_name: apache-access
+    static_configs:
+      - targets:
+          - localhost
+        labels:
+          component: apache
+          log_type: access
+          environment: development
+          __path__: /var/log/apache/*.log
+    pipeline_stages:
+      # Combined Log Format: 127.0.0.1 - - [10/Oct/2000:13:55:36 -0700] "GET /apache_pb.gif HTTP/1.0" 200 2326 "http://www.example.com/start.html" "Mozilla/4.08"
+      - regex:
+          expression: '^(?P<client_ip>[\d.]+)\s+-\s+(?P<user>[^\s]+)\s+\[(?P<timestamp>[^\]]+)\]\s+"(?P<method>\w+)\s+(?P<path>[^\s]+)\s+[^"]+"\s+(?P<status>\d+)\s+(?P<bytes>\d+|-)'
+      - labels:
+          method:
+          status:
+      - timestamp:
+          source: timestamp
+          format: "02/Jan/2006:15:04:05 -0700"
+      # Extract correlation IDs from request path or headers if present
+      - regex:
+          source: path
+          expression: '/api/v1/(?:experiments|crawlers|queues|jobs)/(?P<entity_id>\d+)'
+
+  # ==========================================================================
+  # Apache Error Logs
+  # ==========================================================================
+  - job_name: apache-error
+    static_configs:
+      - targets:
+          - localhost
+        labels:
+          component: apache
+          log_type: error
+          environment: development
+          __path__: /var/log/apache/error*.log
+    pipeline_stages:
+      # Apache error log format: [Wed Oct 11 14:32:52 2000] [error] [client 127.0.0.1] message
+      - regex:
+          expression: '^\[(?P<timestamp>[^\]]+)\]\s+\[(?P<level>\w+)\](?:\s+\[client\s+(?P<client_ip>[^\]]+)\])?\s+(?P<message>.*)$'
+      - labels:
+          level:
+      - template:
+          source: level
+          template: '{{ ToLower .Value }}'
+      - labels:
+          level:
+
+  # ==========================================================================
+  # MySQL Logs
+  # ==========================================================================
+  - job_name: mysql-error
+    static_configs:
+      - targets:
+          - localhost
+        labels:
+          component: mysql
+          log_type: error
+          environment: development
+          __path__: /var/log/mysql/error.log
+    pipeline_stages:
+      # MySQL 8.0 error log format: 2025-12-02T10:30:00.123456Z 0 [Warning] [MY-010068] message
+      - regex:
+          expression: '^(?P<timestamp>\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d+Z?)\s+(?P<thread>\d+)\s+\[(?P<level>\w+)\](?:\s+\[(?P<code>[^\]]+)\])?\s+(?P<message>.*)$'
+      - labels:
+          level:
+      - template:
+          source: level
+          template: '{{ ToLower .Value }}'
+      - labels:
+          level:
+      - timestamp:
+          source: timestamp
+          format: "2006-01-02T15:04:05.000000Z"
+
+  - job_name: mysql-slow
+    static_configs:
+      - targets:
+          - localhost
+        labels:
+          component: mysql
+          log_type: slow_query
+          level: warning
+          environment: development
+          __path__: /var/log/mysql/slow.log
+    pipeline_stages:
+      # MySQL slow query log
+      - multiline:
+          firstline: '^# Time:'
+          max_wait_time: 3s
+      - regex:
+          expression: '^# Time:\s+(?P<timestamp>\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})'
+      - timestamp:
+          source: timestamp
+          format: "2006-01-02T15:04:05"
+
+  # ==========================================================================
+  # MySQL General Query Log (optional, high volume)
+  # ==========================================================================
+  - job_name: mysql-general
+    static_configs:
+      - targets:
+          - localhost
+        labels:
+          component: mysql
+          log_type: general
+          level: debug
+          environment: development
+          __path__: /var/log/mysql/general.log
+    pipeline_stages:
+      # Only collect if file exists, drop by default to avoid high volume
+      - match:
+          selector: '{log_type="general"}'
+          action: drop
+          drop_counter_reason: high_volume_disabled
+
+  # ==========================================================================
+  # PHP-FPM Logs
+  # ==========================================================================
+  - job_name: php-fpm
+    static_configs:
+      - targets:
+          - localhost
+        labels:
+          component: php
+          environment: development
+          __path__: /var/log/php-fpm/*.log
+    pipeline_stages:
+      # PHP-FPM error log format: [02-Dec-2025 10:30:00] WARNING: [pool www] message
+      - regex:
+          expression: '^\[(?P<timestamp>\d{2}-\w{3}-\d{4}\s+\d{2}:\d{2}:\d{2})\]\s+(?P<level>\w+):\s+(?P<message>.*)$'
+      - labels:
+          level:
+      - template:
+          source: level
+          template: '{{ ToLower .Value }}'
+      - labels:
+          level:
+      - timestamp:
+          source: timestamp
+          format: "02-Jan-2006 15:04:05"
+
+  # ==========================================================================
+  # Docker Container Logs (via Docker socket)
+  # ==========================================================================
+  - job_name: docker
+    docker_sd_configs:
+      - host: unix:///var/run/docker.sock
+        refresh_interval: 5s
+        filters:
+          - name: label
+            values: ["com.docker.compose.project=primemover"]
+    relabel_configs:
+      - source_labels: ['__meta_docker_container_name']
+        regex: '/?(.*)'
+        target_label: 'container'
+      - source_labels: ['__meta_docker_container_label_com_docker_compose_service']
+        target_label: 'service'
+      - source_labels: ['__meta_docker_container_label_com_docker_compose_project']
+        target_label: 'project'
+      # Set component based on container name
+      - source_labels: ['__meta_docker_container_name']
+        regex: '.*mysql.*'
+        target_label: 'component'
+        replacement: 'mysql'
+      - source_labels: ['__meta_docker_container_name']
+        regex: '.*redis.*'
+        target_label: 'component'
+        replacement: 'redis'
+      - source_labels: ['__meta_docker_container_name']
+        regex: '.*apache.*'
+        target_label: 'component'
+        replacement: 'apache'
+      - source_labels: ['__meta_docker_container_name']
+        regex: '.*php.*'
+        target_label: 'component'
+        replacement: 'php'
+      - source_labels: ['__meta_docker_container_name']
+        regex: '.*memcached.*'
+        target_label: 'component'
+        replacement: 'memcached'
+    pipeline_stages:
+      # Try to extract log level from common patterns
+      - regex:
+          expression: '(?i)(?P<level>error|warn(?:ing)?|info|debug)'
+      - labels:
+          level:
+
+  # ==========================================================================
+  # Redis Logs (from Docker container stdout)
+  # Note: Redis logs are captured via Docker container logs above
+  # This section is for standalone Redis log files if configured
+  # ==========================================================================
+  - job_name: redis-standalone
+    static_configs:
+      - targets:
+          - localhost
+        labels:
+          component: redis
+          environment: development
+          __path__: /var/log/redis/*.log
+    pipeline_stages:
+      # Redis log format: 12345:M 02 Dec 2025 10:30:00.123 * message
+      - regex:
+          expression: '^(?P<pid>\d+):(?P<role>\w)\s+(?P<timestamp>\d{2}\s+\w+\s+\d{4}\s+\d{2}:\d{2}:\d{2}\.\d{3})\s+(?P<level_char>[.*#-])\s+(?P<message>.*)$'
+      - template:
+          source: level_char
+          template: '{{ if eq .Value "." }}debug{{ else if eq .Value "*" }}info{{ else if eq .Value "#" }}warning{{ else }}error{{ end }}'
+      - labels:
+          level:
+
+  # ==========================================================================
+  # System logs (disabled by default)
   # ==========================================================================
   - job_name: system
     static_configs:

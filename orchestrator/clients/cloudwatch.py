@@ -4,12 +4,15 @@ CloudWatch Logs client for querying Lambda execution logs.
 Provides access to Lambda logs from the /aws/lambda/bot-decision-yt log group.
 """
 
+import logging
 import re
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from typing import Iterator, Optional
 
 from orchestrator.config import get_settings
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -172,14 +175,26 @@ class CloudWatchClient:
 
     @property
     def client(self):
-        """Get or create boto3 CloudWatch Logs client."""
+        """Get or create boto3 CloudWatch Logs client with retry configuration."""
         if self._client is None:
             try:
                 import boto3
+                from botocore.config import Config
+
+                # Configure retry with exponential backoff
+                retry_config = Config(
+                    retries={
+                        "max_attempts": 3,
+                        "mode": "adaptive",  # Adapts to throttling
+                    },
+                    connect_timeout=10,
+                    read_timeout=30,
+                )
 
                 self._client = boto3.client(
                     "logs",
                     region_name=self.region,
+                    config=retry_config,
                 )
             except ImportError:
                 raise ImportError("boto3 is required for CloudWatch integration")
@@ -198,7 +213,8 @@ class CloudWatchClient:
                 limit=1,
             )
             return len(response.get("logGroups", [])) > 0
-        except Exception:
+        except Exception as e:
+            logger.debug(f"CloudWatch availability check failed: {e}")
             return False
 
     def query_logs(

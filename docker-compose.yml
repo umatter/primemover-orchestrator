@@ -11,9 +11,11 @@ services:
       - "${GRAFANA_PORT:-3000}:3000"
     environment:
       - GF_SECURITY_ADMIN_USER=${GRAFANA_ADMIN_USER:-admin}
-      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_ADMIN_PASSWORD:-admin}
+      # SECURITY: No default password - must be set via GRAFANA_ADMIN_PASSWORD env var
+      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_ADMIN_PASSWORD:?GRAFANA_ADMIN_PASSWORD must be set}
       - GF_USERS_ALLOW_SIGN_UP=false
-      - GF_AUTH_ANONYMOUS_ENABLED=true
+      # SECURITY: Anonymous access disabled by default - set GRAFANA_ANON_ENABLED=true to enable
+      - GF_AUTH_ANONYMOUS_ENABLED=${GRAFANA_ANON_ENABLED:-false}
       - GF_AUTH_ANONYMOUS_ORG_ROLE=Viewer
       - GF_FEATURE_TOGGLES_ENABLE=traceqlEditor
     volumes:
@@ -56,17 +58,43 @@ services:
   # ==========================================================================
   # PROMTAIL - Log Shipper
   # ==========================================================================
+  # SECURITY NOTE: Promtail mounts the Docker socket (read-only) for container
+  # log discovery. This gives Promtail access to Docker daemon information.
+  # In high-security environments, consider:
+  # - Using file-based log collection only (remove docker.sock mount)
+  # - Running Promtail with restricted capabilities
+  # - Using a dedicated log aggregation network
+  # ==========================================================================
   promtail:
     image: grafana/promtail:3.4.1
     container_name: pm-orchestrator-promtail
     command: -config.file=/etc/promtail/promtail-config.yaml
+    # Drop all capabilities except those needed for log reading
+    cap_drop:
+      - ALL
+    cap_add:
+      - DAC_READ_SEARCH
+    security_opt:
+      - no-new-privileges:true
     volumes:
       - ./infrastructure/promtail/promtail-config.yaml:/etc/promtail/promtail-config.yaml:ro
+      # PrimeMover application logs
       - ${PM_API_LOG_PATH:-../primemover_api/storage/logs}:/var/log/primemover-api:ro
       - ${PM_RUNNER_LOG_PATH:-../primemover_runner/primemover-runner/log}:/var/log/primemover-runner:ro
+      # Infrastructure logs (from API stack)
+      - ${PM_MYSQL_LOG_PATH:-../primemover_api/storage/logs/mysql}:/var/log/mysql:ro
+      - ${PM_APACHE_LOG_PATH:-../primemover_api/storage/logs/apache}:/var/log/apache:ro
+      - ${PM_PHP_LOG_PATH:-../primemover_api/storage/logs/php}:/var/log/php-fpm:ro
+      # Docker socket for container log discovery (read-only)
+      # SECURITY: This exposes Docker daemon info to Promtail. See security note above.
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      # Promtail state
       - promtail-positions:/var/promtail
     networks:
       - orchestrator-network
+      # NOTE: Promtail can be connected to the API network dynamically using:
+      #   docker network connect primemover-network pm-orchestrator-promtail
+      # This is done automatically by the orchestrator when both stacks are running.
     depends_on:
       - loki
     restart: unless-stopped
@@ -109,12 +137,21 @@ services:
       - tempo-data:/var/tempo
     networks:
       - orchestrator-network
+    healthcheck:
+      test: ["CMD-SHELL", "wget --no-verbose --tries=1 --spider http://localhost:3200/ready || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
     restart: unless-stopped
 
 networks:
   orchestrator-network:
     driver: bridge
     name: pm-orchestrator-network
+  # NOTE: The primemover-network (external API network) is NOT declared here.
+  # This allows the monitoring stack to start independently of the API stack.
+  # Promtail is connected to the API network dynamically when both stacks run,
+  # via: orchestrator.components.monitoring.connect_to_api_network()
 
 volumes:
   grafana-data:

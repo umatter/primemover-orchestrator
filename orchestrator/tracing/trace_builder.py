@@ -8,6 +8,7 @@ Provides a unified view of experiment/crawler/job execution by combining:
 """
 
 import json
+import logging
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
@@ -16,6 +17,8 @@ from typing import Any, Optional
 from orchestrator.config import get_settings
 from orchestrator.logs.aggregator import LogAggregator
 from orchestrator.clients.loki import LogEntry
+
+logger = logging.getLogger(__name__)
 
 from .correlation import (
     CorrelationId,
@@ -161,7 +164,11 @@ class TraceBuilder:
         self.api_password = api_password or settings.pm_api_password
 
         self._token: Optional[str] = None
+        self._token_expiry: Optional[datetime] = None
         self._log_aggregator: Optional[LogAggregator] = None
+
+        # Token validity duration (default: 55 minutes, gives 5 min buffer before 1h expiry)
+        self._token_validity_minutes = 55
 
     @property
     def log_aggregator(self) -> LogAggregator:
@@ -170,12 +177,33 @@ class TraceBuilder:
             self._log_aggregator = LogAggregator()
         return self._log_aggregator
 
-    def _authenticate(self) -> Optional[str]:
-        """Authenticate with the API and get a token."""
-        if self._token:
+    def _is_token_valid(self) -> bool:
+        """Check if the current token is still valid."""
+        if not self._token or not self._token_expiry:
+            return False
+        return datetime.now(timezone.utc) < self._token_expiry
+
+    def _clear_token(self) -> None:
+        """Clear the cached token."""
+        self._token = None
+        self._token_expiry = None
+
+    def _authenticate(self, force_refresh: bool = False) -> Optional[str]:
+        """
+        Authenticate with the API and get a token.
+
+        Args:
+            force_refresh: Force re-authentication even if token exists
+
+        Returns:
+            Access token or None if authentication fails
+        """
+        # Return cached token if still valid
+        if not force_refresh and self._is_token_valid():
             return self._token
 
         if not all([self.api_base_url, self.api_email, self.api_password]):
+            logger.debug("API credentials not configured")
             return None
 
         try:
@@ -188,13 +216,30 @@ class TraceBuilder:
                 timeout=10,
             )
             response.raise_for_status()
-            self._token = response.json().get("access_token")
+            data = response.json()
+            self._token = data.get("access_token")
+
+            # Set expiry time (use expires_in from response if available, else default)
+            expires_in = data.get("expires_in", self._token_validity_minutes * 60)
+            self._token_expiry = datetime.now(timezone.utc) + timedelta(seconds=expires_in - 60)
+
             return self._token
-        except Exception:
+        except Exception as e:
+            logger.debug(f"API authentication failed: {e}")
+            self._clear_token()
             return None
 
-    def _api_get(self, endpoint: str) -> Optional[dict]:
-        """Make an authenticated GET request to the API."""
+    def _api_get(self, endpoint: str, retry_on_401: bool = True) -> Optional[dict]:
+        """
+        Make an authenticated GET request to the API.
+
+        Args:
+            endpoint: API endpoint to call
+            retry_on_401: Whether to retry with fresh token on 401 response
+
+        Returns:
+            Response JSON or None if request fails
+        """
         token = self._authenticate()
         if not token:
             return None
@@ -210,9 +255,17 @@ class TraceBuilder:
                 },
                 timeout=30,
             )
+
+            # Handle token expiry - retry with fresh token
+            if response.status_code == 401 and retry_on_401:
+                logger.debug(f"API returned 401 for {endpoint}, refreshing token")
+                self._clear_token()
+                return self._api_get(endpoint, retry_on_401=False)
+
             response.raise_for_status()
             return response.json()
-        except Exception:
+        except Exception as e:
+            logger.debug(f"API GET {endpoint} failed: {e}")
             return None
 
     def trace_experiment(

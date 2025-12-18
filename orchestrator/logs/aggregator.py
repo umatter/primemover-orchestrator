@@ -8,6 +8,8 @@ Aggregates logs from multiple sources:
 """
 
 import json
+import logging
+import os
 import zipfile
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -16,6 +18,46 @@ from typing import Iterator, Optional
 
 from orchestrator.clients.loki import LogEntry, LokiClient, QueryResult
 from orchestrator.config import get_settings
+
+logger = logging.getLogger(__name__)
+
+# Maximum bytes to read from log files (100KB)
+MAX_LOG_READ_BYTES = 100_000
+
+
+def read_file_tail(file_path: Path, max_bytes: int = MAX_LOG_READ_BYTES) -> str:
+    """
+    Read the tail of a file efficiently without loading the entire file.
+
+    Uses file seeking to read only the last `max_bytes` of large files,
+    avoiding memory issues with very large log files.
+
+    Args:
+        file_path: Path to the file to read
+        max_bytes: Maximum bytes to read from the end
+
+    Returns:
+        File content (or tail for large files)
+    """
+    try:
+        file_size = file_path.stat().st_size
+
+        if file_size <= max_bytes:
+            # Small file - read entire content
+            return file_path.read_text(errors="replace")
+
+        # Large file - seek to position and read tail
+        with open(file_path, "rb") as f:
+            f.seek(file_size - max_bytes)
+            # Skip partial line at the start
+            f.readline()
+            content = f.read().decode("utf-8", errors="replace")
+
+        return content
+
+    except (OSError, IOError) as e:
+        logger.debug(f"Error reading file {file_path}: {e}")
+        return ""
 
 
 @dataclass
@@ -78,6 +120,25 @@ class LogAggregator:
         except Exception:
             return False
 
+    # Valid component names for filtering
+    COMPONENTS = {
+        # Application components
+        "api",      # Laravel API
+        "runner",   # Java Runner
+        "lambda",   # AWS Lambda (CloudWatch + HAR)
+        # Infrastructure components
+        "apache",   # Apache web server
+        "mysql",    # MySQL database
+        "redis",    # Redis cache
+        "php",      # PHP-FPM
+        "memcached",  # Memcached
+        # Special values
+        "all",      # All components
+    }
+
+    # Components that are queried via Loki
+    LOKI_COMPONENTS = {"api", "runner", "apache", "mysql", "redis", "php", "memcached"}
+
     def query(
         self,
         component: Optional[str] = None,
@@ -94,7 +155,8 @@ class LogAggregator:
         Query logs from all sources.
 
         Args:
-            component: Filter by component (api, runner, lambda, or None for all)
+            component: Filter by component (api, runner, lambda, apache, mysql,
+                      redis, php, memcached, or None for all)
             level: Minimum log level
             search: Text search pattern
             experiment_id: Filter by experiment ID
@@ -121,8 +183,15 @@ class LogAggregator:
             "limit": limit,
         }
 
-        # Query Loki for API and Runner logs
-        if component in (None, "all", "api", "runner"):
+        # Determine which components to query via Loki
+        query_loki = (
+            component is None
+            or component == "all"
+            or component in self.LOKI_COMPONENTS
+        )
+
+        # Query Loki for application and infrastructure logs
+        if query_loki:
             if self.is_loki_available():
                 try:
                     loki_result = self.loki_client.query_logs(
@@ -150,9 +219,9 @@ class LogAggregator:
                 entries.extend(file_entries)
                 sources["files"] = len(file_entries)
 
-        # Query Lambda outputs from HAR files
+        # Query Lambda decision outputs from job reports
         if include_lambda and component in (None, "all", "lambda"):
-            lambda_entries = self._query_lambda_har(
+            lambda_entries = self._query_lambda_output(
                 experiment_id=experiment_id,
                 crawler_id=crawler_id,
                 job_id=job_id,
@@ -160,7 +229,7 @@ class LogAggregator:
                 limit=limit,
             )
             entries.extend(lambda_entries)
-            sources["lambda_har"] = len(lambda_entries)
+            sources["lambda_output"] = len(lambda_entries)
 
         # Query Lambda logs from CloudWatch
         if include_lambda and component in (None, "all", "lambda"):
@@ -203,26 +272,25 @@ class LogAggregator:
         if component in (None, "all", "api"):
             for log_file in self.api_log_path.glob("*.log"):
                 try:
-                    content = log_file.read_text(errors="replace")
-                    # Only read last portion for efficiency
-                    if len(content) > 100000:
-                        content = content[-100000:]
-                    file_entries = parse_laravel_log(content)
-                    entries.extend(file_entries)
-                except Exception:
-                    pass
+                    # Use efficient tail reading for large files
+                    content = read_file_tail(log_file)
+                    if content:
+                        file_entries = parse_laravel_log(content)
+                        entries.extend(file_entries)
+                except Exception as e:
+                    logger.debug(f"Error parsing {log_file}: {e}")
 
         # Read Runner logs
         if component in (None, "all", "runner"):
             for log_file in self.runner_log_path.glob("*.log"):
                 try:
-                    content = log_file.read_text(errors="replace")
-                    if len(content) > 100000:
-                        content = content[-100000:]
-                    file_entries = parse_runner_log(content)
-                    entries.extend(file_entries)
-                except Exception:
-                    pass
+                    # Use efficient tail reading for large files
+                    content = read_file_tail(log_file)
+                    if content:
+                        file_entries = parse_runner_log(content)
+                        entries.extend(file_entries)
+                except Exception as e:
+                    logger.debug(f"Error parsing {log_file}: {e}")
 
         # Filter by level
         if level and level != "all":
@@ -242,7 +310,7 @@ class LogAggregator:
         entries.sort(key=lambda e: e.timestamp, reverse=True)
         return entries[:limit]
 
-    def _query_lambda_har(
+    def _query_lambda_output(
         self,
         experiment_id: Optional[int] = None,
         crawler_id: Optional[int] = None,
@@ -250,7 +318,7 @@ class LogAggregator:
         search: Optional[str] = None,
         limit: int = 100,
     ) -> list[LogEntry]:
-        """Extract Lambda outputs from HAR files."""
+        """Extract Lambda decision outputs from job report zip files."""
         entries: list[LogEntry] = []
 
         if not self.har_path.exists():
@@ -291,7 +359,7 @@ class LogAggregator:
         zip_path: Path,
         search: Optional[str] = None,
     ) -> list[LogEntry]:
-        """Extract Lambda output from a HAR zip file."""
+        """Extract Lambda decision output from a job report zip file."""
         entries: list[LogEntry] = []
 
         with zipfile.ZipFile(zip_path) as zf:
