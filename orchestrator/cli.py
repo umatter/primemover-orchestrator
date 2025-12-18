@@ -4,6 +4,8 @@ PrimeMover Orchestrator CLI
 Command-line interface for monitoring, debugging, and managing experiments.
 """
 
+from pathlib import Path
+
 import click
 from rich.console import Console
 from rich.table import Table
@@ -116,11 +118,18 @@ def setup(
         console.print("  [red]✗[/red] Docker not found")
         prereqs_ok = False
 
-    # Check docker-compose
-    if shutil.which("docker-compose"):
-        console.print("  [green]✓[/green] docker-compose installed")
+    # Check Docker Compose (v2 or v1)
+    compose_v2 = subprocess.run(
+        ["docker", "compose", "version"], capture_output=True, text=True
+    ).returncode == 0
+    compose_v1 = shutil.which("docker-compose") is not None
+
+    if compose_v2:
+        console.print("  [green]✓[/green] Docker Compose v2 (plugin) installed")
+    elif compose_v1:
+        console.print("  [green]✓[/green] docker-compose v1 (standalone) installed")
     else:
-        console.print("  [red]✗[/red] docker-compose not found")
+        console.print("  [red]✗[/red] Docker Compose not found (install docker-compose-plugin)")
         prereqs_ok = False
 
     # Check Java
@@ -268,6 +277,8 @@ def setup(
     if env_file.exists():
         console.print(f"  [green]✓[/green] .env already exists")
     elif env_example.exists():
+        import secrets
+
         # Read template and set correct paths
         content = env_example.read_text()
 
@@ -276,8 +287,22 @@ def setup(
         content = content.replace("PM_RUNNER_PATH=../primemover_runner", "PM_RUNNER_PATH=../primemover_runner")
         content = content.replace("PM_GUI_PATH=../primemover_gui", "PM_GUI_PATH=../primemover_gui")
 
+        # Generate a random Grafana admin password (required - no default)
+        grafana_password = secrets.token_urlsafe(16)
+        content = content.replace("GRAFANA_ADMIN_PASSWORD=", f"GRAFANA_ADMIN_PASSWORD={grafana_password}")
+
+        # Set API credentials to match Laravel seed defaults
+        content = content.replace("PM_API_EMAIL=", "PM_API_EMAIL=admin@primemover.example")
+        content = content.replace("PM_API_PASSWORD=", "PM_API_PASSWORD=password")
+
+        # Set database credentials to match Docker defaults
+        content = content.replace("PM_MYSQL_PASSWORD=", "PM_MYSQL_PASSWORD=secret")
+        content = content.replace("PM_REDIS_PASSWORD=", "PM_REDIS_PASSWORD=secret")
+
         env_file.write_text(content)
         console.print(f"  [green]✓[/green] Created .env from template")
+        console.print(f"    [dim]Grafana password: {grafana_password}[/dim]")
+        console.print(f"    [dim]API credentials: admin@primemover.example / password[/dim]")
     else:
         console.print(f"  [red]✗[/red] .env.example not found")
 
@@ -487,9 +512,30 @@ def setup(
         api_env_example = repos["api"]["path"] / ".env.example"
         if api_env_example.exists():
             console.print(f"  [yellow]⚠[/yellow] API: .env missing (will be created from .env.example)")
-            # Copy .env.example to .env for Docker setup
-            api_env.write_text(api_env_example.read_text())
-            console.print(f"  [green]✓[/green] API: .env created from template")
+            # Copy .env.example to .env and configure for Docker
+            content = api_env_example.read_text()
+
+            # Configure for Docker networking (containers use service names, not localhost)
+            content = content.replace("DB_HOST=127.0.0.1", "DB_HOST=mysql")
+            content = content.replace("REDIS_HOST=127.0.0.1", "REDIS_HOST=redis")
+
+            # Add Docker-specific variables if not present
+            docker_vars = {
+                "DOCUMENT_ROOT": ".",
+                "PHP_INI": "./docker/php/php.ini",
+                "HOST_MACHINE_UNSECURE_HOST_PORT": "8090",  # Runner uses 8080
+                "THROTTLE_WHITELIST": "127.0.0.1,localhost",  # Required by ConfigService
+            }
+
+            for var, value in docker_vars.items():
+                if var not in content:
+                    content += f"\n# Docker configuration\n{var}={value}\n"
+                elif f"{var}=" in content and f"{var}=\n" in content:
+                    # Variable exists but is empty - set the value
+                    content = content.replace(f"{var}=\n", f"{var}={value}\n")
+
+            api_env.write_text(content)
+            console.print(f"  [green]✓[/green] API: .env created from template (configured for Docker)")
         else:
             console.print(f"  [red]✗[/red] API: .env and .env.example not found")
 
@@ -616,8 +662,12 @@ def setup(
 
                     # composer install needs special handling (not artisan)
                     if command.startswith("composer"):
+                        # Use the API component's compose command detection
+                        from orchestrator.components.api import _get_compose_cmd
+                        compose_cmd = _get_compose_cmd()
+                        api_compose_file = repos["api"]["path"] / "docker-compose.yml"
                         result = subprocess.run(
-                            ["docker-compose", "exec", "-T", "php", "composer", "install", "--no-interaction"],
+                            compose_cmd + ["-f", str(api_compose_file), "exec", "-T", "php", "composer", "install", "--no-interaction"],
                             cwd=repos["api"]["path"],
                             capture_output=True,
                             text=True,
@@ -909,14 +959,19 @@ def doctor(ctx: click.Context) -> None:
         console.print("  [red]✗[/red] Docker not found")
         all_ok = False
 
-    # Check docker-compose
-    compose_path = shutil.which("docker-compose")
-    if compose_path:
+    # Check Docker Compose (v2 or v1)
+    compose_v2_result = subprocess.run(["docker", "compose", "version"], capture_output=True, text=True)
+    compose_v1_path = shutil.which("docker-compose")
+
+    if compose_v2_result.returncode == 0:
+        version = compose_v2_result.stdout.strip().split()[-1] if compose_v2_result.stdout else "unknown"
+        console.print(f"  [green]✓[/green] Docker Compose v2 (plugin) version {version}")
+    elif compose_v1_path:
         result = subprocess.run(["docker-compose", "--version"], capture_output=True, text=True)
         version = result.stdout.strip().split()[-1] if result.returncode == 0 else "unknown"
-        console.print(f"  [green]✓[/green] Docker Compose version {version}")
+        console.print(f"  [green]✓[/green] Docker Compose v1 (standalone) version {version}")
     else:
-        console.print("  [red]✗[/red] docker-compose not found")
+        console.print("  [red]✗[/red] Docker Compose not found (install docker-compose-plugin)")
         all_ok = False
 
     # Check Java
@@ -1497,9 +1552,12 @@ def db_init(ctx: click.Context, force: bool, skip_composer: bool) -> None:
 
         # composer install needs special handling (not artisan)
         if command.startswith("composer"):
+            from orchestrator.components.api import _get_compose_cmd
             api_path = settings.get_api_path()
+            compose_cmd = _get_compose_cmd()
+            api_compose_file = api_path / "docker-compose.yml"
             result = subprocess.run(
-                ["docker-compose", "exec", "-T", "php", "composer", "install", "--no-interaction"],
+                compose_cmd + ["-f", str(api_compose_file), "exec", "-T", "php", "composer", "install", "--no-interaction"],
                 cwd=api_path,
                 capture_output=True,
                 text=True,

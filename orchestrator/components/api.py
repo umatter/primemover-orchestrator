@@ -15,9 +15,56 @@ from orchestrator.components.base import BaseComponent, ComponentHealth, Compone
 from orchestrator.config import get_settings
 
 # Subprocess timeout constants (seconds)
-COMPOSE_TIMEOUT = 300  # 5 min for docker-compose operations (build can be slow)
+COMPOSE_TIMEOUT = 300  # 5 min for docker compose operations (build can be slow)
 HEALTH_CHECK_TIMEOUT = 10  # 10 sec for health checks
 DOCKER_INSPECT_TIMEOUT = 30  # 30 sec for docker inspect
+
+# Cache for compose command detection
+_compose_cmd: list[str] | None = None
+
+
+def _get_compose_cmd() -> list[str]:
+    """
+    Detect whether to use 'docker compose' (v2) or 'docker-compose' (v1).
+
+    Returns:
+        List of command parts (e.g., ["docker", "compose"] or ["docker-compose"])
+    """
+    global _compose_cmd
+    if _compose_cmd is not None:
+        return _compose_cmd
+
+    # Try docker compose (v2) first - this is the modern approach
+    try:
+        result = subprocess.run(
+            ["docker", "compose", "version"],
+            capture_output=True,
+            text=True,
+            timeout=HEALTH_CHECK_TIMEOUT,
+        )
+        if result.returncode == 0:
+            _compose_cmd = ["docker", "compose"]
+            return _compose_cmd
+    except (subprocess.TimeoutExpired, FileNotFoundError):
+        pass
+
+    # Fall back to docker-compose (v1)
+    try:
+        result = subprocess.run(
+            ["docker-compose", "--version"],
+            capture_output=True,
+            text=True,
+            timeout=HEALTH_CHECK_TIMEOUT,
+        )
+        if result.returncode == 0:
+            _compose_cmd = ["docker-compose"]
+            return _compose_cmd
+    except (subprocess.TimeoutExpired, FileNotFoundError):
+        pass
+
+    # Default to v2 if neither works (will fail with informative error)
+    _compose_cmd = ["docker", "compose"]
+    return _compose_cmd
 
 
 class ApiComponent(BaseComponent):
@@ -70,10 +117,12 @@ class ApiComponent(BaseComponent):
         timeout: int = COMPOSE_TIMEOUT,
     ) -> subprocess.CompletedProcess:
         """
-        Run docker-compose command in API directory.
+        Run docker compose command in API directory.
+
+        Uses 'docker compose' (v2) if available, falls back to 'docker-compose' (v1).
 
         Args:
-            args: Arguments to pass to docker-compose
+            args: Arguments to pass to docker compose
             capture_output: Whether to capture stdout/stderr
             timeout: Command timeout in seconds (default: 5 minutes)
 
@@ -83,7 +132,7 @@ class ApiComponent(BaseComponent):
         Raises:
             subprocess.TimeoutExpired: If command exceeds timeout
         """
-        cmd = ["docker-compose", "-f", str(self._compose_file)] + args
+        cmd = _get_compose_cmd() + ["-f", str(self._compose_file)] + args
         return subprocess.run(
             cmd,
             capture_output=capture_output,
@@ -270,15 +319,16 @@ class ApiComponent(BaseComponent):
         except subprocess.TimeoutExpired:
             errors.append("Docker check timed out - Docker may be unresponsive")
 
-        # Check docker-compose is available
+        # Check docker compose is available (v2 or v1)
         try:
+            compose_cmd = _get_compose_cmd()
             compose_check = subprocess.run(
-                ["docker-compose", "--version"], capture_output=True, text=True, timeout=HEALTH_CHECK_TIMEOUT
+                compose_cmd + ["version"], capture_output=True, text=True, timeout=HEALTH_CHECK_TIMEOUT
             )
             if compose_check.returncode != 0:
-                errors.append("docker-compose is not installed or not accessible")
+                errors.append("Docker Compose is not installed or not accessible")
         except subprocess.TimeoutExpired:
-            errors.append("docker-compose check timed out")
+            errors.append("Docker Compose check timed out")
 
         return len(errors) == 0, errors
 

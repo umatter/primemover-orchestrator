@@ -82,20 +82,50 @@ sudo apt install -y \
     git \
     curl \
     wget \
+    ca-certificates \
     python3 \
     python3-pip \
     python3-venv \
     openjdk-17-jdk \
-    maven \
-    docker.io \
-    docker-compose
+    maven
 
 print_success "Core prerequisites installed"
+
+# =============================================================================
+# Step 2b: Install Docker with Compose Plugin (v2)
+# =============================================================================
+print_step "Installing Docker with Compose plugin..."
+
+# Check if docker is already installed with compose plugin
+if docker compose version &> /dev/null; then
+    print_success "Docker Compose v2 already installed: $(docker compose version --short)"
+else
+    # Add Docker's official GPG key and repository
+    sudo install -m 0755 -d /etc/apt/keyrings
+    sudo curl -fsSL https://download.docker.com/linux/ubuntu/gpg -o /etc/apt/keyrings/docker.asc
+    sudo chmod a+r /etc/apt/keyrings/docker.asc
+
+    # Add the repository
+    CODENAME=$(lsb_release -cs)
+    echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/ubuntu $CODENAME stable" | \
+        sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
+
+    sudo apt update
+    sudo apt install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+
+    print_success "Docker with Compose plugin installed: $(docker compose version --short 2>/dev/null || echo 'installed')"
+fi
 
 # Add user to docker group
 print_step "Adding user to docker group..."
 sudo usermod -aG docker $USER
 print_success "User added to docker group (will take effect after re-login)"
+
+# Start Docker service
+print_step "Starting Docker service..."
+sudo systemctl start docker
+sudo systemctl enable docker
+print_success "Docker service started and enabled"
 
 # =============================================================================
 # Step 3: Node.js (OPTIONAL - GUI now builds with Docker)
