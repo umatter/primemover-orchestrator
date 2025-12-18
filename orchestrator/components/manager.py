@@ -175,6 +175,10 @@ class ComponentManager:
         Returns:
             SystemStatus with results
         """
+        # Pre-create directories that Docker would otherwise create as root
+        # This prevents permission issues when mounting volumes
+        self._ensure_mount_directories()
+
         results = {}
 
         # Start in order: monitoring -> API -> runner
@@ -559,6 +563,31 @@ class ComponentManager:
                 self.console.print(f"  Prometheus: {urls['prometheus']}")
             if urls.get("loki"):
                 self.console.print(f"  Loki:      {urls['loki']}")
+
+    def _ensure_mount_directories(self) -> None:
+        """
+        Pre-create directories that Docker would mount as volumes.
+
+        When Docker mounts a host directory that doesn't exist, it creates
+        it as root:root, which causes permission issues. This method creates
+        the directories with proper ownership before Docker starts.
+        """
+        directories_to_create = []
+
+        # Runner log directory (mounted by promtail in monitoring stack)
+        if self._runner:
+            runner_log_dir = self._runner.log_path
+            if runner_log_dir:
+                directories_to_create.append(runner_log_dir)
+
+        for dir_path in directories_to_create:
+            if not dir_path.exists():
+                try:
+                    dir_path.mkdir(parents=True, exist_ok=True)
+                except PermissionError:
+                    # Directory might already exist with wrong permissions
+                    # Let Docker handle it (will fail with clear error)
+                    pass
 
     def _build_system_status(self, results: dict) -> SystemStatus:
         """Build SystemStatus from component results."""
