@@ -71,11 +71,20 @@ VENV_PIP := $(VENV_BIN)/pip
 ORCHESTRATOR := $(VENV_BIN)/orchestrator
 
 # Detect if we're in a venv already
+# IMPORTANT: Only use activated venv if it's THIS project's venv
 ifdef VIRTUAL_ENV
-    PYTHON := python
-    VENV_PYTHON := python
-    VENV_PIP := pip
-    ORCHESTRATOR := orchestrator
+    # Check if VIRTUAL_ENV points to our local venv
+    ifeq ($(realpath $(VIRTUAL_ENV)),$(realpath $(CURDIR)/$(VENV)))
+        PYTHON := python
+        VENV_PYTHON := python
+        VENV_PIP := pip
+        ORCHESTRATOR := orchestrator
+    else
+        # VIRTUAL_ENV points elsewhere - ignore it and use local venv
+        # This prevents "externally-managed-environment" errors
+        $(info NOTE: Ignoring VIRTUAL_ENV=$(VIRTUAL_ENV) - using local ./$(VENV) instead)
+        $(info      Run 'deactivate' first, or this is fine to ignore.)
+    endif
 endif
 
 # =============================================================================

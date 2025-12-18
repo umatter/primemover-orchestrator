@@ -486,8 +486,16 @@ def setup(
                         console.print(f"  [red]✗[/red] Build failed")
                         console.print(f"    [dim]Run manually: cd {gui_path} && npm run build[/dim]")
                 else:
-                    console.print(f"  [yellow]⚠[/yellow] Neither Docker nor npm available, skipping GUI build")
-                    console.print(f"    [dim]Install Docker or Node.js to build the GUI[/dim]")
+                    # Provide more accurate message about why GUI can't be built
+                    if not gui_dockerfile.exists() and not has_npm:
+                        console.print(f"  [yellow]⚠[/yellow] GUI has no Dockerfile and npm not available, skipping build")
+                        console.print(f"    [dim]Install Node.js/npm to build the GUI, or add a Dockerfile[/dim]")
+                    elif not gui_dockerfile.exists():
+                        console.print(f"  [yellow]⚠[/yellow] GUI has no Dockerfile, npm build would be needed")
+                        console.print(f"    [dim]Add a Dockerfile to the GUI repo for Docker-based builds[/dim]")
+                    else:
+                        console.print(f"  [yellow]⚠[/yellow] Docker or npm required for GUI build")
+                        console.print(f"    [dim]Install Docker or Node.js to build the GUI[/dim]")
     else:
         console.print("\n[bold]Step 3b: Building GUI[/bold] [dim](skipped)[/dim]\n")
 
@@ -509,8 +517,16 @@ def setup(
     if api_env.exists():
         console.print(f"  [green]✓[/green] API: .env configured")
     else:
+        # Prefer .env.docker (Docker-ready) over .env.example
+        api_env_docker = repos["api"]["path"] / ".env.docker"
         api_env_example = repos["api"]["path"] / ".env.example"
-        if api_env_example.exists():
+
+        if api_env_docker.exists():
+            # Use .env.docker - already has all Docker-specific settings
+            import shutil
+            shutil.copy(api_env_docker, api_env)
+            console.print(f"  [green]✓[/green] API: .env created from .env.docker")
+        elif api_env_example.exists():
             console.print(f"  [yellow]⚠[/yellow] API: .env missing (will be created from .env.example)")
             # Copy .env.example to .env and configure for Docker
             content = api_env_example.read_text()
@@ -521,6 +537,7 @@ def setup(
 
             # Add Docker-specific variables if not present
             docker_vars = {
+                "COMPOSE_PROJECT_NAME": "primemover",  # Consistent container naming
                 "DOCUMENT_ROOT": ".",
                 "PHP_INI": "./docker/php/php.ini",
                 "HOST_MACHINE_UNSECURE_HOST_PORT": "8090",  # Runner uses 8080
@@ -537,7 +554,7 @@ def setup(
             api_env.write_text(content)
             console.print(f"  [green]✓[/green] API: .env created from template (configured for Docker)")
         else:
-            console.print(f"  [red]✗[/red] API: .env and .env.example not found")
+            console.print(f"  [red]✗[/red] API: .env, .env.docker, and .env.example not found")
 
     # Check if vendor exists (composer install done)
     api_vendor = repos["api"]["path"] / "vendor"
@@ -688,6 +705,31 @@ def setup(
 
                 console.print("\n[green]API initialization complete![/green]")
                 console.print("[dim]Default login: admin@primemover.example / password[/dim]")
+
+                # Step 7: Verify API is working
+                console.print("\n[bold]Step 7: Verifying API[/bold]\n")
+                console.print("  [cyan]⋯[/cyan] Testing API authentication...")
+
+                import httpx
+                import time
+
+                # Give API a moment to stabilize after initialization
+                time.sleep(2)
+
+                try:
+                    response = httpx.post(
+                        "http://localhost:8090/api/v1/login",
+                        json={"email": "admin@primemover.example", "password": "password"},
+                        timeout=10.0,
+                    )
+                    if response.status_code == 200 and "access_token" in response.text:
+                        console.print("  [green]✓[/green] API authentication working")
+                    else:
+                        console.print(f"  [yellow]⚠[/yellow] API responded but auth may have issues: {response.status_code}")
+                except Exception as e:
+                    console.print(f"  [yellow]⚠[/yellow] Could not verify API: {e}")
+                    console.print("    [dim]The API may still be starting up. Try: curl -X POST http://localhost:8090/api/v1/login -H 'Content-Type: application/json' -d '{\"email\":\"admin@primemover.example\",\"password\":\"password\"}'[/dim]")
+
     elif skip_start:
         console.print("\n[bold]Step 5: Starting components[/bold] [dim](skipped)[/dim]\n")
 

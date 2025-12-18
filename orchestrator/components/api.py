@@ -165,7 +165,11 @@ class ApiComponent(BaseComponent):
                 url=f"http://localhost:{self.http_port}",
             )
 
-        # Start docker-compose
+        # Clean up any old containers that might hold ports
+        # This handles cases where container names changed (e.g., primemover_api-* -> primemover-*)
+        self._cleanup_old_containers()
+
+        # Start docker compose
         result = self._run_compose(["up", "-d", "--build"])
 
         if result.returncode != 0:
@@ -347,6 +351,46 @@ class ApiComponent(BaseComponent):
         )
         return result.returncode == 0, result.stdout + result.stderr
 
+    def _cleanup_old_containers(self) -> None:
+        """
+        Clean up old API containers that might be holding ports.
+
+        This handles cases where container naming changed (e.g., from primemover_api-*
+        to primemover-* after setting COMPOSE_PROJECT_NAME), or where old containers
+        from a previous run are still present.
+        """
+        # Patterns of old container names that might conflict
+        old_patterns = [
+            "primemover_api-",  # Old naming before COMPOSE_PROJECT_NAME fix
+            "primemover-api-",  # Alternative pattern
+        ]
+
+        try:
+            # Get all containers
+            result = subprocess.run(
+                ["docker", "ps", "-a", "--format", "{{.Names}}"],
+                capture_output=True,
+                text=True,
+                timeout=HEALTH_CHECK_TIMEOUT,
+            )
+            if result.returncode == 0:
+                for line in result.stdout.strip().split("\n"):
+                    container_name = line.strip()
+                    if not container_name:
+                        continue
+                    # Check if this is an old API container
+                    for pattern in old_patterns:
+                        if container_name.startswith(pattern):
+                            # Stop and remove old container
+                            subprocess.run(
+                                ["docker", "rm", "-f", container_name],
+                                capture_output=True,
+                                timeout=HEALTH_CHECK_TIMEOUT,
+                            )
+                            break
+        except subprocess.TimeoutExpired:
+            pass  # Ignore timeout, best effort cleanup
+
     def get_network_name(self) -> Optional[str]:
         """
         Get the Docker network name for the API stack.
@@ -370,21 +414,40 @@ class ApiComponent(BaseComponent):
         containers = {}
         # Parse docker-compose ps output
         for service in self.SERVICES:
-            container_name = f"{self.CONTAINER_PREFIX}-{service}"
-            try:
-                inspect_result = subprocess.run(
-                    [
-                        "docker",
-                        "inspect",
-                        "--format",
-                        '{"running": {{.State.Running}}, "status": "{{.State.Status}}"}',
-                        container_name,
-                    ],
-                    capture_output=True,
-                    text=True,
-                    timeout=DOCKER_INSPECT_TIMEOUT,
-                )
-            except subprocess.TimeoutExpired:
+            # Try primary container name, then alternatives (e.g., php -> php8.1)
+            container_names = [f"{self.CONTAINER_PREFIX}-{service}"]
+            if service == "php":
+                # PHP container may be versioned (php8.1, php8.2, etc.)
+                container_names.extend([
+                    f"{self.CONTAINER_PREFIX}-php8.1",
+                    f"{self.CONTAINER_PREFIX}-php8.2",
+                    f"{self.CONTAINER_PREFIX}-php8.3",
+                ])
+
+            inspect_result = None
+            container_name = container_names[0]
+
+            for name in container_names:
+                try:
+                    inspect_result = subprocess.run(
+                        [
+                            "docker",
+                            "inspect",
+                            "--format",
+                            '{"running": {{.State.Running}}, "status": "{{.State.Status}}"}',
+                            name,
+                        ],
+                        capture_output=True,
+                        text=True,
+                        timeout=DOCKER_INSPECT_TIMEOUT,
+                    )
+                    if inspect_result.returncode == 0:
+                        container_name = name
+                        break
+                except subprocess.TimeoutExpired:
+                    continue
+
+            if inspect_result is None:
                 containers[service] = {"running": False, "status": "timeout"}
                 continue
             if inspect_result.returncode == 0:
