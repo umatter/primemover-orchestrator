@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import time
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 import httpx
@@ -150,10 +150,10 @@ class E2ETestRunner:
 
         # Check if all jobs completed successfully
         all_completed = all(
-            job.get("status") in ("completed", "done", "success")
+            job.get("status_code", job.get("status")) in ("completed", "done", "success")
             for job in jobs
         )
-        failed_jobs = [j for j in jobs if j.get("status") in ("failed", "error")]
+        failed_jobs = [j for j in jobs if j.get("status_code", j.get("status")) in ("failed", "error", "failure")]
 
         duration = time.time() - start_time
         result = E2EResult(
@@ -228,8 +228,12 @@ class E2ETestRunner:
         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         experiment_name = f"E2E Test - {timestamp}"
 
-        # Schedule start 30 seconds from now to give time for upload
-        start_time = datetime.now().strftime("%Y-%m-%dT%H:%M:%S.00Z")
+        # Schedule start time - the API runs in CET (+01:00) and incorrectly interprets
+        # the Z suffix as local time. So we need to send current UTC time + 1 hour,
+        # formatted with +01:00 offset, so the API stores the correct UTC time.
+        utc_now = datetime.now(timezone.utc)
+        api_time = utc_now + timedelta(hours=1)  # Add 1 hour to compensate for API timezone
+        start_time = api_time.strftime("%Y-%m-%dT%H:%M:%S.00+01:00")
 
         # Update the crawler data with dynamic values
         crawlers_data[0]["name"] = f"E2E Test Bot - {timestamp}"
@@ -374,11 +378,11 @@ class E2ETestRunner:
 
                 # Get queue status
                 queue = client.get_queue(queue_id)
-                queue_status = queue.get("status", "unknown")
+                queue_status = queue.get("status_code", queue.get("status", "unknown"))
                 jobs = queue.get("jobs", [])
 
                 # Update status display
-                completed_jobs = sum(1 for j in jobs if j.get("status") in ("completed", "done", "success"))
+                completed_jobs = sum(1 for j in jobs if j.get("status_code", j.get("status")) in ("completed", "done", "success"))
                 last_status = queue_status
 
                 if self.verbose:
@@ -386,12 +390,12 @@ class E2ETestRunner:
                     self.reporter.print_progress(completed_jobs, len(jobs), queue_status)
 
                 # Check if queue is finished
-                if queue_status in ("completed", "done", "finished"):
+                if queue_status in ("completed", "done", "finished", "success"):
                     self.reporter.clear_line()
                     # Print individual job results
                     for job in jobs:
                         job_type = job.get("type", job.get("job_type", "unknown"))
-                        status = job.get("status", "unknown")
+                        status = job.get("status_code", job.get("status", "unknown"))
                         duration = job.get("duration", 0) or 0
 
                         if status in ("completed", "done", "success"):
@@ -403,7 +407,7 @@ class E2ETestRunner:
                     return jobs
 
                 # Check if queue failed
-                if queue_status in ("failed", "error"):
+                if queue_status in ("failed", "error", "failure"):
                     self.reporter.clear_line()
                     error_msg = queue.get("error", queue.get("message", "Queue failed"))
                     raise RuntimeError(f"Queue failed: {error_msg}")

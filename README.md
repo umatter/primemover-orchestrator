@@ -949,12 +949,12 @@ If you see "Failed to open URI" error, the desktop app isn't properly installed.
 
 ### Step 5: Configure Multilogin Credentials
 
-The `orchestrator setup` command automatically configures the runner to connect to the local API. You only need to update your Multilogin credentials:
+The `orchestrator setup` command automatically configures the runner to connect to the local API (localhost:8090) with 1-minute polling. You only need to update your Multilogin credentials:
 
 1. Edit runner configuration:
    ```bash
    cd ~/primemover_runner/primemover-runner/config
-   nano application-local.properties
+   nano application.properties
    ```
 
 2. Update Multilogin credentials (use your Multilogin account):
@@ -965,7 +965,7 @@ The `orchestrator setup` command automatically configures the runner to connect 
    multilogin.defaultFolderId=<your-folder-id>  # Get from Multilogin app
    ```
 
-   > **Note**: The backend API settings (`backend.endpoint.api`, `backend.username`, etc.) are automatically configured by `orchestrator setup` to point to `localhost:8090`.
+   > **Note**: The backend API settings (`backend.endpoint.api`, `backend.username`, etc.) are automatically configured by `orchestrator setup` to point to `localhost:8090` with local credentials.
 
 3. Restart the runner:
    ```bash
@@ -1023,6 +1023,14 @@ ls -la $(orchestrator config show --json | jq -r .paths.api)/storage/logs
 orchestrator config validate  # Shows port status
 lsof -i :8090                # Check what's using port
 ```
+
+### API logs not appearing in Loki
+The PrimeMover API (Laravel) logs timestamps in CET (Europe/Zurich timezone), while Loki runs in UTC. If API logs are rejected with "timestamp too new" errors:
+```bash
+# Check Promtail logs for errors
+docker logs pm-orchestrator-promtail 2>&1 | grep "timestamp too new"
+```
+The Promtail configuration includes timezone handling (`location: "Europe/Zurich"`) to convert API timestamps to UTC. If you see timezone-related issues, verify the promtail config at `infrastructure/promtail/promtail-config.yaml`.
 
 ## License
 

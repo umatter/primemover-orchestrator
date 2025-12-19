@@ -2,7 +2,7 @@
   "name": "E2E Test Bot",
   "description": "Automated end-to-end verification test",
   "active": 1,
-  "testing": 1,
+  "testing": 0,
   "configuration": {
     "name": "E2E Test Configuration",
     "description": "Minimal config for e2e testing",
@@ -69,7 +69,7 @@
           "timezone_masking": "mask",
           "webrtc_masking": "mask",
           "canvas_noise": "mask",
-          "startup_behavior": "custom"
+          "startup_behavior": "recover"
         },
         "storage": {
           "is_local": false,

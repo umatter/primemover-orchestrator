@@ -412,6 +412,11 @@ See `docs/experiment-designer.md` for full documentation.
 - Check API is running and accessible
 - Ensure credentials match those configured in the API's database
 
+**API logs not appearing in Loki**
+- The API logs in CET timezone, Loki runs in UTC
+- Promtail config includes `location: "Europe/Zurich"` to handle this
+- Check for errors: `docker logs pm-orchestrator-promtail 2>&1 | grep "timestamp too new"`
+
 ## CLI Entry Points
 
 Two CLI tools are installed via `pip install -e .`:

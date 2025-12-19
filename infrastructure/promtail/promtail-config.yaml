@@ -33,6 +33,7 @@ scrape_configs:
       - timestamp:
           source: timestamp
           format: "2006-01-02 15:04:05"
+          location: "Europe/Zurich"  # API logs are in CET timezone
       # Extract correlation IDs from JSON context if present
       - json:
           source: context

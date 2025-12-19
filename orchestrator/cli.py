@@ -588,50 +588,50 @@ def setup(
     # Check and configure runner config for local development
     runner_config_dir = repos["runner"]["path"] / "primemover-runner" / "config"
     runner_config = runner_config_dir / "application.properties"
-    runner_local_config = runner_config_dir / "application-local.properties"
 
     if runner_config.exists():
-        console.print(f"  [green]✓[/green] Runner config: application.properties")
+        content = runner_config.read_text()
 
-        # Configure application-local.properties for local API
-        if runner_local_config.exists():
-            content = runner_local_config.read_text()
-
-            # Check if already configured for local
-            if "localhost:8090" in content:
-                console.print(f"  [green]✓[/green] Runner config: configured for local API")
-            else:
-                # Update to point to local API
-                import re
-
-                # Update backend endpoints
-                content = re.sub(
-                    r"backend\.endpoint\.api=.*",
-                    "backend.endpoint.api=http://localhost:8090/api/v1/",
-                    content,
-                )
-                content = re.sub(
-                    r"backend\.endpoint\.runner=.*",
-                    "backend.endpoint.runner=http://localhost:8090/api/v1/runner/",
-                    content,
-                )
-
-                # Update backend credentials to match local API
-                content = re.sub(
-                    r"backend\.username=.*",
-                    "backend.username=admin@primemover.example",
-                    content,
-                )
-                content = re.sub(
-                    r"backend\.password=.*",
-                    "backend.password=password",
-                    content,
-                )
-
-                runner_local_config.write_text(content)
-                console.print(f"  [green]✓[/green] Runner config: updated for local API (localhost:8090)")
+        # Check if already configured for local API
+        if "backend.endpoint.api=http://localhost:8090" in content:
+            console.print(f"  [green]✓[/green] Runner config: configured for local API")
         else:
-            console.print(f"  [yellow]⚠[/yellow] Runner config: application-local.properties not found")
+            # Update to point to local API
+            import re
+
+            # Update backend endpoints
+            content = re.sub(
+                r"backend\.endpoint\.api=.*",
+                "backend.endpoint.api=http://localhost:8090/api/v1/",
+                content,
+            )
+            content = re.sub(
+                r"backend\.endpoint\.runner=.*",
+                "backend.endpoint.runner=http://localhost:8090/api/v1/runner/",
+                content,
+            )
+
+            # Update backend credentials to match local API
+            content = re.sub(
+                r"backend\.username=.*",
+                "backend.username=admin@primemover.example",
+                content,
+            )
+            content = re.sub(
+                r"backend\.password=.*",
+                "backend.password=password",
+                content,
+            )
+
+            # Set faster polling interval for local development (1 minute instead of 10 minutes)
+            content = re.sub(
+                r"runner\.UpdateInterval=.*",
+                "runner.UpdateInterval=1",
+                content,
+            )
+
+            runner_config.write_text(content)
+            console.print(f"  [green]✓[/green] Runner config: updated for local API (localhost:8090, 1min polling)")
     else:
         console.print(f"  [red]✗[/red] Runner config: application.properties not found")
         all_ok = False
