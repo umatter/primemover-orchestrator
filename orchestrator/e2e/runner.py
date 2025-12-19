@@ -40,6 +40,7 @@ class E2EResult:
 
 
 # Minimal test experiment spec template
+# Note: No multilogin_profile_id specified - the runner will create a new profile automatically
 TEST_SPEC_TEMPLATE = """
 version: "1.0"
 
@@ -57,7 +58,6 @@ crawlers:
     agent:
       name: "E2E Test Agent"
       identification: mlx
-      multilogin_profile_id: "{profile_id}"
 
     session:
       name: "E2E Test Session"
@@ -78,13 +78,12 @@ class E2ETestRunner:
     The test:
     1. Validates all components are running
     2. Uploads a minimal test experiment
-    3. Waits for the runner to execute jobs
+    3. Waits for the runner to execute jobs (runner creates Multilogin profile automatically)
     4. Reports results
     """
 
     def __init__(
         self,
-        profile_id: str,
         timeout: int = 180,
         verbose: bool = False,
     ):
@@ -92,11 +91,9 @@ class E2ETestRunner:
         Initialize e2e test runner.
 
         Args:
-            profile_id: Multilogin X profile ID
             timeout: Maximum wait time in seconds for job completion
             verbose: Show detailed output
         """
-        self.profile_id = profile_id
         self.timeout = timeout
         self.verbose = verbose
         self.settings = get_settings()
@@ -245,12 +242,6 @@ class E2ETestRunner:
         except Exception as e:
             checks["Monitoring (Grafana)"] = {"ok": False, "message": str(e)}
 
-        # Check profile ID provided
-        checks["Multilogin Profile"] = {
-            "ok": bool(self.profile_id),
-            "message": self.profile_id[:20] + "..." if len(self.profile_id) > 20 else self.profile_id,
-        }
-
         # All checks must pass
         all_ok = all(c["ok"] for c in checks.values())
         return ValidationResult(ok=all_ok, checks=checks)
@@ -275,7 +266,6 @@ class E2ETestRunner:
         # Generate spec from template
         spec_content = TEST_SPEC_TEMPLATE.format(
             experiment_name=experiment_name,
-            profile_id=self.profile_id,
             start_time=start_time,
         )
 

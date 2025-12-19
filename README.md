@@ -414,23 +414,20 @@ These tests do NOT require Multilogin X - they only test infrastructure.
 After setting up Multilogin X, run a complete end-to-end test that includes actual browser automation:
 
 ```bash
-# Full e2e test (requires Multilogin X profile ID)
-orchestrator e2e --profile-id <multilogin-profile-id>
+# Full e2e test (Multilogin X must be running and logged in)
+orchestrator e2e
 
 # With longer timeout and verbose output
-orchestrator e2e --profile-id <profile-id> --timeout 300 -v
+orchestrator e2e --timeout 300 -v
 ```
 
 This test:
-1. Validates all components are running
+1. Validates all components are running (API, monitoring)
 2. Uploads a minimal test experiment (visits example.com and google.com)
-3. Waits for the runner to execute with Multilogin browser
+3. Runner automatically creates a Multilogin profile and executes jobs
 4. Reports success/failure with timing
 
-**To get your Multilogin profile ID:**
-1. Open Multilogin X (`mlxapp`)
-2. Create or select a browser profile
-3. Copy the profile ID (UUID shown in profile details)
+**Prerequisites:** Multilogin X must be running and logged in. The runner will create a new browser profile automatically.
 
 ## Experiment Designer (YAML DSL)
 

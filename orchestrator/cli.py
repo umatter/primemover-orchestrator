@@ -3651,11 +3651,6 @@ def test(ctx: click.Context, verbose: bool, quick: bool, test_filter: str) -> No
 
 @cli.command()
 @click.option(
-    "--profile-id",
-    required=True,
-    help="Multilogin X profile ID (UUID from Multilogin X)",
-)
-@click.option(
     "--timeout",
     default=180,
     type=int,
@@ -3663,7 +3658,7 @@ def test(ctx: click.Context, verbose: bool, quick: bool, test_filter: str) -> No
 )
 @click.option("-v", "--verbose", is_flag=True, help="Show detailed output")
 @click.pass_context
-def e2e(ctx: click.Context, profile_id: str, timeout: int, verbose: bool) -> None:
+def e2e(ctx: click.Context, timeout: int, verbose: bool) -> None:
     """
     Run a complete end-to-end test with browser automation.
 
@@ -3672,32 +3667,24 @@ def e2e(ctx: click.Context, profile_id: str, timeout: int, verbose: bool) -> Non
     \b
     - API and database connectivity
     - Experiment upload and scheduling
-    - Runner execution with Multilogin X
+    - Runner creating a Multilogin profile and executing jobs
     - Job completion and reporting
 
     \b
     Prerequisites:
     - All components running (orchestrator up)
-    - Multilogin X installed and logged in
-    - A valid Multilogin X profile created
-
-    \b
-    Get your profile ID:
-    1. Open Multilogin X
-    2. Create or select a profile
-    3. Copy the profile ID (UUID)
+    - Multilogin X installed and logged in (runner will create profile automatically)
 
     \b
     Examples:
-        orchestrator e2e --profile-id abc123-def456-...
-        orchestrator e2e --profile-id abc123 --timeout 300 -v
+        orchestrator e2e              # Run full e2e test
+        orchestrator e2e --timeout 300 -v  # Longer timeout, verbose
     """
     import sys
 
     from orchestrator.e2e import E2ETestRunner
 
     runner = E2ETestRunner(
-        profile_id=profile_id,
         timeout=timeout,
         verbose=verbose,
     )
