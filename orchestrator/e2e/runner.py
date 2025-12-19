@@ -196,31 +196,19 @@ class E2ETestRunner:
         """Validate that all components are running."""
         checks: dict[str, dict[str, Any]] = {}
 
-        # Check API
-        try:
-            api_url = self.settings.pm_api_base_url.replace("/api/v1", "")
-            response = httpx.get(f"{api_url}/health", timeout=5.0)
-            if response.status_code == 404:
-                # Try root
-                response = httpx.get(api_url, timeout=5.0)
-            checks["API"] = {
-                "ok": response.status_code in (200, 302),
-                "message": f"localhost:{self.settings.pm_api_http_port}",
-            }
-        except Exception as e:
-            checks["API"] = {"ok": False, "message": str(e)}
-
-        # Check API authentication
+        # Check API (via authentication - if auth works, API is reachable)
         try:
             client = APIClient()
             auth_ok = client.is_authenticated()
             client.close()
-            checks["API Auth"] = {
+            checks["API"] = {
                 "ok": auth_ok,
-                "message": "Credentials valid" if auth_ok else "Auth failed",
+                "message": f"localhost:{self.settings.pm_api_http_port}" if auth_ok else "Auth failed",
             }
+        except httpx.ConnectError:
+            checks["API"] = {"ok": False, "message": "Connection refused"}
         except Exception as e:
-            checks["API Auth"] = {"ok": False, "message": str(e)}
+            checks["API"] = {"ok": False, "message": str(e)}
 
         # Check Loki (monitoring)
         try:
