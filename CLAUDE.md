@@ -162,6 +162,10 @@ orchestrator/
 ├── debug/
 │   ├── har_parser.py         # HAR file selective parsing
 │   └── job_debugger.py       # Multi-source job diagnostics
+├── e2e/
+│   ├── runner.py             # End-to-end test runner
+│   ├── reporter.py           # Test result formatting
+│   └── test_experiment.json  # Test experiment template
 └── mcp_server/
     └── server.py             # FastMCP server for Claude
 

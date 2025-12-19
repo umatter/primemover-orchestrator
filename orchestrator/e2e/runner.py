@@ -324,15 +324,17 @@ class E2ETestRunner:
 
             crawler_id = crawlers[0].get("id")
 
-            # Get queue from crawler
-            crawler_details = client.get_crawler(crawler_id)
-            queues = crawler_details.get("queues", [])
-            if not queues:
-                raise ValueError(f"No queues created. Crawler details: {crawler_details}")
+            # Get queue ID by querying /queues-unprocessed and filtering by crawler_id
+            # (The /crawlers/{id} endpoint doesn't include queues in its response)
+            unprocessed_queues = client.list_queues_by_status("unprocessed")
+            crawler_queues = [q for q in unprocessed_queues if q.get("crawler_id") == crawler_id]
 
-            queue_id = queues[0].get("id")
+            if not crawler_queues:
+                raise ValueError(f"No unprocessed queues found for crawler {crawler_id}")
 
-            # Get job count
+            queue_id = crawler_queues[0].get("id")
+
+            # Get job count from API
             queue_details = client.get_queue(queue_id)
             jobs = queue_details.get("jobs", [])
             job_count = len(jobs)
