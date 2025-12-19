@@ -283,6 +283,10 @@ class E2ETestRunner:
             json.dump(crawlers_data, f)
             temp_json_path = f.name
 
+        if self.verbose:
+            print(f"  [DEBUG] Temp JSON file: {temp_json_path}")
+            print(f"  [DEBUG] Crawlers data queues: {json.dumps(crawlers_data[0].get('queues', [])[:1], indent=2)[:300]}")
+
         try:
             # Upload crawlers using curl -F (exactly like the working script)
             upload_result = subprocess.run(
@@ -295,7 +299,13 @@ class E2ETestRunner:
                 capture_output=True,
                 text=True,
             )
-            upload_response = json.loads(upload_result.stdout)
+
+            if self.verbose:
+                print(f"  [DEBUG] Upload stdout: {upload_result.stdout[:500]}")
+                if upload_result.stderr:
+                    print(f"  [DEBUG] Upload stderr: {upload_result.stderr}")
+
+            upload_response = json.loads(upload_result.stdout) if upload_result.stdout else {}
 
             if "error" in upload_response:
                 raise ValueError(f"Upload failed: {upload_response}")
