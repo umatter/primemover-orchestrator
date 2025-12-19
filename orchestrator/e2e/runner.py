@@ -39,36 +39,11 @@ class E2EResult:
     jobs: list[dict[str, Any]] = field(default_factory=list)
 
 
-# Minimal test experiment spec template
-# Note: No multilogin_profile_id specified - the runner will create a new profile automatically
-TEST_SPEC_TEMPLATE = """
-version: "1.0"
+import json
+from pathlib import Path
 
-experiment:
-  name: "{experiment_name}"
-  description: "Automated end-to-end verification test"
-
-defaults:
-  browser: mlx
-  timezone: America/Chicago
-
-crawlers:
-  - name: "e2e_test_bot"
-
-    agent:
-      name: "E2E Test Agent"
-      identification: mlx
-
-    session:
-      name: "E2E Test Session"
-      start: "{start_time}"
-
-      workflow:
-        - visit: https://example.com
-        - wait: 3s
-        - visit: https://www.google.com
-        - wait: 3s
-"""
+# Path to the test experiment JSON template
+TEST_EXPERIMENT_JSON = Path(__file__).parent / "test_experiment.json"
 
 
 class E2ETestRunner:
@@ -238,37 +213,25 @@ class E2ETestRunner:
         """
         Upload test experiment to API.
 
+        Uses a predefined JSON template that matches the known-working API format.
+
         Returns:
             Tuple of (experiment_id, crawler_id, queue_id, job_count, experiment_name, scheduled_time)
         """
-        from experiment_designer.spec.parser import SpecParser
-        from experiment_designer.spec.converter import SpecConverter
+        # Load the test experiment JSON template
+        with open(TEST_EXPERIMENT_JSON) as f:
+            crawlers_data = json.load(f)
 
         # Generate experiment name with timestamp
         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         experiment_name = f"E2E Test - {timestamp}"
 
         # Schedule start 30 seconds from now to give time for upload
-        start_time = (datetime.now() + timedelta(seconds=30)).strftime("%Y-%m-%d %H:%M:%S")
+        start_time = (datetime.now() + timedelta(seconds=30)).strftime("%Y-%m-%dT%H:%M:%S.00Z")
 
-        # Generate spec from template
-        spec_content = TEST_SPEC_TEMPLATE.format(
-            experiment_name=experiment_name,
-            start_time=start_time,
-        )
-
-        # Parse and convert spec
-        parser = SpecParser()
-        parsed = parser.parse(spec_content)
-
-        if parsed.errors:
-            raise ValueError(f"Spec validation failed: {parsed.errors}")
-
-        converter = SpecConverter()
-        result = converter.convert(parsed)
-
-        if result.errors:
-            raise ValueError(f"Spec conversion failed: {result.errors}")
+        # Update the crawler data with dynamic values
+        crawlers_data[0]["name"] = f"E2E Test Bot - {timestamp}"
+        crawlers_data[0]["queues"][0]["start_at"] = start_time
 
         # Upload to API
         client = APIClient()
@@ -285,8 +248,8 @@ class E2ETestRunner:
             if not experiment_id:
                 raise ValueError(f"Failed to create experiment: no ID returned. Response: {exp_result}")
 
-            # Upload crawlers
-            upload_result = client.upload_crawlers(experiment_id, result.json_data)
+            # Upload crawlers using the JSON data directly
+            upload_result = client.upload_crawlers(experiment_id, crawlers_data)
 
             # Get crawler and queue IDs from the uploaded data
             # Fetch experiment to get crawler IDs
