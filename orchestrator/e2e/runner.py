@@ -40,6 +40,8 @@ class E2EResult:
 
 
 import json
+import subprocess
+import tempfile
 from pathlib import Path
 
 # Path to the test experiment JSON template
@@ -213,7 +215,7 @@ class E2ETestRunner:
         """
         Upload test experiment to API.
 
-        Uses a predefined JSON template that matches the known-working API format.
+        Uses curl to match the exact upload format that works with the API.
 
         Returns:
             Tuple of (experiment_id, crawler_id, queue_id, job_count, experiment_name, scheduled_time)
@@ -227,37 +229,88 @@ class E2ETestRunner:
         experiment_name = f"E2E Test - {timestamp}"
 
         # Schedule start 30 seconds from now to give time for upload
-        start_time = (datetime.now() + timedelta(seconds=30)).strftime("%Y-%m-%dT%H:%M:%S.00Z")
+        start_time = datetime.now().strftime("%Y-%m-%dT%H:%M:%S.00Z")
 
         # Update the crawler data with dynamic values
         crawlers_data[0]["name"] = f"E2E Test Bot - {timestamp}"
         crawlers_data[0]["queues"][0]["start_at"] = start_time
 
-        # Upload to API
+        # Get auth token using curl (matching the working script exactly)
+        api_base = self.settings.pm_api_base_url.rstrip("/")
+        email = self.settings.pm_api_email
+        password = self.settings.pm_api_password
+
+        # Authenticate
+        auth_result = subprocess.run(
+            [
+                "curl", "-s", "-X", "POST", f"{api_base}/login",
+                "-H", "Content-Type: application/json",
+                "-H", "Accept: application/json",
+                "-d", json.dumps({"email": email, "password": password}),
+            ],
+            capture_output=True,
+            text=True,
+        )
+        auth_response = json.loads(auth_result.stdout)
+        token = auth_response.get("access_token")
+        if not token:
+            raise ValueError(f"Authentication failed: {auth_response}")
+
+        # Create experiment
+        create_result = subprocess.run(
+            [
+                "curl", "-s", "-X", "POST", f"{api_base}/experiments",
+                "-H", f"Authorization: Bearer {token}",
+                "-H", "Content-Type: application/json",
+                "-H", "Accept: application/json",
+                "-d", json.dumps({
+                    "name": experiment_name,
+                    "description": "Automated end-to-end verification test",
+                    "contact": "Orchestrator E2E Test",
+                    "active": 1,
+                }),
+            ],
+            capture_output=True,
+            text=True,
+        )
+        create_response = json.loads(create_result.stdout)
+        experiment_id = create_response.get("data", {}).get("id") or create_response.get("id")
+        if not experiment_id:
+            raise ValueError(f"Failed to create experiment: {create_response}")
+
+        # Write crawlers JSON to temp file
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
+            json.dump(crawlers_data, f)
+            temp_json_path = f.name
+
+        try:
+            # Upload crawlers using curl -F (exactly like the working script)
+            upload_result = subprocess.run(
+                [
+                    "curl", "-s", "-X", "POST", f"{api_base}/experiments/{experiment_id}/upload",
+                    "-H", f"Authorization: Bearer {token}",
+                    "-H", "Accept: application/json",
+                    "-F", f"json=@{temp_json_path};type=application/json",
+                ],
+                capture_output=True,
+                text=True,
+            )
+            upload_response = json.loads(upload_result.stdout)
+
+            if "error" in upload_response:
+                raise ValueError(f"Upload failed: {upload_response}")
+
+        finally:
+            Path(temp_json_path).unlink(missing_ok=True)
+
+        # Fetch experiment to get crawler IDs
         client = APIClient()
         try:
-            # Create experiment
-            exp_result = client.create_experiment({
-                "name": experiment_name,
-                "description": "Automated end-to-end verification test",
-                "contact": "Orchestrator E2E Test",
-                "active": 1,
-            })
-
-            experiment_id = exp_result.get("id")
-            if not experiment_id:
-                raise ValueError(f"Failed to create experiment: no ID returned. Response: {exp_result}")
-
-            # Upload crawlers using the JSON data directly
-            upload_result = client.upload_crawlers(experiment_id, crawlers_data)
-
-            # Get crawler and queue IDs from the uploaded data
-            # Fetch experiment to get crawler IDs
             exp_details = client.get_experiment(experiment_id)
 
             crawlers = exp_details.get("crawlers", [])
             if not crawlers:
-                raise ValueError("No crawlers created")
+                raise ValueError(f"No crawlers created. Experiment details: {exp_details}")
 
             crawler_id = crawlers[0].get("id")
 
@@ -265,7 +318,7 @@ class E2ETestRunner:
             crawler_details = client.get_crawler(crawler_id)
             queues = crawler_details.get("queues", [])
             if not queues:
-                raise ValueError("No queues created")
+                raise ValueError(f"No queues created. Crawler details: {crawler_details}")
 
             queue_id = queues[0].get("id")
 
