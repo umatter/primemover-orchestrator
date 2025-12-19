@@ -72,6 +72,11 @@ orchestrator test -v                     # Verbose output
 orchestrator test --quick                # Quick health checks only
 orchestrator test -k "api"               # Filter by pattern
 
+# Full E2E Test (with Multilogin browser automation)
+orchestrator e2e --profile-id <uuid>     # Run full browser automation test
+orchestrator e2e --profile-id <uuid> -v  # Verbose output
+orchestrator e2e --profile-id <uuid> --timeout 300  # Custom timeout
+
 # Experiments
 orchestrator experiment validate spec.yaml
 orchestrator experiment preview spec.yaml

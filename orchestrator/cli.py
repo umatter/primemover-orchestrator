@@ -979,9 +979,9 @@ def down(ctx: click.Context, api: bool, runner: bool, monitoring: bool, volumes:
 
 
 @cli.command()
-@click.option("--api/--no-api", default=True, help="Restart API component")
-@click.option("--runner/--no-runner", default=True, help="Restart Runner component")
-@click.option("--monitoring/--no-monitoring", default=True, help="Restart Monitoring component")
+@click.option("--api", is_flag=True, help="Restart API component")
+@click.option("--runner", is_flag=True, help="Restart Runner component")
+@click.option("--monitoring", is_flag=True, help="Restart Monitoring component")
 @click.pass_context
 def restart(ctx: click.Context, api: bool, runner: bool, monitoring: bool) -> None:
     """
@@ -992,12 +992,13 @@ def restart(ctx: click.Context, api: bool, runner: bool, monitoring: bool) -> No
     Examples:
         orchestrator restart              # Restart all components
         orchestrator restart --runner     # Restart just the runner
+        orchestrator restart --api --runner  # Restart API and runner
     """
     settings = ctx.obj["settings"]
 
+    # If no specific components selected, restart all
     if not any([api, runner, monitoring]):
-        console.print("[yellow]No components selected. Use --api, --runner, or --monitoring.[/yellow]")
-        return
+        api = runner = monitoring = True
 
     console.print("[bold]Restarting PrimeMover components...[/bold]\n")
 
@@ -3641,6 +3642,68 @@ def test(ctx: click.Context, verbose: bool, quick: bool, test_filter: str) -> No
     except FileNotFoundError:
         console.print("[red]pytest not found. Install with: pip install pytest[/red]")
         raise SystemExit(1)
+
+
+# =============================================================================
+# E2E COMMAND (FULL SYSTEM TEST WITH MULTILOGIN)
+# =============================================================================
+
+
+@cli.command()
+@click.option(
+    "--profile-id",
+    required=True,
+    help="Multilogin X profile ID (UUID from Multilogin X)",
+)
+@click.option(
+    "--timeout",
+    default=180,
+    type=int,
+    help="Timeout in seconds for job completion (default: 180)",
+)
+@click.option("-v", "--verbose", is_flag=True, help="Show detailed output")
+@click.pass_context
+def e2e(ctx: click.Context, profile_id: str, timeout: int, verbose: bool) -> None:
+    """
+    Run a complete end-to-end test with browser automation.
+
+    This test verifies the entire PrimeMover system including:
+
+    \b
+    - API and database connectivity
+    - Experiment upload and scheduling
+    - Runner execution with Multilogin X
+    - Job completion and reporting
+
+    \b
+    Prerequisites:
+    - All components running (orchestrator up)
+    - Multilogin X installed and logged in
+    - A valid Multilogin X profile created
+
+    \b
+    Get your profile ID:
+    1. Open Multilogin X
+    2. Create or select a profile
+    3. Copy the profile ID (UUID)
+
+    \b
+    Examples:
+        orchestrator e2e --profile-id abc123-def456-...
+        orchestrator e2e --profile-id abc123 --timeout 300 -v
+    """
+    import sys
+
+    from orchestrator.e2e import E2ETestRunner
+
+    runner = E2ETestRunner(
+        profile_id=profile_id,
+        timeout=timeout,
+        verbose=verbose,
+    )
+
+    result = runner.run()
+    sys.exit(0 if result.success else 1)
 
 
 # =============================================================================
