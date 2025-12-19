@@ -81,10 +81,9 @@ nano .env  # Set PM_API_EMAIL, PM_API_PASSWORD, GRAFANA_ADMIN_PASSWORD
 | API Docs | `http://VM-IP:8090/api/documentation` | - |
 | Grafana | `http://VM-IP:3000` | admin / (set in .env: GRAFANA_ADMIN_PASSWORD) |
 
-**First-time Multilogin setup (connect via VNC):**
-1. VNC to your VM (port 5901, password set during install)
-2. Launch Multilogin X from the applications menu
-3. Log in with your Multilogin account credentials
+**First-time Multilogin X setup (connect via VNC):**
+
+See [Multilogin X Setup](#multilogin-x-setup) below for detailed instructions.
 
 **Daily operations:**
 ```bash
@@ -166,13 +165,10 @@ This script installs and configures everything via SSH:
 - Clones and runs `make setup` (builds and starts PrimeMover)
 
 After the script completes, PrimeMover is running. Connect via VNC only when you need to:
-- Log into Multilogin X (first-time setup)
+- Set up Multilogin X (first-time setup)
 - Visually monitor browser automation
 
-**Multilogin X First-Time Setup** (connect via VNC):
-1. Launch Multilogin X from the applications menu
-2. Log in with your Multilogin account credentials
-3. For API automation, generate an automation token in your account settings
+**Multilogin X First-Time Setup**: See [Multilogin X Setup](#multilogin-x-setup) for detailed step-by-step instructions.
 
 ### Verify Prerequisites
 
@@ -865,6 +861,122 @@ docker run --rm \
   -v $(pwd)/.env:/app/.env:ro \
   primemover-orchestrator config show
 ```
+
+## Multilogin X Setup
+
+Multilogin X is required for browser automation. The PrimeMover runner uses Multilogin to manage browser profiles with unique fingerprints.
+
+### Prerequisites
+
+- VNC access to your VM (see [Quick Start](#quick-start-new-vm-deployment))
+- A Multilogin X account ([multilogin.com](https://multilogin.com))
+
+### Step 1: Connect via VNC
+
+```bash
+# From your local machine - create SSH tunnel for VNC
+ssh -L 5901:localhost:5901 primemover@<vm-ip>
+
+# Then connect VNC Viewer to: localhost:5901
+# Password: set during server setup (vncpasswd)
+```
+
+### Step 2: Install Multilogin X Desktop App
+
+The web dashboard at `app.multilogin.com` requires the desktop app to launch browser profiles.
+
+**Option A: Download from web dashboard (recommended)**
+
+1. Open Firefox in the VNC desktop
+2. Go to https://app.multilogin.com
+3. Log in with your Multilogin account
+4. Click "Download App" and select **"Multilogin application"** (~60MB)
+5. For Ubuntu 24.04, select the Ubuntu 24.04 specific version: `desktop-multiloginx-ubuntu-24.04-amd64.deb`
+6. Install the downloaded .deb file:
+   ```bash
+   cd ~/Downloads
+   sudo dpkg -i desktop-multiloginx-ubuntu-24.04-amd64.deb
+   sudo apt-get install -f  # Fix any missing dependencies
+   ```
+
+**Option B: Command line installation**
+
+```bash
+# Download latest version (generic - may not work on Ubuntu 24.04)
+curl -L -f -o /tmp/mlx.deb "https://mlxdists.s3.eu-west-3.amazonaws.com/mlx/latest/multiloginx-amd64.deb"
+sudo dpkg -i /tmp/mlx.deb
+sudo apt-get install -f
+```
+
+### Step 3: Launch and Sign In
+
+1. Launch the desktop app:
+   ```bash
+   mlxapp
+   ```
+   Or find **"Multilogin X"** in the applications menu.
+
+2. Sign in with your Multilogin account credentials
+3. Complete 2FA if enabled
+
+### Step 4: Verify Browser Profiles Launch
+
+1. In the Multilogin X app, go to your profiles list
+2. Click **"Start"** on any existing profile (or create a new one)
+3. A browser window should open with the profile's fingerprint
+
+If you see "Failed to open URI" error, the desktop app isn't properly installed. Reinstall using Option A above.
+
+### Step 5: Configure Multilogin Credentials
+
+The `orchestrator setup` command automatically configures the runner to connect to the local API. You only need to update your Multilogin credentials:
+
+1. Edit runner configuration:
+   ```bash
+   cd ~/primemover_runner/primemover-runner/config
+   nano application-local.properties
+   ```
+
+2. Update Multilogin credentials (use your Multilogin account):
+   ```properties
+   # Multilogin authentication (your account email/password)
+   multilogin.apiUser=your-multilogin-email@example.com
+   multilogin.apiPassword=your-multilogin-password
+   multilogin.defaultFolderId=<your-folder-id>  # Get from Multilogin app
+   ```
+
+   > **Note**: The backend API settings (`backend.endpoint.api`, `backend.username`, etc.) are automatically configured by `orchestrator setup` to point to `localhost:8090`.
+
+3. Restart the runner:
+   ```bash
+   source ~/primemover-orchestrator/venv/bin/activate
+   orchestrator restart --runner
+   ```
+
+4. Verify runner is polling the API:
+   ```bash
+   tail -f ~/primemover_runner/primemover-runner/log/runner-stdout.log
+   ```
+
+### Troubleshooting Multilogin
+
+**"Failed to open URI" error when starting profiles:**
+- The desktop app (`mlxapp`) is not installed or not running
+- Solution: Install the desktop app (Step 2) and launch it (Step 3)
+
+**Browser doesn't launch:**
+- Check if Multilogin agent is running: `ps aux | grep mlx`
+- Try restarting: close Multilogin X app and relaunch with `mlxapp`
+
+**Profile launch fails with automation:**
+- Verify API credentials in `application-local.properties`
+- Check runner logs: `tail -f ~/primemover_runner/primemover-runner/log/runner-stdout.log`
+
+### References
+
+- [Multilogin X Documentation](https://multilogin.com/help/en_US/multilogin-x)
+- [How to connect the agent](https://multilogin.com/help/en_US/agent/how-to-connect-the-agent-in-multilogin)
+- [Desktop app installation guide](https://multilogin.com/help/en_US/desktop-app/install-and-set-up-multilogin-desktop-app)
 
 ## Troubleshooting
 

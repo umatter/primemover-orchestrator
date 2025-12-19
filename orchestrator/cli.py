@@ -585,10 +585,53 @@ def setup(
     else:
         console.print(f"  [yellow]⚠[/yellow] Runner: target/ directory not found")
 
-    # Check runner config
-    runner_config = repos["runner"]["path"] / "primemover-runner" / "config" / "application.properties"
+    # Check and configure runner config for local development
+    runner_config_dir = repos["runner"]["path"] / "primemover-runner" / "config"
+    runner_config = runner_config_dir / "application.properties"
+    runner_local_config = runner_config_dir / "application-local.properties"
+
     if runner_config.exists():
         console.print(f"  [green]✓[/green] Runner config: application.properties")
+
+        # Configure application-local.properties for local API
+        if runner_local_config.exists():
+            content = runner_local_config.read_text()
+
+            # Check if already configured for local
+            if "localhost:8090" in content:
+                console.print(f"  [green]✓[/green] Runner config: configured for local API")
+            else:
+                # Update to point to local API
+                import re
+
+                # Update backend endpoints
+                content = re.sub(
+                    r"backend\.endpoint\.api=.*",
+                    "backend.endpoint.api=http://localhost:8090/api/v1/",
+                    content,
+                )
+                content = re.sub(
+                    r"backend\.endpoint\.runner=.*",
+                    "backend.endpoint.runner=http://localhost:8090/api/v1/runner/",
+                    content,
+                )
+
+                # Update backend credentials to match local API
+                content = re.sub(
+                    r"backend\.username=.*",
+                    "backend.username=admin@primemover.example",
+                    content,
+                )
+                content = re.sub(
+                    r"backend\.password=.*",
+                    "backend.password=password",
+                    content,
+                )
+
+                runner_local_config.write_text(content)
+                console.print(f"  [green]✓[/green] Runner config: updated for local API (localhost:8090)")
+        else:
+            console.print(f"  [yellow]⚠[/yellow] Runner config: application-local.properties not found")
     else:
         console.print(f"  [red]✗[/red] Runner config: application.properties not found")
         all_ok = False
