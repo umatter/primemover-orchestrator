@@ -6,19 +6,15 @@
 
 | Service | URL | Credentials |
 |---------|-----|-------------|
-| **PrimeMover GUI** | http://77.42.78.108:8090/gui | `admin@primemover.example` / `password` |
 | **API Docs** | http://77.42.78.108:8090/api/documentation | - |
 | **Telescope** (API debugging) | http://77.42.78.108:8090/telescope | - |
 | **Grafana** (monitoring) | http://77.42.78.108:3000 | `admin` / `admin` |
 
+**API Credentials:** `admin@primemover.example` / `password`
+
 ## Uploading Experiments
 
-### Option 1: Use the GUI
-1. Go to http://77.42.78.108:8090/gui
-2. Login with `admin@primemover.example` / `password`
-3. Upload experiment JSON via the interface
-
-### Option 2: Use the upload script
+### Option 1: Use the upload script
 
 From your local machine, use the script in `primemover_api/examples/`:
 
@@ -34,7 +30,7 @@ export PM_API_PASSWORD="password"
 ./upload_experiment.sh your_experiment.json
 ```
 
-### Option 3: Direct API call
+### Option 2: Direct API calls
 
 ```bash
 # Get auth token
