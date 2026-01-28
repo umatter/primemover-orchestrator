@@ -13,6 +13,7 @@ from rich.table import Table
 
 from orchestrator.components.api import ApiComponent
 from orchestrator.components.base import BaseComponent, ComponentHealth, ComponentStatus
+from orchestrator.components.lambda_server import LambdaServerComponent
 from orchestrator.components.monitoring import MonitoringComponent
 from orchestrator.components.runner import RunnerComponent
 
@@ -24,11 +25,15 @@ class SystemStatus:
     api: ComponentHealth
     runner: ComponentHealth
     monitoring: ComponentHealth
+    lambda_server: Optional[ComponentHealth] = None
     overall: ComponentStatus = field(init=False)
 
     def __post_init__(self):
         """Calculate overall status based on component statuses."""
         statuses = [self.api.status, self.runner.status, self.monitoring.status]
+        # Lambda server is optional, only include if present
+        if self.lambda_server is not None:
+            statuses.append(self.lambda_server.status)
 
         if all(s == ComponentStatus.RUNNING for s in statuses):
             self.overall = ComponentStatus.RUNNING
@@ -45,7 +50,7 @@ class SystemStatus:
 
     def to_dict(self) -> dict:
         """Convert to dictionary for serialization."""
-        return {
+        result = {
             "overall": self.overall.value,
             "components": {
                 "api": self.api.to_dict(),
@@ -53,6 +58,9 @@ class SystemStatus:
                 "monitoring": self.monitoring.to_dict(),
             },
         }
+        if self.lambda_server is not None:
+            result["components"]["lambda_server"] = self.lambda_server.to_dict()
+        return result
 
 
 class ComponentManager:
@@ -66,8 +74,9 @@ class ComponentManager:
     - Health checks and validation
     """
 
-    # Startup order: monitoring first, then API (database), then runner
-    STARTUP_ORDER = ["monitoring", "api", "runner"]
+    # Startup order: monitoring first, then lambda_server, then API (database), then runner
+    # Lambda server starts before runner since runner needs it for local Lambda calls
+    STARTUP_ORDER = ["monitoring", "lambda_server", "api", "runner"]
 
     def __init__(
         self,
@@ -81,6 +90,8 @@ class ComponentManager:
         runner_java_opts: Optional[str] = None,
         runner_spring_profile: str = "local",
         runner_log_path: Optional[Path] = None,
+        lambda_server_port: int = 5001,
+        lambda_server_enabled: bool = True,
     ):
         """
         Initialize ComponentManager with component paths and configuration.
@@ -96,6 +107,8 @@ class ComponentManager:
             runner_java_opts: JVM options for runner
             runner_spring_profile: Spring profile for runner
             runner_log_path: Custom log directory for runner
+            lambda_server_port: Port for local Lambda server
+            lambda_server_enabled: Whether to enable local Lambda server
         """
         self.console = Console()
 
@@ -103,6 +116,7 @@ class ComponentManager:
         self._api: Optional[ApiComponent] = None
         self._runner: Optional[RunnerComponent] = None
         self._monitoring: Optional[MonitoringComponent] = None
+        self._lambda_server: Optional[LambdaServerComponent] = None
 
         if api_path:
             self._api = ApiComponent(
@@ -125,6 +139,12 @@ class ComponentManager:
                 path=Path(orchestrator_path),
                 grafana_port=grafana_port,
             )
+            # Lambda server uses orchestrator path for venv and code
+            if lambda_server_enabled:
+                self._lambda_server = LambdaServerComponent(
+                    port=lambda_server_port,
+                    orchestrator_path=Path(orchestrator_path),
+                )
 
     @property
     def api(self) -> Optional[ApiComponent]:
@@ -141,12 +161,17 @@ class ComponentManager:
         """Get Monitoring component."""
         return self._monitoring
 
+    @property
+    def lambda_server(self) -> Optional[LambdaServerComponent]:
+        """Get Lambda Server component."""
+        return self._lambda_server
+
     def get_component(self, name: str) -> Optional[BaseComponent]:
         """
         Get a component by name.
 
         Args:
-            name: Component name (api, runner, monitoring)
+            name: Component name (api, runner, monitoring, lambda_server)
 
         Returns:
             Component instance or None
@@ -155,6 +180,7 @@ class ComponentManager:
             "api": self._api,
             "runner": self._runner,
             "monitoring": self._monitoring,
+            "lambda_server": self._lambda_server,
         }
         return components.get(name.lower())
 
@@ -163,6 +189,7 @@ class ComponentManager:
         api: bool = True,
         runner: bool = True,
         monitoring: bool = True,
+        lambda_server: bool = True,
     ) -> SystemStatus:
         """
         Start components in correct order.
@@ -171,6 +198,7 @@ class ComponentManager:
             api: Start API component
             runner: Start Runner component
             monitoring: Start Monitoring component
+            lambda_server: Start Lambda Server component
 
         Returns:
             SystemStatus with results
@@ -181,10 +209,12 @@ class ComponentManager:
 
         results = {}
 
-        # Start in order: monitoring -> API -> runner
+        # Start in order: monitoring -> lambda_server -> API -> runner
         components_to_start = []
         if monitoring and self._monitoring:
             components_to_start.append(("monitoring", self._monitoring))
+        if lambda_server and self._lambda_server:
+            components_to_start.append(("lambda_server", self._lambda_server))
         if api and self._api:
             components_to_start.append(("api", self._api))
         if runner and self._runner:
@@ -215,6 +245,7 @@ class ComponentManager:
         api: bool = True,
         runner: bool = True,
         monitoring: bool = True,
+        lambda_server: bool = True,
         remove_volumes: bool = False,
     ) -> SystemStatus:
         """
@@ -224,6 +255,7 @@ class ComponentManager:
             api: Stop API component
             runner: Stop Runner component
             monitoring: Stop Monitoring component
+            lambda_server: Stop Lambda Server component
             remove_volumes: Remove Docker volumes
 
         Returns:
@@ -231,12 +263,14 @@ class ComponentManager:
         """
         results = {}
 
-        # Stop in reverse order: runner -> API -> monitoring
+        # Stop in reverse order: runner -> API -> lambda_server -> monitoring
         components_to_stop = []
         if runner and self._runner:
             components_to_stop.append(("runner", self._runner))
         if api and self._api:
             components_to_stop.append(("api", self._api))
+        if lambda_server and self._lambda_server:
+            components_to_stop.append(("lambda_server", self._lambda_server))
         if monitoring and self._monitoring:
             components_to_stop.append(("monitoring", self._monitoring))
 
@@ -259,6 +293,7 @@ class ComponentManager:
         api: bool = True,
         runner: bool = True,
         monitoring: bool = True,
+        lambda_server: bool = True,
     ) -> SystemStatus:
         """
         Restart components.
@@ -267,12 +302,13 @@ class ComponentManager:
             api: Restart API component
             runner: Restart Runner component
             monitoring: Restart Monitoring component
+            lambda_server: Restart Lambda Server component
 
         Returns:
             SystemStatus with results
         """
-        self.stop(api=api, runner=runner, monitoring=monitoring)
-        return self.start(api=api, runner=runner, monitoring=monitoring)
+        self.stop(api=api, runner=runner, monitoring=monitoring, lambda_server=lambda_server)
+        return self.start(api=api, runner=runner, monitoring=monitoring, lambda_server=lambda_server)
 
     def status(self) -> SystemStatus:
         """
@@ -295,6 +331,10 @@ class ComponentManager:
                     status=ComponentStatus.UNKNOWN,
                     message=f"{name.title()} component not configured",
                 )
+
+        # Lambda server is optional
+        if self._lambda_server:
+            results["lambda_server"] = self._lambda_server.status()
 
         return self._build_system_status(results)
 
@@ -321,6 +361,13 @@ class ComponentManager:
             else:
                 all_errors[name] = [f"{name.title()} component not configured"]
                 all_valid = False
+
+        # Lambda server is optional, only validate if configured
+        if self._lambda_server:
+            valid, errors = self._lambda_server.validate()
+            if not valid:
+                all_valid = False
+                all_errors["lambda_server"] = errors
 
         return all_valid, all_errors
 
@@ -428,6 +475,21 @@ class ComponentManager:
             str(self._monitoring.grafana_port) if self._monitoring and monitoring.is_healthy else "-",
             ", ".join(mon_details) if mon_details else monitoring.message,
         )
+
+        # Lambda Server row (optional)
+        if system_status.lambda_server is not None:
+            lambda_srv = system_status.lambda_server
+            lambda_style = status_styles.get(lambda_srv.status, "white")
+            lambda_details = []
+            if lambda_srv.details.get("pid"):
+                lambda_details.append(f"PID: {lambda_srv.details['pid']}")
+            table.add_row(
+                "Lambda Server",
+                f"[{lambda_style}]{lambda_srv.status.value.upper()}[/{lambda_style}]",
+                status_icon(lambda_srv.status),
+                str(lambda_srv.details.get("port", "-")) if lambda_srv.is_healthy else "-",
+                ", ".join(lambda_details) if lambda_details else lambda_srv.message,
+            )
 
         self.console.print(table)
 
@@ -538,6 +600,25 @@ class ComponentManager:
                     f"{health_info}"
                 )
 
+        # Lambda Server branch (optional)
+        if system_status.lambda_server is not None:
+            lambda_srv = system_status.lambda_server
+            lambda_style = status_styles.get(lambda_srv.status, "white")
+            lambda_info = ""
+            if lambda_srv.details.get("pid"):
+                lambda_info = f" [dim]PID {lambda_srv.details['pid']}[/dim]"
+            if lambda_srv.details.get("port"):
+                lambda_info += f" [dim]port {lambda_srv.details['port']}[/dim]"
+
+            lambda_branch = tree.add(
+                f"{status_icon(lambda_srv.status)} [bold]Lambda Server[/bold] "
+                f"[{lambda_style}]{lambda_srv.status.value.upper()}[/{lambda_style}]"
+                f"{lambda_info}"
+            )
+
+            if lambda_srv.is_healthy and lambda_srv.details.get("invoke_url"):
+                lambda_branch.add(f"[dim]Invoke URL: {lambda_srv.details['invoke_url']}[/dim]")
+
         self.console.print(tree)
 
     def _print_quick_links(self, system_status: SystemStatus) -> None:
@@ -563,6 +644,11 @@ class ComponentManager:
                 self.console.print(f"  Prometheus: {urls['prometheus']}")
             if urls.get("loki"):
                 self.console.print(f"  Loki:      {urls['loki']}")
+
+        if system_status.lambda_server and system_status.lambda_server.is_healthy:
+            invoke_url = system_status.lambda_server.details.get("invoke_url", "")
+            if invoke_url:
+                self.console.print(f"  Lambda:    {invoke_url} [dim](local)[/dim]")
 
     def _ensure_mount_directories(self) -> None:
         """
@@ -604,6 +690,7 @@ class ComponentManager:
                 status=ComponentStatus.UNKNOWN,
                 message="Monitoring component not configured",
             )),
+            lambda_server=results.get("lambda_server"),  # Optional, may be None
         )
 
     def _connect_networks(self):
