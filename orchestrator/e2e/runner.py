@@ -44,8 +44,25 @@ import subprocess
 import tempfile
 from pathlib import Path
 
-# Path to the test experiment JSON template
+# Path to the test experiment JSON templates
 TEST_EXPERIMENT_JSON = Path(__file__).parent / "test_experiment.json"
+TEST_EXPERIMENT_YOUTUBE_JSON = Path(__file__).parent / "test_experiment_youtube.json"
+
+# Test type configurations
+TEST_TYPES = {
+    "basic": {
+        "template": TEST_EXPERIMENT_JSON,
+        "name": "Basic E2E Test",
+        "timeout": 180,
+        "description": "Simple visit and wait jobs",
+    },
+    "youtube": {
+        "template": TEST_EXPERIMENT_YOUTUBE_JSON,
+        "name": "YouTube E2E Test",
+        "timeout": 600,  # 10 minutes for YouTube workflow with Lambda calls
+        "description": "YouTube recommendation workflow with Lambda selection",
+    },
+}
 
 
 class E2ETestRunner:
@@ -61,17 +78,24 @@ class E2ETestRunner:
 
     def __init__(
         self,
-        timeout: int = 180,
+        timeout: int | None = None,
         verbose: bool = False,
+        test_type: str = "basic",
     ):
         """
         Initialize e2e test runner.
 
         Args:
-            timeout: Maximum wait time in seconds for job completion
+            timeout: Maximum wait time in seconds for job completion (default: based on test type)
             verbose: Show detailed output
+            test_type: Type of test to run ("basic" or "youtube")
         """
-        self.timeout = timeout
+        if test_type not in TEST_TYPES:
+            raise ValueError(f"Unknown test type: {test_type}. Available: {list(TEST_TYPES.keys())}")
+
+        self.test_type = test_type
+        self.test_config = TEST_TYPES[test_type]
+        self.timeout = timeout if timeout is not None else self.test_config["timeout"]
         self.verbose = verbose
         self.settings = get_settings()
         self.reporter = E2EReporter(verbose=verbose)
@@ -220,13 +244,15 @@ class E2ETestRunner:
         Returns:
             Tuple of (experiment_id, crawler_id, queue_id, job_count, experiment_name, scheduled_time)
         """
-        # Load the test experiment JSON template
-        with open(TEST_EXPERIMENT_JSON) as f:
+        # Load the test experiment JSON template based on test type
+        template_path = self.test_config["template"]
+        with open(template_path) as f:
             crawlers_data = json.load(f)
 
         # Generate experiment name with timestamp
         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        experiment_name = f"E2E Test - {timestamp}"
+        test_name = self.test_config["name"]
+        experiment_name = f"{test_name} - {timestamp}"
 
         # Schedule start time - the API runs in CET (+01:00) and incorrectly interprets
         # the Z suffix as local time. So we need to send current UTC time + 1 hour,

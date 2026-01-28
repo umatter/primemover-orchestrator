@@ -3652,13 +3652,18 @@ def test(ctx: click.Context, verbose: bool, quick: bool, test_filter: str) -> No
 @cli.command()
 @click.option(
     "--timeout",
-    default=180,
+    default=None,
     type=int,
-    help="Timeout in seconds for job completion (default: 180)",
+    help="Timeout in seconds for job completion (default: 180 for basic, 600 for youtube)",
 )
 @click.option("-v", "--verbose", is_flag=True, help="Show detailed output")
+@click.option(
+    "--youtube",
+    is_flag=True,
+    help="Run YouTube-specific e2e test with Lambda selection workflow",
+)
 @click.pass_context
-def e2e(ctx: click.Context, timeout: int, verbose: bool) -> None:
+def e2e(ctx: click.Context, timeout: int | None, verbose: bool, youtube: bool) -> None:
     """
     Run a complete end-to-end test with browser automation.
 
@@ -3671,22 +3676,33 @@ def e2e(ctx: click.Context, timeout: int, verbose: bool) -> None:
     - Job completion and reporting
 
     \b
+    Test types:
+    - Basic (default): Simple visit/wait jobs (~3 min)
+    - YouTube (--youtube): Full YouTube workflow with Lambda video selection (~10 min)
+
+    \b
     Prerequisites:
     - All components running (orchestrator up)
     - Multilogin X installed and logged in (runner will create profile automatically)
+    - For YouTube test: Lambda function (bot-decision-yt) must be deployed
 
     \b
     Examples:
-        orchestrator e2e              # Run full e2e test
-        orchestrator e2e --timeout 300 -v  # Longer timeout, verbose
+        orchestrator e2e                  # Run basic e2e test
+        orchestrator e2e --youtube        # Run YouTube workflow test
+        orchestrator e2e --youtube -v     # YouTube test with verbose output
+        orchestrator e2e --timeout 300 -v # Basic test with custom timeout
     """
     import sys
 
     from orchestrator.e2e import E2ETestRunner
 
+    test_type = "youtube" if youtube else "basic"
+
     runner = E2ETestRunner(
         timeout=timeout,
         verbose=verbose,
+        test_type=test_type,
     )
 
     result = runner.run()
