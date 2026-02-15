@@ -1,0 +1,19 @@
+[Unit]
+Description=Multilogin X Desktop Application
+After=multilogin-agent.service vncserver@1.service
+Requires=vncserver@1.service
+
+[Service]
+Type=simple
+User=primemover
+Group=primemover
+Environment=DISPLAY=:1
+Environment=HOME=/home/primemover
+WorkingDirectory=/home/primemover
+ExecStartPre=/bin/sleep 15
+ExecStart=/opt/mlxapp/desktop.bin
+Restart=on-failure
+RestartSec=30
+
+[Install]
+WantedBy=multi-user.target

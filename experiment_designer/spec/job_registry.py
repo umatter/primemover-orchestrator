@@ -209,6 +209,33 @@ JobRegistry.register(JobTypeSchema(
     ]
 ))
 
+# Try scroll by duration job
+JobRegistry.register(JobTypeSchema(
+    yaml_name="try_scroll",
+    api_type="tryscrollbydurationjob",
+    display_name="Try Scroll",
+    description="Scroll page for specified duration (continues on failure)",
+    behaviors=[
+        BehaviorSchema("duration", required=True, description="Scroll duration in seconds"),
+        BehaviorSchema("scrollDirection", required=False, default="DOWN",
+                      description="Scroll direction: UP or DOWN"),
+        BehaviorSchema("captchaMode", required=False, default="never"),
+    ]
+))
+
+# Try scroll by length job
+JobRegistry.register(JobTypeSchema(
+    yaml_name="try_scroll_length",
+    api_type="tryscrollbylengthjob",
+    display_name="Try Scroll by Length",
+    description="Scroll page by pixel amount (continues on failure)",
+    behaviors=[
+        BehaviorSchema("length", required=True, description="Pixels to scroll"),
+        BehaviorSchema("scrollDirection", required=False, default="DOWN"),
+        BehaviorSchema("captchaMode", required=False, default="never"),
+    ]
+))
+
 # Lambda single select job
 JobRegistry.register(JobTypeSchema(
     yaml_name="lambda_select",

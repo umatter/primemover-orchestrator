@@ -95,6 +95,9 @@ class LambdaServerComponent(BaseComponent):
         ]
 
         try:
+            # Build environment: inherit current env + load .env file
+            env = self._build_env()
+
             # Start server as subprocess
             with open(self._log_file, "a") as log_file:
                 self._process = subprocess.Popen(
@@ -102,6 +105,7 @@ class LambdaServerComponent(BaseComponent):
                     cwd=str(self.orchestrator_path),
                     stdout=log_file,
                     stderr=subprocess.STDOUT,
+                    env=env,
                     start_new_session=True,  # Detach from parent process
                 )
 
@@ -276,6 +280,25 @@ class LambdaServerComponent(BaseComponent):
                 errors.append(f"Port {self.port} is already in use")
 
         return len(errors) == 0, errors
+
+    def _build_env(self) -> dict[str, str]:
+        """Build subprocess environment by merging os.environ with .env file."""
+        env = os.environ.copy()
+
+        env_file = self.orchestrator_path / ".env"
+        if env_file.exists():
+            with open(env_file) as f:
+                for line in f:
+                    line = line.strip()
+                    if not line or line.startswith("#") or "=" not in line:
+                        continue
+                    key, _, value = line.partition("=")
+                    key = key.strip()
+                    value = value.strip().strip('"').strip("'")
+                    if key:
+                        env[key] = value
+
+        return env
 
     def _check_health(self) -> bool:
         """Check if the health endpoint responds."""

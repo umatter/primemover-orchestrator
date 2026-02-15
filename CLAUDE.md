@@ -94,6 +94,55 @@ pmspec schema jobs                        # List all job types
 pmspec schema job <type>                  # Show job type details
 ```
 
+### Uploading Experiments (JSON Scenario)
+
+The API supports uploading pre-built experiment JSON directly (as used by the e2e tests and scenario files). This is separate from the YAML DSL workflow (`pmspec upload`).
+
+**API workflow:**
+1. Authenticate: `POST /api/v1/login` → get `access_token`
+2. Create experiment: `POST /api/v1/experiments` with `{name, description, active: 1}`
+3. Upload crawlers JSON: `POST /api/v1/experiments/{id}/upload` as multipart form with `json=@file.json`
+
+```bash
+# Example: upload a scenario JSON file
+API=http://localhost:8090/api/v1
+
+# 1. Get token
+TOKEN=$(curl -s -X POST $API/login \
+  -H "Content-Type: application/json" \
+  -d '{"email":"admin@primemover.example","password":"password"}' | python3 -c "import sys,json; print(json.load(sys.stdin)['access_token'])")
+
+# 2. Create experiment
+EXP_ID=$(curl -s -X POST $API/experiments \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"name":"My Experiment","description":"...","active":1}' | python3 -c "import sys,json; print(json.load(sys.stdin)['data']['id'])")
+
+# 3. Upload crawlers JSON (multipart form - note the -F flag, not -d)
+curl -s -X POST "$API/experiments/$EXP_ID/upload" \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Accept: application/json" \
+  -F "json=@scenario.json;type=application/json"
+```
+
+**Scenario JSON format:** Array of crawler objects, each with `queues` containing `jobs`:
+```json
+[{
+  "name": "Bot Name",
+  "active": 1,
+  "configuration": { ... },
+  "queues": [{
+    "name": "Queue Name",
+    "start_at": "2026-01-01T12:00:00.00+01:00",
+    "timezone": "Europe/Berlin",
+    "active": true,
+    "jobs": [{ "type": "visitjob", "name": "Visit", ... }, ...]
+  }]
+}]
+```
+
+**Important:** The `start_at` field must be in the future for the runner to pick up the queue. The API interprets timestamps as CET (+01:00). See `orchestrator/e2e/runner.py:_upload_experiment()` for the reference implementation.
+
 ### Running Tests
 
 ```bash

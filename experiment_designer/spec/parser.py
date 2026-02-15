@@ -750,6 +750,12 @@ class SpecParser:
             "entertextfieldjob": "Type",
             "scroll": "Scroll",
             "scrollbydurationjob": "Scroll",
+            "scroll_length": "Scroll by Length",
+            "scrollbylengthjob": "Scroll by Length",
+            "try_scroll": "Try Scroll",
+            "tryscrollbydurationjob": "Try Scroll",
+            "try_scroll_length": "Try Scroll by Length",
+            "tryscrollbylengthjob": "Try Scroll by Length",
             "lambda_select": "Lambda Select",
             "lambdasingleselectjob": "Lambda Select",
         }

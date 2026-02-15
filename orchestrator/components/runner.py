@@ -171,6 +171,9 @@ class RunnerComponent(BaseComponent):
                         details={"pid": pid},
                     )
 
+                # Clean up any orphaned browsers from a previous run
+                self._cleanup_orphaned_browsers()
+
                 # Build the command
                 jar = self.jar_path
                 cmd = [
@@ -284,9 +287,13 @@ class RunnerComponent(BaseComponent):
                 for _ in range(self.SHUTDOWN_TIMEOUT):
                     if not self._is_process_running(pid):
                         self._remove_pid_file()
+                        orphaned = self._cleanup_orphaned_browsers()
+                        msg = "Runner stopped gracefully"
+                        if orphaned:
+                            msg += f", cleaned up {orphaned} orphaned browser process(es)"
                         return ComponentHealth(
                             status=ComponentStatus.STOPPED,
-                            message="Runner stopped gracefully",
+                            message=msg,
                         )
                     time.sleep(1)
 
@@ -306,9 +313,16 @@ class RunnerComponent(BaseComponent):
                         details={"pid": pid},
                     )
 
+                # Clean up orphaned browser processes left by the runner
+                orphaned = self._cleanup_orphaned_browsers()
+
+                msg = "Runner stopped (forced)"
+                if orphaned:
+                    msg += f", cleaned up {orphaned} orphaned browser process(es)"
+
                 return ComponentHealth(
                     status=ComponentStatus.STOPPED,
-                    message="Runner stopped (forced)",
+                    message=msg,
                 )
 
         except TimeoutError as e:
@@ -526,3 +540,68 @@ class RunnerComponent(BaseComponent):
         details["profile"] = self.spring_profile
 
         return details
+
+    def _cleanup_orphaned_browsers(self) -> int:
+        """
+        Kill orphaned chrome/chromedriver processes left behind by the runner.
+
+        When the runner is killed (especially via SIGKILL), MLX browser processes
+        survive as orphans reparented to PID 1. These consume significant memory
+        and must be cleaned up.
+
+        Returns:
+            Number of processes killed
+        """
+        import logging
+
+        logger = logging.getLogger(__name__)
+        killed = 0
+
+        try:
+            # Find chrome/chromedriver processes spawned from MLX deps
+            result = subprocess.run(
+                ["pgrep", "-f", "mlx/deps/mimic.*/chrome"],
+                capture_output=True,
+                text=True,
+                timeout=5,
+            )
+            pids = [int(p) for p in result.stdout.strip().split("\n") if p.strip()]
+
+            if not pids:
+                return 0
+
+            # Only kill processes whose parent is init (PID 1) — truly orphaned —
+            # or whose parent is part of the MLX agent tree but the runner is gone
+            runner_pid = self._get_pid()
+            for pid in pids:
+                try:
+                    ppid_text = Path(f"/proc/{pid}/stat").read_text().split()[3]
+                    ppid = int(ppid_text)
+
+                    # If the runner is not running, all browser processes are orphans
+                    if runner_pid and self._is_process_running(runner_pid):
+                        continue  # Runner is still alive, don't touch its browsers
+
+                    os.kill(pid, signal.SIGTERM)
+                    killed += 1
+                except (OSError, IndexError, ValueError, ProcessLookupError):
+                    continue
+
+            if killed:
+                # Give them a moment to shut down gracefully
+                time.sleep(2)
+
+                # Force kill any that survived
+                for pid in pids:
+                    try:
+                        if self._is_process_running(pid):
+                            os.kill(pid, signal.SIGKILL)
+                    except (OSError, ProcessLookupError):
+                        pass
+
+                logger.info("Cleaned up %d orphaned browser process(es)", killed)
+
+        except (subprocess.TimeoutExpired, FileNotFoundError, ValueError):
+            pass
+
+        return killed
