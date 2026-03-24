@@ -99,10 +99,17 @@ class LambdaServerComponent(BaseComponent):
             env = self._build_env()
 
             # Start server as subprocess
+            # Use decision module directory as cwd so that relative file reads
+            # (e.g. mainstream_media_channels.csv) resolve correctly, matching
+            # the AWS Lambda task root behavior.
+            decision_cwd = self.orchestrator_path / "orchestrator" / "lambda_service" / "decision"
+            if not decision_cwd.exists():
+                decision_cwd = self.orchestrator_path
+
             with open(self._log_file, "a") as log_file:
                 self._process = subprocess.Popen(
                     cmd,
-                    cwd=str(self.orchestrator_path),
+                    cwd=str(decision_cwd),
                     stdout=log_file,
                     stderr=subprocess.STDOUT,
                     env=env,
