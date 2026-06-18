@@ -21,12 +21,14 @@ orchestrator setup --skip-build     # Skip Maven build
 orchestrator setup --skip-start     # Don't start after setup
 
 # Lifecycle
-orchestrator up                     # Start all components
+orchestrator up                     # Start all components (incl. local Lambda server)
 orchestrator up --no-runner         # Start without runner
+orchestrator up --no-lambda-local   # Use AWS Lambda instead of the local server
 orchestrator down                   # Stop all components
 orchestrator down --volumes         # Stop and remove data
 orchestrator restart                # Restart all
 orchestrator restart --runner       # Restart just runner
+orchestrator restart --lambda-local # Restart just the local Lambda server
 
 # Status
 orchestrator status -v              # System health check
@@ -196,7 +198,11 @@ orchestrator/
 │   ├── api.py                # API Docker Compose management
 │   ├── runner.py             # Runner process management (native Java)
 │   ├── monitoring.py         # Grafana/Loki/Prometheus stack
-│   └── manager.py            # Orchestrates all components
+│   ├── lambda_server.py      # Local Lambda server lifecycle (subprocess)
+│   └── manager.py            # Orchestrates all components (startup order)
+├── lambda_service/           # Local Flask wrapper for bot-decision-yt
+│   ├── server.py             # HTTP server: /health, /invoke
+│   └── decision -> bot-decision-yt/bot-decision-EN  # symlink to Lambda code
 ├── clients/
 │   ├── loki.py               # Loki log queries
 │   └── cloudwatch.py         # AWS CloudWatch queries
@@ -235,7 +241,8 @@ infrastructure/               # Docker service configs
 ├── loki/                     # Loki config
 ├── prometheus/               # Prometheus config
 ├── promtail/                 # Log collection config
-└── tempo/                    # Distributed tracing config
+├── tempo/                    # Distributed tracing config
+└── systemd/                  # VM service units (lambda, multilogin, health-check)
 ```
 
 ## Key Concepts
@@ -264,6 +271,34 @@ The `TraceBuilder` class reconstructs execution traces by:
 2. Querying related logs from Loki/files
 3. Building hierarchical `TraceSpan` structures
 4. Computing duration, status, and errors
+
+### Local Lambda Server
+
+To avoid AWS Lambda costs, the orchestrator can run the `bot-decision-yt`
+decision function locally as a Flask HTTP service that mirrors the AWS Lambda
+invocation contract. This is **on by default** (`orchestrator up`); pass
+`--no-lambda-local` to fall back to AWS.
+
+- **Service**: `orchestrator/lambda_service/server.py` — exposes `GET /health`
+  and `POST /invoke` on `127.0.0.1:5001`. `/invoke` calls
+  `select_recommendation(json.dumps(event))` and returns its dict as JSON.
+- **Decision code**: imported from `orchestrator/lambda_service/decision`,
+  a **symlink** to `bot-decision-yt/bot-decision-EN`. The symlink is a
+  prerequisite — `LambdaServerComponent.validate()` errors if it (or
+  `lambda_function.py` inside it) is missing. Recreate with:
+  `ln -s /home/primemover/bot-decision-yt/bot-decision-EN orchestrator/lambda_service/decision`
+- **cwd matters**: the server runs with cwd set to the `decision/` directory so
+  relative file reads (e.g. `mainstream_media_channels.csv`) resolve the same
+  way they do under the AWS Lambda task root.
+- **Lifecycle**: `LambdaServerComponent` (`orchestrator/components/lambda_server.py`)
+  manages it as a detached subprocess. PID is tracked in `.lambda_server.pid`,
+  logs go to `log/lambda-server.log`. Component startup order is
+  `monitoring → lambda_server → api → runner` (the runner depends on it).
+- **Runner side**: the runner selects local vs AWS via `lambda.mode` in its
+  `application.properties` (`local` → `POST http://localhost:5001/invoke`).
+- The decision function's deps (`flask`, `lxml`, `pandas`, `openai`,
+  `langdetect`) are declared in `pyproject.toml` so the orchestrator venv can
+  run it directly.
 
 ## Common Tasks
 
@@ -465,6 +500,40 @@ See `docs/experiment-designer.md` for full documentation.
 - The API logs in CET timezone, Loki runs in UTC
 - Promtail config includes `location: "Europe/Zurich"` to handle this
 - Check for errors: `docker logs pm-orchestrator-promtail 2>&1 | grep "timestamp too new"`
+
+**Local Lambda server fails to start / `/invoke` returns 500**
+- Check `log/lambda-server.log` (the subprocess logs there, not to the console)
+- Verify the `orchestrator/lambda_service/decision` symlink resolves (see
+  "Local Lambda Server" above) and that `decision/lambda_function.py` exists
+- Port 5001 in use: stop the stale process (`.lambda_server.pid`) or check the
+  `primemover-lambda` systemd unit isn't already running it
+
+**Chrome renderer becomes unresponsive on the headless VM after many jobs**
+- Root cause and fix are documented in `docs/chrome-browser-death-fix.txt`
+- Software VP9/AV1 decode + a ChromeDriver V8 heap leak saturate the renderer.
+  Fix lives in `primemover_runner` (H.264 codec override in `VisitJobHandler.java`
+  + `--max-old-space-size=1024` flag), not in this repo
+- `scripts/monitor-memory.sh` watches renderer RSS to catch regressions
+
+## Deployment (VM / systemd)
+
+On the production headless VM, components run as systemd units rather than via
+`orchestrator up`. Definitions live in `infrastructure/systemd/` and are
+installed with `sudo scripts/install-systemd-services.sh`:
+
+- `primemover-lambda.service` — local Lambda server (`python -m
+  orchestrator.lambda_service.server`), `Restart=always`
+- `multilogin-agent.service` / `multilogin-desktop.service` — Multilogin X,
+  require the `vncserver@1` display (`DISPLAY=:1`)
+- `primemover-health-check.service` — one-shot boot check running
+  `scripts/boot-health-check.sh --quick` after everything else
+
+Helper scripts in `scripts/`:
+- `full-startup.sh [--no-runner|--check]` — brings up VNC, Docker, monitoring,
+  Multilogin, the Lambda service, and the runner in order (alternative to
+  systemd for manual starts)
+- `multilogin-login.py` — authenticates the Multilogin agent
+- `boot-health-check.sh` / `monitor-memory.sh` — health and memory monitoring
 
 ## CLI Entry Points
 
