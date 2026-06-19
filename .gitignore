@@ -58,6 +58,9 @@ dmypy.json
 .env.*.local
 !.env.example
 
+# Pre-incident credential backups (contain old secrets — never commit)
+*.bak.preincident
+
 # Logs
 *.log
 logs/
