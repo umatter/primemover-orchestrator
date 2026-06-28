@@ -46,7 +46,7 @@
       "name": "%%AGENTID%%",
       "browser_type": "mimic",
       "folder_id": "%%FOLDERID%%",
-      "core_version": 142,
+      "core_version": 149,
       "auto_update_core": true,
       "os_type": "linux",
       "times": 1,

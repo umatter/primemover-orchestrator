@@ -9,6 +9,7 @@ from __future__ import annotations
 import time
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
 from typing import Any
 
 import httpx
@@ -254,12 +255,18 @@ class E2ETestRunner:
         test_name = self.test_config["name"]
         experiment_name = f"{test_name} - {timestamp}"
 
-        # Schedule start time - the API runs in CET (+01:00) and incorrectly interprets
-        # the Z suffix as local time. So we need to send current UTC time + 1 hour,
-        # formatted with +01:00 offset, so the API stores the correct UTC time.
-        utc_now = datetime.now(timezone.utc)
-        api_time = utc_now + timedelta(hours=1)  # Add 1 hour to compensate for API timezone
-        start_time = api_time.strftime("%Y-%m-%dT%H:%M:%S.00+01:00")
+        # Schedule start time. The API (Laravel APP_TIMEZONE=Europe/Zurich) strips
+        # the offset and interprets the naive datetime as Europe/Zurich local time,
+        # so we send the current Zurich wall-clock time with its current offset.
+        # Using zoneinfo makes this DST-safe (CET +01:00 winter / CEST +02:00
+        # summer); the previous hard-coded +1h/+01:00 broke under summer DST — the
+        # queue landed an hour in the past and the runner marked the jobs "skipped".
+        # NOTE: the host VM runs in UTC, so we must use the API's zone explicitly,
+        # not the host's local time.
+        api_now = datetime.now(ZoneInfo("Europe/Zurich"))
+        offset = api_now.strftime("%z")              # e.g. +0200
+        offset = offset[:3] + ":" + offset[3:]       # -> +02:00
+        start_time = api_now.strftime("%Y-%m-%dT%H:%M:%S.00") + offset
 
         # Update the crawler data with dynamic values
         crawlers_data[0]["name"] = f"E2E Test Bot - {timestamp}"
