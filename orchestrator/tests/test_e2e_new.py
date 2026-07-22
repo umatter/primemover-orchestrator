@@ -396,7 +396,46 @@ class TestCLICommands:
 
 
 # ---------------------------------------------------------------------------
-# Category 4: Full E2E with Multilogin (Optional)
+# Category 4a: Chrome E2E (No Multilogin X required)
+# ---------------------------------------------------------------------------
+
+
+class TestChromeE2E:
+    """
+    End-to-end test using plain Chrome browser.
+
+    Does NOT require Multilogin X or proxy servers — only Chrome/Chromium
+    and ChromeDriver. Useful for running e2e tests in simpler environments
+    without the full anti-detect browser setup.
+
+    Requirements:
+    - All infrastructure running (API, monitoring)
+    - Runner process running
+    - Chrome/Chromium installed on the runner host
+    - ChromeDriver available (WebDriverManager will auto-download)
+    """
+
+    def test_chrome_e2e(self):
+        """
+        E2E test with plain Chrome: create experiment, execute jobs, verify completion.
+
+        Uses identification="chrome" so the runner launches ChromeDriver directly
+        instead of going through Multilogin X. No proxy is configured.
+
+        Timeout: 180 seconds (3 minutes)
+        """
+        from orchestrator.e2e.runner import E2ETestRunner
+
+        runner = E2ETestRunner(timeout=180, verbose=True, test_type="chrome")
+        result = runner.run()
+
+        assert result.success, f"Chrome E2E test failed: {result.error}"
+        assert result.experiment_id is not None, "No experiment was created"
+        assert result.queue_id is not None, "No queue was created"
+
+
+# ---------------------------------------------------------------------------
+# Category 4b: Full E2E with Multilogin (Optional)
 # ---------------------------------------------------------------------------
 
 

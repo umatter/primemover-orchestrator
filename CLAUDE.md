@@ -43,6 +43,26 @@ mypy orchestrator/ experiment_designer/ --ignore-missing-imports
 make check
 ```
 
+## Running Docker Compose
+
+**Always run `docker compose` from this repository's root directory.** The compose
+file uses relative bind-mount sources (`./infrastructure/loki/loki-config.yaml`,
+`./infrastructure/prometheus/prometheus.yml`, etc.). If you launch from anywhere else,
+the Docker daemon silently creates those missing source paths as **empty directories**
+in your current working directory — scattering broken config/log/data folders outside
+the repo. (This already happened once: empty `infrastructure/*` and `storage/*` dirs
+appeared at `~/Code/`.)
+
+```bash
+cd /path/to/primemover-orchestrator   # NOT the parent folder
+docker compose up
+```
+
+The sibling-repo and log paths (`PM_API_PATH`, `PM_*_LOG_PATH`, …) are set to
+**absolute** paths in `.env` so those mounts survive a wrong CWD, but the in-repo
+`./infrastructure/...` config mounts are not env-overridable — so the CWD rule still
+applies.
+
 ## Architecture
 
 ### Two Packages
@@ -98,6 +118,20 @@ def my_command(ctx: click.Context, time_range: str) -> None:
 ### MCP Tools
 
 MCP tools in `orchestrator/mcp_server/server.py` use `@mcp.tool()` decorator and return `json.dumps(...)`. The orchestrator MCP server is the single consolidated server for all PrimeMover operations (the API repo's MCP server is deprecated).
+
+There are **read/observe** tools (unprefixed: `list_experiments`, `list_crawlers`, `list_queues`, `list_library`, `get_*`, `trace_*`, `find_failed_executions`, `query_logs`, `list_job_types`, …) and **write/control** tools (`pm_` prefix: `pm_create_experiment`, `pm_add_bot`, `pm_create_run`, `pm_add_job`, `pm_set_behaviour`, `pm_activate_run`, `pm_delete`, and the composite `pm_compose_run`).
+
+Write-tool conventions (see `docs/specs/mcp-control-surface.md`):
+- **Dry-run by default** — every `pm_` tool previews the change; pass `confirm=true` to apply.
+- **Local-only** — `_require_local_write_target()` refuses to mutate anything unless the API is
+  `localhost:8090`, even with `confirm`.
+- All API calls go through `_api_request` (auth at `/login`, supports GET/POST/PUT/DELETE).
+
+**Claude skills** live in `.claude/skills/`: `primemover` (orient/start-stop), `primemover-compose`
+(build experiments/runs via the `pm_` tools), `primemover-debug` (diagnose failing runs/jobs). They
+are project-scoped, so anyone running Claude Code in this repo gets them.
+
+Ecosystem specs are in `docs/specs/` (`runs-and-bots.md`, `mcp-control-surface.md`).
 
 ### Adding a New Log Parser
 

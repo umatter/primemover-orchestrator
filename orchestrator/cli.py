@@ -3662,8 +3662,19 @@ def test(ctx: click.Context, verbose: bool, quick: bool, test_filter: str) -> No
     is_flag=True,
     help="Run YouTube-specific e2e test with Lambda selection workflow",
 )
+@click.option(
+    "--chrome",
+    is_flag=True,
+    help="Run e2e test with plain Chrome (no Multilogin X, no proxy)",
+)
 @click.pass_context
-def e2e(ctx: click.Context, timeout: int | None, verbose: bool, youtube: bool) -> None:
+def e2e(
+    ctx: click.Context,
+    timeout: int | None,
+    verbose: bool,
+    youtube: bool,
+    chrome: bool,
+) -> None:
     """
     Run a complete end-to-end test with browser automation.
 
@@ -3672,32 +3683,40 @@ def e2e(ctx: click.Context, timeout: int | None, verbose: bool, youtube: bool) -
     \b
     - API and database connectivity
     - Experiment upload and scheduling
-    - Runner creating a Multilogin profile and executing jobs
+    - Runner executing jobs in a browser
     - Job completion and reporting
 
     \b
     Test types:
-    - Basic (default): Simple visit/wait jobs (~3 min)
+    - Basic (default): Simple visit/wait jobs via Multilogin X (~3 min)
+    - Chrome (--chrome): Same workflow using plain Chrome, no MLX or proxy (~3 min)
     - YouTube (--youtube): Full YouTube workflow with Lambda video selection (~10 min)
 
     \b
     Prerequisites:
     - All components running (orchestrator up)
-    - Multilogin X installed and logged in (runner will create profile automatically)
+    - For basic/youtube: Multilogin X installed and logged in
+    - For chrome: Only Chrome/Chromium and ChromeDriver needed
     - For YouTube test: Lambda function (bot-decision-yt) must be deployed
 
     \b
     Examples:
-        orchestrator e2e                  # Run basic e2e test
+        orchestrator e2e                  # Run basic e2e test (requires MLX)
+        orchestrator e2e --chrome         # Run with plain Chrome (no MLX needed)
+        orchestrator e2e --chrome -v      # Chrome test with verbose output
         orchestrator e2e --youtube        # Run YouTube workflow test
-        orchestrator e2e --youtube -v     # YouTube test with verbose output
         orchestrator e2e --timeout 300 -v # Basic test with custom timeout
     """
     import sys
 
     from orchestrator.e2e import E2ETestRunner
 
-    test_type = "youtube" if youtube else "basic"
+    if chrome:
+        test_type = "chrome"
+    elif youtube:
+        test_type = "youtube"
+    else:
+        test_type = "basic"
 
     runner = E2ETestRunner(
         timeout=timeout,
