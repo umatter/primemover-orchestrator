@@ -3617,13 +3617,15 @@ def test(ctx: click.Context, verbose: bool, quick: bool, test_filter: str) -> No
     console.print("[bold cyan]Running End-to-End Tests[/bold cyan]\n")
 
     # Build pytest command
-    test_file = Path(__file__).parent / "tests" / "test_e2e.py"
+    test_file = Path(__file__).parent / "tests" / "test_e2e_new.py"
 
     if not test_file.exists():
         console.print(f"[red]Test file not found: {test_file}[/red]")
         raise SystemExit(1)
 
-    cmd = [sys.executable, "-m", "pytest", str(test_file), "--e2e"]
+    # `orchestrator test` verifies the setup without Multilogin; the full browser
+    # automation run is `orchestrator e2e`.
+    cmd = [sys.executable, "-m", "pytest", str(test_file), "--e2e", "-m", "not multilogin"]
 
     if verbose:
         cmd.append("-v")
