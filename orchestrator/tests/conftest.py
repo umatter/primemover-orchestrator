@@ -27,6 +27,7 @@ def pytest_addoption(parser):
 def pytest_configure(config):
     """Add custom markers."""
     config.addinivalue_line("markers", "e2e: mark test as end-to-end test (requires live infrastructure)")
+    config.addinivalue_line("markers", "multilogin: mark test as requiring Multilogin X browser automation")
 
 
 def pytest_collection_modifyitems(config, items):

@@ -57,6 +57,13 @@ TEST_TYPES = {
         "timeout": 180,
         "description": "Simple visit and wait jobs",
     },
+    "chrome": {
+        "template": TEST_EXPERIMENT_JSON,
+        "name": "Chrome E2E Test",
+        "timeout": 180,
+        "description": "Simple visit and wait jobs using plain Chrome (no Multilogin X)",
+        "identification_override": "chrome",
+    },
     "youtube": {
         "template": TEST_EXPERIMENT_YOUTUBE_JSON,
         "name": "YouTube E2E Test",
@@ -272,6 +279,11 @@ class E2ETestRunner:
         crawlers_data[0]["name"] = f"E2E Test Bot - {timestamp}"
         crawlers_data[0]["queues"][0]["start_at"] = start_time
 
+        # Override agent identification if configured (e.g., "chrome" instead of "mlx")
+        id_override = self.test_config.get("identification_override")
+        if id_override:
+            crawlers_data[0]["agent"]["identification"] = id_override
+
         # Get auth token using curl (matching the working script exactly)
         api_base = self.settings.pm_api_base_url.rstrip("/")
         email = self.settings.pm_api_email
@@ -346,6 +358,12 @@ class E2ETestRunner:
 
             if "error" in upload_response:
                 raise ValueError(f"Upload failed: {upload_response}")
+            if "errors" in upload_response:
+                raise ValueError(f"Upload validation failed: {upload_response['errors']}")
+            if "message" in upload_response and upload_response.get("message") != "OK":
+                # Laravel returns {"message": "..."} on validation errors
+                if any(k in str(upload_response).lower() for k in ("invalid", "fail", "required")):
+                    raise ValueError(f"Upload failed: {upload_response}")
 
         finally:
             Path(temp_json_path).unlink(missing_ok=True)

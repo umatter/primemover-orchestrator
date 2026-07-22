@@ -19,11 +19,8 @@ from datetime import datetime, timedelta
 
 import pytest
 
-# Skip all tests in this module unless --e2e flag is passed
-pytestmark = pytest.mark.skipif(
-    not os.environ.get("E2E_TESTS", "").lower() in ("1", "true", "yes"),
-    reason="E2E tests require --e2e flag or E2E_TESTS=1 env var",
-)
+# Note: Skipping is handled by conftest.py pytest_collection_modifyitems
+# when --e2e flag is not passed
 
 
 class TestAPIStack:
