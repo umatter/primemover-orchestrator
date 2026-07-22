@@ -203,6 +203,17 @@ class LambdaServerComponent(BaseComponent):
         pid = self._get_pid()
 
         if pid is None:
+            # No PID file does not mean stopped: on the VM the server runs under the
+            # primemover-lambda systemd unit, which never writes one. Trust the health
+            # endpoint before reporting STOPPED, otherwise `orchestrator status` always
+            # reports the Lambda server down in the documented production deployment.
+            if self._check_health():
+                return ComponentHealth(
+                    status=ComponentStatus.RUNNING,
+                    message="Lambda server healthy (externally managed)",
+                    url=self.url,
+                    details={"port": self.port, "invoke_url": self.invoke_url},
+                )
             return ComponentHealth(
                 status=ComponentStatus.STOPPED,
                 message="Lambda server not running",
@@ -213,6 +224,13 @@ class LambdaServerComponent(BaseComponent):
             os.kill(pid, 0)
         except OSError:
             self._remove_pid()
+            if self._check_health():
+                return ComponentHealth(
+                    status=ComponentStatus.RUNNING,
+                    message="Lambda server healthy (externally managed)",
+                    url=self.url,
+                    details={"port": self.port, "invoke_url": self.invoke_url},
+                )
             return ComponentHealth(
                 status=ComponentStatus.STOPPED,
                 message="Lambda server not running (stale PID)",
@@ -246,13 +264,14 @@ class LambdaServerComponent(BaseComponent):
         """
         pid = self._get_pid()
         if pid is None:
-            return False
+            # May be running under systemd without a PID file - see status().
+            return self._check_health()
 
         try:
             os.kill(pid, 0)
             return self._check_health()
         except OSError:
-            return False
+            return self._check_health()
 
     def validate(self) -> tuple[bool, list[str]]:
         """

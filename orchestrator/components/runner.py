@@ -188,6 +188,15 @@ class RunnerComponent(BaseComponent):
                 # Ensure log directory exists
                 self.log_path.mkdir(parents=True, exist_ok=True)
 
+                # TaskOperator.startupChrome builds ChromeOptions without --headless, so
+                # plain-Chrome jobs need an X display. On the headless VM that is the VNC
+                # display; without DISPLAY, Chrome exits immediately and Selenium reports
+                # "session not created: Chrome instance exited". MLX-driven jobs are
+                # unaffected (the launcher spawns its own browser), which is why this only
+                # surfaces on the "chrome" e2e path.
+                env = os.environ.copy()
+                env.setdefault("DISPLAY", os.environ.get("PM_RUNNER_DISPLAY", ":1"))
+
                 # Start the process
                 log_file = self.log_path / "runner-stdout.log"
                 try:
@@ -197,6 +206,7 @@ class RunnerComponent(BaseComponent):
                             stdout=stdout_log,
                             stderr=subprocess.STDOUT,
                             cwd=self.path / "primemover-runner",
+                            env=env,
                             start_new_session=True,  # Detach from terminal
                         )
 
