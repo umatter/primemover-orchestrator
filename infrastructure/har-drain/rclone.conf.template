@@ -1,0 +1,23 @@
+# rclone remote for the institute Nextcloud, over WebDAV.
+#
+# Copy to rclone.conf (gitignored) and fill in. Do NOT commit the real file —
+# it contains an obscured credential.
+#
+# Setup:
+#   1. In Nextcloud: Settings -> Security -> Create app password (NOT your login
+#      password). Name it e.g. "primemover-har-drain". Copy the generated token.
+#   2. Obscure it for rclone (the token is not encryption, just not plaintext):
+#        rclone obscure 'THE_APP_PASSWORD'
+#   3. Paste the obscured value as `pass` below, set url/user, save as rclone.conf.
+#   4. Verify:  rclone --config infrastructure/har-drain/rclone.conf lsd nextcloud:
+#
+# The WebDAV files URL is https://<host>/remote.php/dav/files/<USERNAME>/
+
+[nextcloud]
+type = webdav
+url = https://NEXTCLOUD_HOST/remote.php/dav/files/USERNAME/
+vendor = nextcloud
+user = USERNAME
+pass = OBSCURED_APP_PASSWORD
+# Nextcloud supports chunked uploads for large archives:
+# nextcloud_chunk_size = 10M
