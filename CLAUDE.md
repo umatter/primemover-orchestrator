@@ -132,7 +132,8 @@ applies.
 - `experiment_designer/spec/converter.py` - YAML-to-JSON conversion pipeline
 - `experiment_designer/spec/design_expander.py` - Factorial design expansion
 - `experiment_designer/spec/job_registry.py` - Job type definitions and validation
-- `infrastructure/systemd/` - VM service units (lambda, multilogin, health-check)
+- `scripts/har-drain.sh` - HAR/job-data spool-and-drain sidecar (buffer → Nextcloud)
+- `infrastructure/systemd/` - VM service units (lambda, multilogin, health-check, har-drain)
 
 ### Correlation IDs
 
@@ -343,11 +344,19 @@ installed with `sudo scripts/install-systemd-services.sh`:
   require the `vncserver@1` display (`DISPLAY=:1`)
 - `primemover-health-check.service` — one-shot boot check running
   `scripts/boot-health-check.sh --quick` after everything else
+- `primemover-har-drain.service` + `.timer` — spool-and-drain sidecar (every 5
+  min) that ships the runner's local HAR/job-data buffer to Nextcloud. Resource-
+  capped (`CPUQuota=50%`, idle IO, `MemoryMax`) so it never contends with the
+  runner. Not installed by `install-systemd-services.sh` — see
+  `docs/har-spool-drain.md` for setup. Optional; enable when off-host HAR
+  archival is wanted.
 
 Helper scripts in `scripts/`:
 - `full-startup.sh [--no-runner|--check]` — brings up VNC, Docker, monitoring,
   Multilogin, the Lambda service, and the runner in order (alternative to
   systemd for manual starts)
+- `har-drain.sh [--dry-run]` — the spool-and-drain sidecar; tars settled job
+  folders and uploads via rclone WebDAV (see `docs/har-spool-drain.md`)
 - `multilogin-login.py` — authenticates the Multilogin agent
 - `boot-health-check.sh` / `monitor-memory.sh` — health and memory monitoring
 
@@ -388,6 +397,21 @@ grep -nE '127\.0\.0\.1:.*(3307|8889)|ALLOW_EMPTY' ../primemover_api/docker-compo
   Fix lives in `primemover_runner` (H.264 codec override in `VisitJobHandler.java`
   + `--max-old-space-size=1024` flag), not in this repo
 - `scripts/monitor-memory.sh` watches renderer RSS to catch regressions
+
+**No HAR files / job data on disk, or every job shows `problems writing jobresult`**
+- HAR recording is toggled by `recorder.enabled` in the runner's
+  `application.properties` (default **off** → `NoRecordingProxy`, a pass-through;
+  residential proxying still works, only capture is lost). Set `true` to record.
+  When on, the MITM recorder chains through the residential proxy and impersonates
+  TLS per host — verified working; mind the recorder cert (`cert/2024/ca-cert.p12`)
+  shelf life.
+- Job data (incl. HAR) is written by the runner's storage backends
+  (`FileStorageService` → `export.FileTargetFolder`, plus `AwsS3StorageService`).
+  A single failing backend used to short-circuit the rest (dead AWS key → 403 →
+  local write skipped); fixed in `primemover_runner` commit `82d6e72`. If jobs
+  still land in `WARNING_JOBDATA` ("problems writing jobresult"), the AWS S3 beans
+  are 403-ing — remove/repoint them, or run the spool-and-drain sidecar to
+  Nextcloud instead (`docs/har-spool-drain.md`).
 
 ## Related Repositories
 
