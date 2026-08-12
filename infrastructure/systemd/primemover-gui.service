@@ -1,0 +1,25 @@
+[Unit]
+Description=PrimeMover GUI (Angular dev server on 127.0.0.1:4200)
+# Dev-server deployment: serves the redesigned GUI via `ng serve` with live
+# rebuild. Suitable for the VM while the GUI is under active development;
+# for a real production deployment, build with `npm run build.prod` and serve
+# the dist/ output from a web server instead.
+After=network.target
+
+[Service]
+Type=simple
+User=primemover
+Group=primemover
+WorkingDirectory=/home/primemover/primemover_gui
+Environment=HOME=/home/primemover
+# npm/node from the system install (/usr/bin)
+ExecStart=/usr/bin/npm start -- --host 127.0.0.1 --port 4200
+Restart=on-failure
+RestartSec=10
+# ng serve + webpack can be memory-hungry on rebuilds; cap it below the
+# runner/Chrome working set so it never contends with experiment execution.
+MemoryMax=2G
+Nice=5
+
+[Install]
+WantedBy=multi-user.target
