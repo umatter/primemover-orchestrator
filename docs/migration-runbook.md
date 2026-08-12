@@ -7,11 +7,14 @@ Migrate the full PrimeMover setup from the current cloud VM (`hetzner-primemover
 - **Storage: staged.** Migrate pointing at the existing **AWS S3** first; prove the
   whole setup works on NEW hardware; **then** flip to MinIO as a separate step.
 - **Database: mysqldump → restore, with a short downtime window.**
-- **Networking: move DNS** — repoint `hetzner-primemover` to NEW's IP at cutover.
+- **Networking: move the Tailscale MagicDNS name** — `hetzner-primemover` is a tailnet
+  machine name, not a public DNS record (verified 2026-08-12: no A record anywhere, no
+  config file references it; everything on-box uses `localhost`). Cutover = rename the
+  machines in the Tailscale admin console.
 - **Execution:** operator (you) runs every step; this runbook is the source of truth.
 
 Legend: `[OLD]` run on the current server, `[NEW]` on the new server, `[LAPTOP]`
-on your machine, `[DNS]` at your DNS provider.
+on your machine, `[TS]` in the Tailscale admin console (login.tailscale.com).
 
 ---
 
@@ -41,7 +44,7 @@ sidecar, docs. Branches currently deployed on OLD (verify in step 0):
 
 ---
 
-## Phase 0 — Pre-flight `[OLD]` / `[DNS]`
+## Phase 0 — Pre-flight `[OLD]` / `[TS]`
 
 0.1 Record the exact deployed branch + commit of each repo (paste into a note):
 ```bash
@@ -59,8 +62,10 @@ done
 Anything listed as unpushed or modified must be committed+pushed first (e.g. the API auth
 fix `AuthController.php` + `config/services.php`, if not yet done), or it will be lost.
 
-0.3 `[DNS]` Lower the TTL on the `hetzner-primemover` record to 300s (or less) **now**, so
-the later cutover propagates fast. (DNS changes take one TTL to take effect, so do this early.)
+0.3 `[NEW]` / `[TS]` Join NEW to the tailnet **now** (`tailscale up` with the same account)
+and, in the admin console, disable key expiry on it. No TTL to lower — MagicDNS renames
+propagate to tailnet clients within seconds, but NEW must already be on the tailnet before
+the phase-10 rename can happen. Give it a distinct name for now (e.g. `pm-new`).
 
 0.4 Note the MLX/Multilogin account login (email + the password in `secrets.properties`
 `multilogin.apiPassword`) — you'll re-login interactively on NEW.
@@ -356,13 +361,16 @@ backward compatible, so safe to land regardless of which server uses which backe
 
 ---
 
-## Phase 10 — DNS cutover `[DNS]`
+## Phase 10 — MagicDNS cutover `[TS]`
 
 10.1 Final quiescence on OLD: stop the runner, take a **final** DB dump (5.2) as the
 authoritative copy, restore onto NEW (5.4–5.6) so no data is lost since the trial restore.
-10.2 `[DNS]` Repoint `hetzner-primemover` A record to NEW's IP. With the 300s TTL from step
-0.3, clients follow within minutes.
-10.3 Verify from LAPTOP that the hostname now resolves to NEW and login/e2e work end to end.
+10.2 `[TS]` In the admin console (Machines): rename OLD `hetzner-primemover` →
+`hetzner-primemover-old`, then rename NEW → `hetzner-primemover`. Tailnet clients follow
+the name within seconds. Note the tailnet **IPs** stay with their machines (OLD keeps
+`100.96.115.27`) — anything hard-coded to the IP must be updated to use the name.
+10.3 Verify from LAPTOP that `hetzner-primemover` now resolves to NEW's tailnet IP
+(`tailscale status` / `ssh`), and login/e2e work end to end.
 
 ---
 
