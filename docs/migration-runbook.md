@@ -128,7 +128,19 @@ sudo systemctl enable --now vncserver@1
 
 ## Phase 3 — Clone + build `[NEW]`
 
-3.1 Clone all five repos into `/home/primemover/`, each on the branch from step 0.1:
+3.1 Clone all five repos, each on the pinned branch. **Chosen layout on NEW (2026-08-12):
+repos live in `/opt/primemover/`, symlinked into `/home/primemover/`** — the systemd units
+and ops scripts hardcode `/home/primemover/...`, and the sibling layout is load-bearing
+(`.env` uses relative `../primemover_*` paths):
+```bash
+sudo mkdir -p /opt/primemover && sudo chown primemover:primemover /opt/primemover
+cd /opt/primemover   # clone the five repos here, then:
+for r in primemover-orchestrator primemover_api primemover_gui primemover_runner bot-decision-yt; do
+  ln -s /opt/primemover/$r /home/primemover/$r
+done
+```
+All later `~/...` commands in this runbook then work unchanged (Docker bind mounts follow
+symlinks). Original layout, if preferred, was:
 ```bash
 cd ~
 for r in primemover-orchestrator primemover_api primemover_gui primemover_runner bot-decision-yt; do
