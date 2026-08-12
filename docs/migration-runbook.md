@@ -286,22 +286,73 @@ Lambda selections succeeding. If this passes, NEW is a faithful clone on known-g
 
 Only after phase 8 is green. This is the one code change we scoped but never made:
 `AwsS3StorageService.init()` hardcodes AWS (`Region.EU_CENTRAL_1`, no endpoint override).
+The change below is **backward compatible**: with `awsS3.endpoint` blank it behaves exactly
+as today (real AWS), so you can commit it without changing OLD's behaviour, and MinIO is
+enabled purely by setting the endpoint.
 
-9.1 In `primemover_runner/.../service/AwsS3StorageService.java`, add to the `S3Client.builder()`:
+### 9.1 Code — `primemover_runner/primemover-runner/src/main/java/primemover/service/AwsS3StorageService.java`
+
+**Add two `@Value` fields** next to the existing `accessKey`/`secretKey` (around line 34):
 ```java
-.endpointOverride(java.net.URI.create(endpoint))   // new: awsS3.endpoint
-.forcePathStyle(true)                              // required for MinIO
-.region(Region.of(regionName))                     // make region configurable too
+	@Value("${awsS3.accessKey}")
+	private String accessKey;
+	@Value("${awsS3.secretKey}")
+	private String secretKey;
+	// New: blank => real AWS (eu-central-1) exactly as before; set => S3-compatible store (MinIO).
+	@Value("${awsS3.endpoint:}")
+	private String endpoint;
+	@Value("${awsS3.region:eu-central-1}")
+	private String region;
 ```
-Read `endpoint`/`regionName` from new `@Value("${awsS3.endpoint:}")` / `${awsS3.region:eu-central-1}`.
-9.2 Add `awsS3.endpoint=http://127.0.0.1:9000` to `application.properties`, and put the MinIO
-`awsS3.accessKey`/`secretKey` into `secrets.properties` (replacing the AWS ones).
-9.3 Rebuild the runner (phase 3.4), restart, re-run `orchestrator e2e --chrome`.
-9.4 Verify the new objects land in **MinIO** (`mc ls local/primemoverrunner/reports/`), not AWS.
-9.5 Commit the endpoint-override change on `feature/local-lambda-server` and push.
+
+**Replace the client build in `init()`** (the `try` block around lines 52-55):
+```java
+		// BEFORE
+		AwsBasicCredentials awsCreds = AwsBasicCredentials.create(accessKey, secretKey);
+		client = S3Client.builder().region(Region.EU_CENTRAL_1)
+				.credentialsProvider(StaticCredentialsProvider.create(awsCreds)).build();
+```
+```java
+		// AFTER
+		AwsBasicCredentials awsCreds = AwsBasicCredentials.create(accessKey, secretKey);
+		software.amazon.awssdk.services.s3.S3ClientBuilder builder = S3Client.builder()
+				.region(Region.of(region))
+				.credentialsProvider(StaticCredentialsProvider.create(awsCreds));
+		if (endpoint != null && !endpoint.isBlank()) {
+			// MinIO / self-hosted: custom endpoint + path-style addressing
+			// (virtual-host style needs per-bucket DNS, which MinIO doesn't provide).
+			builder = builder.endpointOverride(java.net.URI.create(endpoint)).forcePathStyle(true);
+		}
+		client = builder.build();
+```
+No new import lines are required (`Region` and `S3Client` are already imported;
+`URI` and `S3ClientBuilder` are fully-qualified inline above).
+
+### 9.2 Config
+- `application.properties` (tracked, non-secret): add
+  ```
+  awsS3.endpoint=http://127.0.0.1:9000
+  awsS3.region=us-east-1
+  ```
+  (MinIO ignores region but the SDK requires a valid one; `us-east-1` is the conventional
+  default. Leave `awsS3.endpoint` blank/absent to keep using AWS.)
+- `secrets.properties` (gitignored): replace `awsS3.accessKey` / `awsS3.secretKey` with the
+  **MinIO** access key / secret from phase 1.1.
+
+### 9.3–9.6 Build, verify, commit
+```bash
+cd ~/primemover_runner && mvn -q -pl primemover-runner -am -DskipTests package   # rebuild
+cd ~/primemover-orchestrator && ./venv/bin/orchestrator restart --runner
+./venv/bin/orchestrator e2e --chrome                                             # re-run
+mc ls local/primemoverrunner/reports/ | tail                                    # objects now in MinIO
+```
+Confirm the run's jobdata/finalsource keys appear in **MinIO**, not AWS. Then commit the
+Java + `application.properties` change on `feature/local-lambda-server` and push (it's
+backward compatible, so safe to land regardless of which server uses which backend).
 
 > Keep AWS creds around read-only until you've confirmed MinIO holds everything you need; the
-> historical HAR objects still live in the AWS bucket unless you separately migrate them.
+> historical HAR objects still live in the AWS bucket unless you separately migrate them
+> (`mc mirror` / `rclone sync` AWS→MinIO if you need the back-catalogue).
 
 ---
 
