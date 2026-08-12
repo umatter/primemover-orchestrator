@@ -22,15 +22,21 @@ on your machine, `[TS]` in the Tailscale admin console (login.tailscale.com).
 
 **In git (just `git clone` on NEW):** all code in five repos, `application.properties`
 (now secret-free), `mainstream_media_channels.csv`, the systemd units, the spool-and-drain
-sidecar, docs. Branches currently deployed on OLD (verify in step 0):
+sidecar, docs. Branches deployed on OLD, **pinned 2026-08-12 after pre-flight** (phase 0
+done: all repos clean, everything pushed — incl. the API login fix, the Telescope
+migration, the GUI :8090 dev pointer, and bot-decision-yt's YouTube XPath fix):
 
-| repo | branch |
-|------|--------|
-| primemover-orchestrator | `feature/har-spool-drain` |
-| primemover_api | `integration/gui-redesign` |
-| primemover_gui | `integration/gui-redesign` |
-| primemover_runner | `feature/local-lambda-server` |
-| bot-decision-yt | `feature/local-lambda-server` |
+| repo | branch | commit |
+|------|--------|--------|
+| primemover-orchestrator | `feature/har-spool-drain` | `f6507c4` |
+| primemover_api | `integration/gui-redesign` | `2adf76e` |
+| primemover_gui | `integration/gui-redesign` | `b7c9eed` |
+| primemover_runner | `feature/local-lambda-server` | `cadb15e` |
+| bot-decision-yt | `feature/local-lambda-server` | `fef78b8` |
+
+None of this is on `master`/`main` — cloning defaults gives a pre-redesign stack without
+the MCP write tools. The orchestrator branch fully contains `integration/gui-redesign`;
+do not check that branch out separately.
 
 **NOT in git — must be transferred (the whole point of the secrets externalization):**
 - `primemover-orchestrator/.env`
@@ -134,7 +140,9 @@ git -C ~/primemover_gui          checkout integration/gui-redesign
 git -C ~/primemover_runner       checkout feature/local-lambda-server
 git -C ~/bot-decision-yt         checkout feature/local-lambda-server
 ```
-(Confirm each `rev-parse --short HEAD` matches step 0.1.)
+(Confirm each `rev-parse --short HEAD` matches the pinned-commit table at the top of this
+runbook. A *newer* commit on the same branch is fine if it was pushed deliberately since
+2026-08-12 — anything else, stop and investigate.)
 
 3.2 Recreate the local-Lambda symlink (a hard prerequisite):
 ```bash
