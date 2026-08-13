@@ -202,6 +202,8 @@ or pull each file. The five targets:
 ```
 ~/primemover-orchestrator/.env
 ~/primemover_api/.env
+~/primemover_api/storage/oauth-private.key   (Passport signing keys, gitignored —
+~/primemover_api/storage/oauth-public.key     without them every login 500s)
 ~/primemover_runner/primemover-runner/config/secrets.properties
 ~/.aws/credentials   (and ~/.aws/config)
 ```
