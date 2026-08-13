@@ -177,6 +177,14 @@ cd ~/primemover_runner && mvn -q -pl primemover-runner -am -DskipTests package
 cd ~/primemover_gui && npm install
 ```
 
+3.5b API PHP deps — `vendor/` is gitignored, so a fresh clone can't run artisan until
+Composer has run **inside the php container** (needs the API compose up first, phase 5.4;
+discovered the hard way during the 2026-08-13 trial restore):
+```bash
+docker exec primemover-php8.1 composer install
+docker exec primemover-php8.1 chown -R $(id -u):$(id -g) /var/www/html/vendor
+```
+
 3.6 **Before any `docker compose up`**, verify the API compose is the hardened one (localhost
 binds, no empty root pw) — same check CLAUDE.md mandates:
 ```bash
