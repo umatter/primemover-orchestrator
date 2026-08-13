@@ -30,6 +30,12 @@ fi
 echo -e "${CYAN}Installing PrimeMover systemd services...${NC}"
 echo ""
 
+# VNC unit template (vncserver@.service, instantiated as vncserver@1)
+if [[ -f "$SYSTEMD_DIR/vncserver@.service" ]]; then
+    cp "$SYSTEMD_DIR/vncserver@.service" /etc/systemd/system/
+    echo -e "${GREEN}✓${NC} Installed vncserver@.service"
+fi
+
 # Copy service files
 for service in primemover-lambda multilogin-agent multilogin-desktop primemover-health-check; do
     src="$SYSTEMD_DIR/${service}.service"
