@@ -3356,7 +3356,7 @@ def debug_job(
             include_har=not no_har,
             include_cloudwatch=not no_cloudwatch,
             include_logs=not no_logs,
-            time_range=time_range,
+            log_time_range=time_range,
         )
 
     if output_format == "json" or export:
