@@ -180,12 +180,19 @@ class E2ETestRunner:
         # Step 4: Report results
         self.reporter.print_step(4, 4, "Results")
 
-        # Check if all jobs completed successfully
-        all_completed = all(
-            job.get("status_code", job.get("status")) in ("completed", "done", "success")
-            for job in jobs
-        )
-        failed_jobs = [j for j in jobs if j.get("status_code", j.get("status")) in ("failed", "error", "failure")]
+        # Check if all jobs completed successfully. Best-effort job types
+        # (try*) may fail without failing the run — the runner itself continues
+        # past them (e.g. the YouTube consent dialog is only sometimes shown, so
+        # its tryclickjob times out on profiles that never see it). Jobs the
+        # runner skipped in a best-effort job's wake report status "skipped".
+        def _job_ok(job: dict) -> bool:
+            status = job.get("status_code", job.get("status"))
+            if status in ("completed", "done", "success", "skipped"):
+                return True
+            return str(job.get("type", "")).startswith("try")
+
+        all_completed = bool(jobs) and all(_job_ok(j) for j in jobs)
+        failed_jobs = [j for j in jobs if not _job_ok(j)]
 
         duration = time.time() - start_time
         result = E2EResult(
