@@ -292,15 +292,20 @@ curl -s -o /dev/null -w '%{http_code}\n' -X POST http://localhost:8090/api/v1/lo
 
 ## Phase 7 — Multilogin `[NEW]` (via VNC)
 
-7.1 Install Multilogin X to match OLD (`/opt/mlx`, `/opt/mlxapp`, `~/mlx`).
-7.2 `[LAPTOP]` VNC-tunnel in (`ssh -L 5901:127.0.0.1:5901 ...`), open the MLX desktop, log in
-interactively with the account from step 0.4.
-7.3 Enable the units (they auto-start on the **next** boot — unlike the enable-after-boot gap
-seen on OLD):
+7.1 Install the Multilogin X **desktop app** deb (`sudo apt install -y ./desktop-multiloginx-*.deb`).
+The 24.04 build installs fine on Ubuntu 26. Since app v12 the agent is **embedded in
+`desktop.bin`** — there is no separate `mlx` agent package and `/opt/mlx/agent.bin` never
+appears (on OLD, app v11 had auto-installed it as a separate dpkg).
+7.2 `[LAPTOP]` VNC-tunnel in (`ssh -L 5901:127.0.0.1:5901 ...`), launch `/opt/mlxapp/desktop.bin`
+in the XFCE session, log in interactively with the account from step 0.4, then quit the app.
+7.3 Enable **only the desktop unit** (the legacy `multilogin-agent.service` points at the
+nonexistent `/opt/mlx/agent.bin` and must stay disabled on a v12 install):
 ```bash
-sudo systemctl enable --now multilogin-agent multilogin-desktop
+sudo systemctl enable --now multilogin-desktop
 ```
-7.4 Confirm launcher ports 45000–45003 are listening and `agent_YYYYMMDD.log` is fresh.
+7.4 Confirm launcher ports 45000–45003 are listening, owned by `desktop.bin`
+(`ss -tlnp | grep -E ':4500[0-3]'`). They bind all interfaces — the SSH-only firewall is
+what keeps them private.
 
 ---
 
