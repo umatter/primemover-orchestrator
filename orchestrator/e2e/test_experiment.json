@@ -30,10 +30,10 @@
   "proxy": {
     "name": "E2E Test Proxy",
     "description": "Test proxy",
-    "hostname": "103.195.116.28",
+    "hostname": "PROXY_HOST_PLACEHOLDER",
     "port": 5432,
-    "username": "e5ffg",
-    "password": "35qbtiql",
+    "username": "PROXY_USER_PLACEHOLDER",
+    "password": "PROXY_PASSWORD_PLACEHOLDER",
     "active": true,
     "type": "http"
   },

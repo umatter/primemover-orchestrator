@@ -171,12 +171,10 @@ crawlers:
           active: true
 
     proxy:
-      name: "Proxy_{cell_index:03d}"
-      hostname: "proxy.example.com"
-      port: 8080
-      type: http
-      username: "proxyuser"
-      password: "proxypass"
+      # Oxylabs is self-configuring: the runner supplies the endpoint and account
+      # from its own config, and geo-targeting comes from the agent's location
+      # below - so no credentials belong in a spec file.
+      type: oxylabs
       location: "US-IL-CHICAGO"
       active: true
 
