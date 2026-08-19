@@ -396,16 +396,32 @@ backward compatible, so safe to land regardless of which server uses which backe
 
 ---
 
-## Phase 10 — MagicDNS cutover `[TS]`
+## Phase 10 — Final cutover `[OLD]` → `[NEW]`
+
+**Decision 2026-08-19: skip the MagicDNS rename.** Grepped `primemover_api`,
+`primemover_runner`, `primemover-orchestrator`, `bot-decision-yt`, all `.env` files, the
+`oauth_clients` table, and Laravel's `cors.php`/`session.php` — nothing references
+`hetzner-primemover` anywhere (`APP_URL`, both oauth redirect URIs, `SESSION_DOMAIN` are
+all `localhost`-based; confirms phase 0's original finding). The hostname is purely an
+access convenience for whoever/whatever connects in — retiring OLD and switching to
+NEW's own tailnet identity costs nothing at the application layer, just some SSH
+configs/bookmarks to update by hand.
+
+Also note: `ex63` (NEW) and OLD currently can't see each other as tailnet peers at all
+(`tailscale ping` → "no matching peer" from NEW's side) — worth resolving for general
+tailnet hygiene, but no longer a blocker for cutover, since this approach doesn't
+require them to see each other.
 
 10.1 Final quiescence on OLD: stop the runner, take a **final** DB dump (5.2) as the
-authoritative copy, restore onto NEW (5.4–5.6) so no data is lost since the trial restore.
-10.2 `[TS]` In the admin console (Machines): rename OLD `hetzner-primemover` →
-`hetzner-primemover-old`, then rename NEW → `hetzner-primemover`. Tailnet clients follow
-the name within seconds. Note the tailnet **IPs** stay with their machines (OLD keeps
-`100.96.115.27`) — anything hard-coded to the IP must be updated to use the name.
-10.3 Verify from LAPTOP that `hetzner-primemover` now resolves to NEW's tailnet IP
-(`tailscale status` / `ssh`), and login/e2e work end to end.
+authoritative copy, restore onto NEW (5.4–5.6). An interim (non-quiescent) dump/restore
+was already done 2026-08-19 as a warm-up (36 experiments/36 crawlers/1167 jobs landed on
+NEW) — this step is just the small delta since then.
+**Gate: do not do this until OLD's current testing has wrapped up** — interrupting it is
+explicitly out of scope right now.
+10.2 Switch access: update your own SSH config/bookmarks/muscle memory (and tell anyone
+else who connects this way) from `hetzner-primemover` to `ex63` /
+`ex63.tailec055e.ts.net`. No app config, DNS, or Tailscale admin-console change needed.
+10.3 Verify from LAPTOP: ssh to the new name, confirm login/e2e work end to end against NEW.
 
 ---
 
@@ -421,9 +437,10 @@ Only after NEW has run clean for a burn-in period (a day+ of real use):
 
 ## Rollback
 
-Until phase 10, OLD is untouched and authoritative — rollback is "keep using OLD." After DNS
-cutover, rollback = repoint DNS back to OLD (still fast with the low TTL) and re-dump NEW→OLD
-if any data was written to NEW. Do not release OLD until you're certain.
+Until phase 10, OLD is untouched and authoritative — rollback is "keep using OLD." After
+cutover, rollback = go back to connecting to OLD by its existing name/IP (nothing was
+renamed, so this is just reverting your own access habits) and re-dump NEW→OLD if any
+data was written to NEW. Do not release OLD until you're certain.
 
 ## Gotchas carried over from this deployment
 - Reaching the GUI needs **both** tunnels: `-L 4200:127.0.0.1:4200 -L 8090:127.0.0.1:8090`.
