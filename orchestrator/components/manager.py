@@ -6,6 +6,7 @@ Provides unified lifecycle management across API, Runner, and Monitoring compone
 
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any
 
 from rich.console import Console
 from rich.table import Table
@@ -49,7 +50,7 @@ class SystemStatus:
 
     def to_dict(self) -> dict:
         """Convert to dictionary for serialization."""
-        result = {
+        result: dict[str, Any] = {
             "overall": self.overall.value,
             "components": {
                 "api": self.api.to_dict(),
@@ -209,7 +210,7 @@ class ComponentManager:
         results = {}
 
         # Start in order: monitoring -> lambda_server -> API -> runner
-        components_to_start = []
+        components_to_start: list[tuple[str, BaseComponent]] = []
         if monitoring and self._monitoring:
             components_to_start.append(("monitoring", self._monitoring))
         if lambda_server and self._lambda_server:
@@ -263,7 +264,7 @@ class ComponentManager:
         results = {}
 
         # Stop in reverse order: runner -> API -> lambda_server -> monitoring
-        components_to_stop = []
+        components_to_stop: list[tuple[str, BaseComponent]] = []
         if runner and self._runner:
             components_to_stop.append(("runner", self._runner))
         if api and self._api:

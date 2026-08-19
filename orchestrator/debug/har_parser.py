@@ -362,7 +362,7 @@ class HARParser:
             return None
 
 
-def format_bytes(size: int) -> str:
+def format_bytes(size: float) -> str:
     """Format byte size to human-readable string."""
     for unit in ["B", "KB", "MB", "GB"]:
         if abs(size) < 1024:

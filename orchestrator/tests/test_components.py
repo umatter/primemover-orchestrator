@@ -73,7 +73,7 @@ class TestComponentHealth:
 class ConcreteComponent(BaseComponent):
     """Concrete implementation of BaseComponent for testing."""
 
-    def __init__(self, name: str, path: Path = None):
+    def __init__(self, name: str, path: Path | None = None):
         super().__init__(name, path)
         self._running = False
 

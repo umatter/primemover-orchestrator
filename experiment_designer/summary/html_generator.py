@@ -609,11 +609,12 @@ class HTMLGenerator:
             from jinja2 import Template
 
             template = Template(REPORT_TEMPLATE)
-            return template.render(
+            html: str = template.render(
                 summary=self.summary,
                 charts=self.charts,
                 timestamp=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
             )
+            return html
         except ImportError:
             # Fallback without Jinja2
             return self._generate_fallback()
@@ -658,11 +659,12 @@ class ComparisonHTMLGenerator:
             from jinja2 import Template
 
             template = Template(COMPARISON_TEMPLATE)
-            return template.render(
+            html: str = template.render(
                 comparison=self.comparison,
                 charts=self.charts,
                 timestamp=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
             )
+            return html
         except ImportError:
             # Simple fallback
             return f"""<!DOCTYPE html>

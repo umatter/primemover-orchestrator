@@ -128,7 +128,8 @@ class SafeExpressionEvaluator:
             tree = ast.parse(expr_with_values, mode="eval")
 
             # Evaluate AST
-            return self._eval_node(tree.body)
+            result: float | int | bool = self._eval_node(tree.body)
+            return result
 
         except SyntaxError as e:
             raise ExpressionError(
@@ -209,7 +210,9 @@ class SafeExpressionEvaluator:
         elif isinstance(node, ast.BinOp):
             left = self._eval_node(node.left)
             right = self._eval_node(node.right)
-            op_type = type(node.op)
+            # Reused below for unary (``ast.unaryop``) and comparison
+            # (``ast.cmpop``) operators too, so widen it to their common base.
+            op_type: type[ast.AST] = type(node.op)
 
             if op_type not in BINARY_OPS:
                 raise ExpressionError(f"Unsupported operator: {op_type.__name__}")
@@ -299,7 +302,7 @@ class SafeExpressionEvaluator:
         Returns:
             List of error messages (empty if valid)
         """
-        errors = []
+        errors: list[str] = []
 
         # Replace variables with dummy values for syntax checking
         test_expr = self.VAR_PATTERN.sub("1.0", expression)

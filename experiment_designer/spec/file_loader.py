@@ -139,7 +139,7 @@ class FileLoader:
             return p
         return self.base_dir / p
 
-    def _load_file(self, path: Path, format: str) -> list[dict[str, Any]] | None:
+    def _load_file(self, path: Path, format: str | None) -> list[dict[str, Any]] | None:
         """
         Load a file and return list of records.
 
@@ -189,7 +189,8 @@ class FileLoader:
             return content
         elif isinstance(content, dict):
             if "data" in content:
-                return content["data"]
+                records: list[dict[str, Any]] = content["data"]
+                return records
             # Single object - wrap in list
             return [content]
         else:
@@ -206,7 +207,8 @@ class FileLoader:
             return content
         elif isinstance(content, dict):
             if "data" in content:
-                return content["data"]
+                records: list[dict[str, Any]] = content["data"]
+                return records
             # Single object - wrap in list
             return [content]
         else:

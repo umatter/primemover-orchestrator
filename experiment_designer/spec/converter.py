@@ -98,7 +98,7 @@ class SpecConverter:
             api_json = result.to_json()
     """
 
-    def __init__(self):
+    def __init__(self) -> None:
         self.errors: list[str] = []
         self.warnings: list[str] = []
 

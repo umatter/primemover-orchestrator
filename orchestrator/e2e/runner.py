@@ -13,7 +13,7 @@ import time
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, TypedDict
 from zoneinfo import ZoneInfo
 
 import httpx
@@ -49,8 +49,23 @@ class E2EResult:
 TEST_EXPERIMENT_JSON = Path(__file__).parent / "test_experiment.json"
 TEST_EXPERIMENT_YOUTUBE_JSON = Path(__file__).parent / "test_experiment_youtube.json"
 
+
+class TestTypeConfig(TypedDict, total=False):
+    """Configuration for one e2e test type.
+
+    ``total=False`` because ``identification_override`` is only set for the
+    "chrome" test type; every other key is present for all test types.
+    """
+
+    template: Path
+    name: str
+    timeout: int
+    description: str
+    identification_override: str
+
+
 # Test type configurations
-TEST_TYPES = {
+TEST_TYPES: dict[str, TestTypeConfig] = {
     "basic": {
         "template": TEST_EXPERIMENT_JSON,
         "name": "Basic E2E Test",
@@ -357,6 +372,7 @@ class E2ETestRunner:
             text=True,
         )
         create_response = json.loads(create_result.stdout)
+        experiment_id: int | None
         experiment_id = create_response.get("data", {}).get("id") or create_response.get("id")
         if not experiment_id:
             raise ValueError(f"Failed to create experiment: {create_response}")
@@ -420,7 +436,7 @@ class E2ETestRunner:
             if not crawlers:
                 raise ValueError(f"No crawlers created. Experiment details: {exp_details}")
 
-            crawler_id = crawlers[0].get("id")
+            crawler_id: int | None = crawlers[0].get("id")
 
             # Get queue ID by querying /queues-unprocessed and filtering by crawler_id
             # (The /crawlers/{id} endpoint doesn't include queues in its response)
@@ -430,7 +446,13 @@ class E2ETestRunner:
             if not crawler_queues:
                 raise ValueError(f"No unprocessed queues found for crawler {crawler_id}")
 
-            queue_id = crawler_queues[0].get("id")
+            queue_id: int | None = crawler_queues[0].get("id")
+
+            # `id` is the primary key of the API's own crawler/queue records, so it is
+            # always present on a record the API just handed us. Assert it instead of
+            # casting, so the int return type below is honest.
+            assert crawler_id is not None, f"crawler record without id: {crawlers[0]}"
+            assert queue_id is not None, f"queue record without id: {crawler_queues[0]}"
 
             # Get job count from API
             queue_details = client.get_queue(queue_id)
@@ -473,7 +495,7 @@ class E2ETestRunner:
                 # Get queue status
                 queue = client.get_queue(queue_id)
                 queue_status = queue.get("status_code", queue.get("status", "unknown"))
-                jobs = queue.get("jobs", [])
+                jobs: list[dict[str, Any]] = queue.get("jobs", [])
 
                 # Update status display
                 completed_jobs = sum(

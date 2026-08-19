@@ -8,6 +8,7 @@ import json
 import os
 import re as _re
 import sys
+from typing import Any
 
 from orchestrator.config import get_settings
 
@@ -230,7 +231,7 @@ def query_logs(
         query += " " + " ".join(filters)
 
     try:
-        params = {"query": query, "limit": limit}
+        params: dict[str, str | int] = {"query": query, "limit": limit}
         response = httpx.get(
             f"{settings.loki_url}/loki/api/v1/query_range",
             params=params,
@@ -275,8 +276,9 @@ def get_error_summary(time_range: str = "24h", component: str = "all") -> str:
     Returns:
         JSON with error counts by component and most frequent error messages
     """
-    # Query for errors
-    result = query_logs(component=component, time_range=time_range, level="error", limit=500)
+    # Query for errors. `query_logs` is wrapped by @mcp.tool(), whose decorator is
+    # typed as Callable[..., Any], so annotate the result to keep it a str.
+    result: str = query_logs(component=component, time_range=time_range, level="error", limit=500)
 
     try:
         data = json.loads(result)
@@ -323,7 +325,8 @@ def tail_logs(component: str = "all", filter_text: str = "", lines: int = 50) ->
     Returns:
         JSON array of recent log entries
     """
-    return query_logs(component=component, time_range="15m", search=filter_text, limit=lines)
+    result: str = query_logs(component=component, time_range="15m", search=filter_text, limit=lines)
+    return result
 
 
 # =============================================================================
@@ -392,7 +395,12 @@ def system_status() -> str:
 # =============================================================================
 
 
-def _api_request(method: str, endpoint: str, data: dict = None, params: dict = None) -> dict:
+def _api_request(
+    method: str,
+    endpoint: str,
+    data: dict[str, Any] | None = None,
+    params: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     """
     Make an authenticated API request.
 
@@ -442,7 +450,8 @@ def _api_request(method: str, endpoint: str, data: dict = None, params: dict = N
 
         if response.status_code == 204 or not response.text:
             return {"status": response.status_code}
-        return response.json()
+        body: dict[str, Any] = response.json()
+        return body
 
 
 # =============================================================================
@@ -465,19 +474,28 @@ def _require_local_write_target() -> str | None:
     return None
 
 
-def _unwrap(result: dict):
+def _unwrap(result: dict[str, Any]) -> Any:
     """API resources come back as {'data': {...}}; return the inner object when present."""
     return result.get("data", result) if isinstance(result, dict) else result
 
 
-def _write(action, method, endpoint, payload=None, *, confirm=False, current=None, warnings=None):
+def _write(
+    action: str,
+    method: str,
+    endpoint: str,
+    payload: dict[str, Any] | None = None,
+    *,
+    confirm: bool = False,
+    current: Any = None,
+    warnings: list[str] | None = None,
+) -> str:
     """Shared dry-run/confirm + local-guard path for every write tool."""
     guard = _require_local_write_target()
     if guard:
         return json.dumps({"error": guard})
 
     if not confirm:
-        preview = {
+        preview: dict[str, Any] = {
             "dry_run": True,
             "action": action,
             "method": method,
@@ -498,7 +516,7 @@ def _write(action, method, endpoint, payload=None, *, confirm=False, current=Non
         return json.dumps({"applied": False, "action": action, "error": str(e)})
 
 
-def _valid_job_api_types() -> list:
+def _valid_job_api_types() -> list[str]:
     try:
         from experiment_designer.spec.job_registry import JobRegistry
 
@@ -507,7 +525,7 @@ def _valid_job_api_types() -> list:
         return []
 
 
-def _next_job_slot(queue_id: int):
+def _next_job_slot(queue_id: int) -> tuple[int, int | None]:
     """Return (order, previous_job_id) for appending a job to a queue's existing sequence."""
     try:
         result = _api_request("GET", "jobs", params={"filter[queue]": str(queue_id)})
@@ -527,7 +545,8 @@ def list_library() -> str:
     `agent_id`/`proxy_id`/`configuration_id` for pm_add_bot. Read-only (works on any configured API).
     """
     fields = ("id", "name", "description", "type", "active")
-    out = {}
+    # Per key: the rows, or an {"error": ...} object if that endpoint failed.
+    out: dict[str, list[dict[str, Any]] | dict[str, str]] = {}
     for key, endpoint in (
         ("agents", "agents"),
         ("proxies", "proxies"),
@@ -936,10 +955,10 @@ def get_experiment(experiment_id: int) -> str:
         JSON with experiment details including all crawlers and their configurations
     """
     try:
-        experiment_id = _validate_id(experiment_id, "experiment_id")
-        if experiment_id is None:
+        valid_experiment_id = _validate_id(experiment_id, "experiment_id")
+        if valid_experiment_id is None:
             return json.dumps({"error": "experiment_id is required"})
-        result = _api_request("GET", f"experiments/{experiment_id}")
+        result = _api_request("GET", f"experiments/{valid_experiment_id}")
         return json.dumps(result)
     except ValueError as e:
         return json.dumps({"error": f"Validation error: {e}"})
@@ -959,10 +978,10 @@ def get_crawler(crawler_id: int) -> str:
         JSON with crawler details including configuration, agent, proxy, queues
     """
     try:
-        crawler_id = _validate_id(crawler_id, "crawler_id")
-        if crawler_id is None:
+        valid_crawler_id = _validate_id(crawler_id, "crawler_id")
+        if valid_crawler_id is None:
             return json.dumps({"error": "crawler_id is required"})
-        result = _api_request("GET", f"crawlers/{crawler_id}")
+        result = _api_request("GET", f"crawlers/{valid_crawler_id}")
         return json.dumps(result)
     except ValueError as e:
         return json.dumps({"error": f"Validation error: {e}"})
@@ -982,10 +1001,10 @@ def get_queue(queue_id: int) -> str:
         JSON with queue details including all jobs and their behaviors
     """
     try:
-        queue_id = _validate_id(queue_id, "queue_id")
-        if queue_id is None:
+        valid_queue_id = _validate_id(queue_id, "queue_id")
+        if valid_queue_id is None:
             return json.dumps({"error": "queue_id is required"})
-        result = _api_request("GET", f"queues/{queue_id}")
+        result = _api_request("GET", f"queues/{valid_queue_id}")
         return json.dumps(result)
     except ValueError as e:
         return json.dumps({"error": f"Validation error: {e}"})
@@ -1005,10 +1024,10 @@ def get_job(job_id: int) -> str:
         JSON with job details including type, behaviors, and execution status
     """
     try:
-        job_id = _validate_id(job_id, "job_id")
-        if job_id is None:
+        valid_job_id = _validate_id(job_id, "job_id")
+        if valid_job_id is None:
             return json.dumps({"error": "job_id is required"})
-        result = _api_request("GET", f"jobs/{job_id}")
+        result = _api_request("GET", f"jobs/{valid_job_id}")
         return json.dumps(result)
     except ValueError as e:
         return json.dumps({"error": f"Validation error: {e}"})
@@ -1160,8 +1179,8 @@ def trace_experiment(
     """
     try:
         # Validate inputs
-        experiment_id = _validate_id(experiment_id, "experiment_id")
-        if experiment_id is None:
+        valid_experiment_id = _validate_id(experiment_id, "experiment_id")
+        if valid_experiment_id is None:
             return json.dumps({"error": "experiment_id is required"})
         time_range = _validate_time_range(time_range)
     except ValueError as e:
@@ -1174,7 +1193,7 @@ def trace_experiment(
 
         try:
             trace = builder.trace_experiment(
-                experiment_id,
+                valid_experiment_id,
                 include_crawlers=include_crawlers,
                 include_jobs=include_jobs,
                 time_range=time_range,
@@ -1208,8 +1227,8 @@ def trace_crawler(
     """
     try:
         # Validate inputs
-        crawler_id = _validate_id(crawler_id, "crawler_id")
-        if crawler_id is None:
+        valid_crawler_id = _validate_id(crawler_id, "crawler_id")
+        if valid_crawler_id is None:
             return json.dumps({"error": "crawler_id is required"})
         time_range = _validate_time_range(time_range)
     except ValueError as e:
@@ -1222,7 +1241,7 @@ def trace_crawler(
 
         try:
             trace = builder.trace_crawler(
-                crawler_id,
+                valid_crawler_id,
                 include_jobs=include_jobs,
                 time_range=time_range,
             )
@@ -1250,8 +1269,8 @@ def trace_job(job_id: int, time_range: str = "7d") -> str:
     """
     try:
         # Validate inputs
-        job_id = _validate_id(job_id, "job_id")
-        if job_id is None:
+        valid_job_id = _validate_id(job_id, "job_id")
+        if valid_job_id is None:
             return json.dumps({"error": "job_id is required"})
         time_range = _validate_time_range(time_range)
     except ValueError as e:
@@ -1263,7 +1282,7 @@ def trace_job(job_id: int, time_range: str = "7d") -> str:
         builder = TraceBuilder()
 
         try:
-            trace = builder.trace_job(job_id, time_range=time_range)
+            trace = builder.trace_job(valid_job_id, time_range=time_range)
             return trace.to_json()
         finally:
             builder.close()
@@ -1340,7 +1359,7 @@ def get_lambda_invocations(
         JSON with Lambda invocation details
     """
     # Query Lambda component logs
-    result = query_logs(
+    result: str = query_logs(
         component="lambda",
         time_range=time_range,
         experiment_id=experiment_id,

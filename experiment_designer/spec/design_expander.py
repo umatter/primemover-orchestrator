@@ -517,9 +517,9 @@ class DesignExpander:
             self._set_nested_value(crawler, param_path, value)
 
         # Substitute variables throughout the entire crawler structure
-        crawler = self._substitute_all_variables(crawler, cell, factors)
+        substituted: dict[str, Any] = self._substitute_all_variables(crawler, cell, factors)
 
-        return crawler
+        return substituted
 
     def _substitute_all_variables(
         self, obj: Any, cell: DesignCell, factors: dict[str, Factor]

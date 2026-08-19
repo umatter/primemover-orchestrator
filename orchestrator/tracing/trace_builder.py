@@ -258,7 +258,8 @@ class TraceBuilder:
                 return self._api_get(endpoint, retry_on_401=False)
 
             response.raise_for_status()
-            return response.json()
+            payload: dict = response.json()
+            return payload
         except Exception as e:
             logger.debug(f"API GET {endpoint} failed: {e}")
             return None

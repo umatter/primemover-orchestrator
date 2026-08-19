@@ -516,7 +516,7 @@ def summary(
     # Determine what to summarize
     if experiment_id:
         # Summarize API experiment
-        if not all([api_url, email, password]):
+        if not api_url or not email or not password:
             click.secho("API credentials required for --experiment-id", fg="red")
             click.echo()
             click.echo("Set environment variables:")
@@ -588,7 +588,9 @@ def summary(
                 charts = {}
                 click.secho("Warning: matplotlib not available, skipping charts", fg="yellow")
 
-            html_gen = ComparisonHTMLGenerator(comparison, charts)
+            html_gen: ComparisonHTMLGenerator | HTMLGenerator = ComparisonHTMLGenerator(
+                comparison, charts
+            )
             html = html_gen.generate()
 
             if output:

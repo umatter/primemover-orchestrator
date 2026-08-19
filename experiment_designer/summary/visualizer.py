@@ -273,7 +273,8 @@ class ExperimentVisualizer:
         heights = []
         colors = []
 
-        pos = 0
+        # Half-unit gaps are inserted between factor groups, so this is a float.
+        pos: float = 0
         color_idx = 0
         color_map = plt.cm.Set2(np.linspace(0, 1, num_factors))
 

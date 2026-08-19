@@ -63,13 +63,16 @@ class SpecValidator:
         if not HAS_JSONSCHEMA:
             return
 
+        resolved_path: str | Path
         if schema_path is None:
             # Use default schema path
             schema_dir = Path(__file__).parent.parent / "schema"
-            schema_path = schema_dir / "experiment-spec.schema.json"
+            resolved_path = schema_dir / "experiment-spec.schema.json"
+        else:
+            resolved_path = schema_path
 
         try:
-            with open(schema_path) as f:
+            with open(resolved_path) as f:
                 self.schema = json.load(f)
         except (FileNotFoundError, json.JSONDecodeError):
             # Schema not found or invalid - continue without it
@@ -85,9 +88,9 @@ class SpecValidator:
         Returns:
             ValidationResult with errors, warnings, and info
         """
-        errors = []
-        warnings = []
-        info = {}
+        errors: list[str] = []
+        warnings: list[str] = []
+        info: dict[str, Any] = {}
 
         # 1. JSON Schema validation (if available)
         schema_errors = self._validate_schema(spec)
@@ -158,8 +161,8 @@ class SpecValidator:
 
     def _validate_design(self, design: dict[str, Any]) -> tuple[list[str], list[str]]:
         """Validate factorial design."""
-        errors = []
-        warnings = []
+        errors: list[str] = []
+        warnings: list[str] = []
 
         factors = design.get("factors", {})
         if not factors:
@@ -398,8 +401,8 @@ class SpecValidator:
 
     def _validate_templates(self, spec: dict[str, Any]) -> tuple[list[str], list[str]]:
         """Validate template definitions."""
-        errors = []
-        warnings = []
+        errors: list[str] = []
+        warnings: list[str] = []
 
         templates = spec.get("templates", {})
 
@@ -415,8 +418,8 @@ class SpecValidator:
 
     def _validate_variable_references(self, spec: dict[str, Any]) -> tuple[list[str], list[str]]:
         """Validate variable references in crawler templates."""
-        errors = []
-        warnings = []
+        errors: list[str] = []
+        warnings: list[str] = []
 
         design = spec.get("design")
         if not design:
@@ -447,7 +450,7 @@ class SpecValidator:
 
     def _find_undefined_variables(self, obj: Any, available_vars: set) -> set:
         """Find undefined variable references in an object."""
-        undefined = set()
+        undefined: set[str] = set()
 
         if isinstance(obj, str):
             # Skip strings that look like JSON (start and end with { })

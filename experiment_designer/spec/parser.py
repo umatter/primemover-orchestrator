@@ -231,7 +231,7 @@ class SpecParser:
             context = {k: v for k, v in params.items() if not isinstance(v, (dict, list))}
 
         # Resolve pool references recursively
-        resolved = resolve_pool_references(crawler, self.pool_manager, context)
+        resolved: dict[str, Any] = resolve_pool_references(crawler, self.pool_manager, context)
 
         # Propagate any errors/warnings
         self.errors.extend(self.pool_manager.errors)
@@ -692,7 +692,8 @@ class SpecParser:
         Note: We use a recursive approach instead of YAML round-trip to avoid
         issues with YAML interpreting substituted values (e.g., {var} as a dict).
         """
-        return self._substitute_in_structure(jobs, variables)
+        substituted: list[dict[str, Any]] = self._substitute_in_structure(jobs, variables)
+        return substituted
 
     def _substitute_in_structure(self, obj: Any, variables: dict[str, Any]) -> Any:
         """Recursively substitute variables in any data structure."""

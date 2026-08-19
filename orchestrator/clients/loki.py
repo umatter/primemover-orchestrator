@@ -557,10 +557,12 @@ class LokiClient:
         """Get all values for a label."""
         response = self._client.get(f"/loki/api/v1/label/{label}/values")
         response.raise_for_status()
-        return response.json().get("data", [])
+        values: list[str] = response.json().get("data", [])
+        return values
 
     def get_labels(self) -> list[str]:
         """Get all available labels."""
         response = self._client.get("/loki/api/v1/labels")
         response.raise_for_status()
-        return response.json().get("data", [])
+        labels: list[str] = response.json().get("data", [])
+        return labels

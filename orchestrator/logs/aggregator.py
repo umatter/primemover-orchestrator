@@ -9,14 +9,13 @@ Aggregates logs from multiple sources:
 
 import json
 import logging
-import os
 import zipfile
+from collections.abc import Iterator
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Iterator, Optional
 
-from orchestrator.clients.loki import LogEntry, LokiClient, QueryResult
+from orchestrator.clients.loki import LogEntry, LokiClient
 from orchestrator.config import get_settings
 
 logger = logging.getLogger(__name__)
@@ -55,7 +54,7 @@ def read_file_tail(file_path: Path, max_bytes: int = MAX_LOG_READ_BYTES) -> str:
 
         return content
 
-    except (OSError, IOError) as e:
+    except OSError as e:
         logger.debug(f"Error reading file {file_path}: {e}")
         return ""
 
@@ -65,7 +64,8 @@ class AggregatedResult:
     """Result of an aggregated log query."""
 
     entries: list[LogEntry]
-    sources: dict[str, int]  # source -> count
+    # source -> count, or "<source>_error" -> error message for sources that failed
+    sources: dict[str, int | str]
     total_count: int
     query_params: dict
 
@@ -83,10 +83,10 @@ class LogAggregator:
 
     def __init__(
         self,
-        loki_url: Optional[str] = None,
-        har_path: Optional[str] = None,
-        api_log_path: Optional[str] = None,
-        runner_log_path: Optional[str] = None,
+        loki_url: str | None = None,
+        har_path: str | None = None,
+        api_log_path: str | None = None,
+        runner_log_path: str | None = None,
     ):
         """
         Initialize the log aggregator.
@@ -104,7 +104,7 @@ class LogAggregator:
         self.api_log_path = Path(api_log_path or settings.pm_api_log_path)
         self.runner_log_path = Path(runner_log_path or settings.pm_runner_log_path)
 
-        self._loki_client: Optional[LokiClient] = None
+        self._loki_client: LokiClient | None = None
 
     @property
     def loki_client(self) -> LokiClient:
@@ -123,17 +123,17 @@ class LogAggregator:
     # Valid component names for filtering
     COMPONENTS = {
         # Application components
-        "api",      # Laravel API
-        "runner",   # Java Runner
-        "lambda",   # AWS Lambda (CloudWatch + HAR)
+        "api",  # Laravel API
+        "runner",  # Java Runner
+        "lambda",  # AWS Lambda (CloudWatch + HAR)
         # Infrastructure components
-        "apache",   # Apache web server
-        "mysql",    # MySQL database
-        "redis",    # Redis cache
-        "php",      # PHP-FPM
+        "apache",  # Apache web server
+        "mysql",  # MySQL database
+        "redis",  # Redis cache
+        "php",  # PHP-FPM
         "memcached",  # Memcached
         # Special values
-        "all",      # All components
+        "all",  # All components
     }
 
     # Components that are queried via Loki
@@ -141,12 +141,12 @@ class LogAggregator:
 
     def query(
         self,
-        component: Optional[str] = None,
-        level: Optional[str] = None,
-        search: Optional[str] = None,
-        experiment_id: Optional[int] = None,
-        crawler_id: Optional[int] = None,
-        job_id: Optional[int] = None,
+        component: str | None = None,
+        level: str | None = None,
+        search: str | None = None,
+        experiment_id: int | None = None,
+        crawler_id: int | None = None,
+        job_id: int | None = None,
         time_range: str = "1h",
         limit: int = 100,
         include_lambda: bool = True,
@@ -170,7 +170,7 @@ class LogAggregator:
             AggregatedResult with entries from all sources
         """
         entries: list[LogEntry] = []
-        sources: dict[str, int] = {}
+        sources: dict[str, int | str] = {}
 
         query_params = {
             "component": component,
@@ -184,11 +184,7 @@ class LogAggregator:
         }
 
         # Determine which components to query via Loki
-        query_loki = (
-            component is None
-            or component == "all"
-            or component in self.LOKI_COMPONENTS
-        )
+        query_loki = component is None or component == "all" or component in self.LOKI_COMPONENTS
 
         # Query Loki for application and infrastructure logs
         if query_loki:
@@ -257,9 +253,9 @@ class LogAggregator:
 
     def _query_log_files(
         self,
-        component: Optional[str] = None,
-        level: Optional[str] = None,
-        search: Optional[str] = None,
+        component: str | None = None,
+        level: str | None = None,
+        search: str | None = None,
         limit: int = 100,
     ) -> list[LogEntry]:
         """Query log files directly (fallback when Loki unavailable)."""
@@ -296,10 +292,7 @@ class LogAggregator:
         if level and level != "all":
             level_order = {"debug": 0, "info": 1, "warning": 2, "warn": 2, "error": 3}
             min_level = level_order.get(level.lower(), 0)
-            entries = [
-                e for e in entries
-                if level_order.get(e.level.lower(), 0) >= min_level
-            ]
+            entries = [e for e in entries if level_order.get(e.level.lower(), 0) >= min_level]
 
         # Filter by search
         if search:
@@ -312,10 +305,10 @@ class LogAggregator:
 
     def _query_lambda_output(
         self,
-        experiment_id: Optional[int] = None,
-        crawler_id: Optional[int] = None,
-        job_id: Optional[int] = None,
-        search: Optional[str] = None,
+        experiment_id: int | None = None,
+        crawler_id: int | None = None,
+        job_id: int | None = None,
+        search: str | None = None,
         limit: int = 100,
     ) -> list[LogEntry]:
         """Extract Lambda decision outputs from job report zip files."""
@@ -333,7 +326,9 @@ class LogAggregator:
                 [d for d in self.har_path.iterdir() if d.is_dir()],
                 key=lambda d: d.stat().st_mtime,
                 reverse=True,
-            )[:50]  # Last 50 jobs
+            )[
+                :50
+            ]  # Last 50 jobs
 
         for job_dir in job_dirs:
             if not job_dir.exists():
@@ -357,7 +352,7 @@ class LogAggregator:
     def _extract_lambda_from_zip(
         self,
         zip_path: Path,
-        search: Optional[str] = None,
+        search: str | None = None,
     ) -> list[LogEntry]:
         """Extract Lambda decision output from a job report zip file."""
         entries: list[LogEntry] = []
@@ -372,6 +367,7 @@ class LogAggregator:
                         # Extract job ID from filename
                         job_id = None
                         import re
+
                         match = re.search(r"(\d+)", zip_path.parent.name)
                         if match:
                             job_id = int(match.group(1))
@@ -386,9 +382,13 @@ class LogAggregator:
                                 ts_values = ts_data["timestamp"]
                                 if isinstance(ts_values, dict) and ts_values:
                                     first_ts = next(iter(ts_values.values()), None)
-                                    if first_ts and not (isinstance(first_ts, float) and first_ts != first_ts):
+                                    if first_ts and not (
+                                        isinstance(first_ts, float) and first_ts != first_ts
+                                    ):
                                         try:
-                                            timestamp = datetime.fromtimestamp(float(first_ts), tz=timezone.utc)
+                                            timestamp = datetime.fromtimestamp(
+                                                float(first_ts), tz=timezone.utc
+                                            )
                                         except (ValueError, TypeError):
                                             pass
 
@@ -434,8 +434,8 @@ class LogAggregator:
 
     def _query_lambda_cloudwatch(
         self,
-        job_id: Optional[int] = None,
-        search: Optional[str] = None,
+        job_id: int | None = None,
+        search: str | None = None,
         time_range: str = "1h",
         limit: int = 100,
     ) -> list[LogEntry]:
@@ -461,7 +461,10 @@ class LogAggregator:
             entries = []
             for cw_entry in result.entries:
                 # Skip START/END/REPORT lines for cleaner output
-                if any(x in cw_entry.message for x in ["START RequestId", "END RequestId", "REPORT RequestId"]):
+                if any(
+                    x in cw_entry.message
+                    for x in ["START RequestId", "END RequestId", "REPORT RequestId"]
+                ):
                     continue
 
                 entry = LogEntry(
@@ -486,7 +489,7 @@ class LogAggregator:
         except Exception:
             return []
 
-    def get_lambda_output(self, job_id: int) -> Optional[dict]:
+    def get_lambda_output(self, job_id: int) -> dict | None:
         """
         Get full Lambda output for a specific job.
 
@@ -507,7 +510,8 @@ class LogAggregator:
                     for name in zf.namelist():
                         if "output" in name.lower() and name.endswith(".json"):
                             with zf.open(name) as f:
-                                return json.load(f)
+                                output: dict = json.load(f)
+                                return output
             except Exception:
                 pass
 
@@ -515,9 +519,9 @@ class LogAggregator:
 
     def tail(
         self,
-        component: Optional[str] = None,
-        level: Optional[str] = None,
-        search: Optional[str] = None,
+        component: str | None = None,
+        level: str | None = None,
+        search: str | None = None,
     ) -> Iterator[LogEntry]:
         """
         Tail logs in real-time.

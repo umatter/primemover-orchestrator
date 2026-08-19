@@ -306,7 +306,9 @@ class DistributionFactory:
         elif dist_type == "discrete":
             values = config.get("values", {})
             # Convert string keys to appropriate types (int, float, etc.)
-            converted = {}
+            # Keys stay heterogeneous on purpose: numeric-looking keys become
+            # int/float, everything else keeps its original (str) form.
+            converted: dict[int | float | str, float] = {}
             for k, v in values.items():
                 try:
                     # Try to convert key to int or float

@@ -5,6 +5,7 @@ Command-line interface for monitoring, debugging, and managing experiments.
 """
 
 from pathlib import Path
+from typing import TypedDict
 
 import click
 from rich.console import Console
@@ -35,6 +36,13 @@ REPO_URLS = {
     "runner": "git@github.com:umatter/primemover_runner.git",
     "gui": "git@github.com:umatter/primemover_gui.git",
 }
+
+
+class RepoInfo(TypedDict):
+    """Checkout location and clone URL for one sibling repository."""
+
+    path: Path
+    url: str
 
 
 @cli.command()
@@ -241,7 +249,7 @@ def setup(
     console.print()
 
     # Define expected paths
-    repos = {
+    repos: dict[str, RepoInfo] = {
         "api": {"path": parent_path / "primemover_api", "url": api_repo},
         "runner": {"path": parent_path / "primemover_runner", "url": runner_repo},
         "gui": {"path": parent_path / "primemover_gui", "url": gui_repo},
