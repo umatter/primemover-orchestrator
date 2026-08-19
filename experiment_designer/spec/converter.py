@@ -341,15 +341,27 @@ class SpecConverter:
         if proxy == "auto" or not proxy:
             proxy = {}
 
+        proxy_type = proxy.get("type", defaults.get("proxy_type", "http"))
+
+        # Oxylabs is self-configuring: the runner supplies the endpoint and the
+        # account from its own config (oxylabs.hostname/.port/.customer/.password),
+        # so a spec needs only `type: oxylabs`. Geo-targeting comes from the agent's
+        # location, not from here, so filling in a placeholder host or repeating the
+        # account per crawler would only put credentials in git for no benefit.
+        if proxy_type == "oxylabs":
+            default_host, default_port = "", 0
+        else:
+            default_host, default_port = "127.0.0.1", 8080
+
         return {
             "name": proxy.get("name", "Proxy"),
             "description": proxy.get("description", "Generated proxy"),
-            "hostname": proxy.get("hostname", proxy.get("host", "127.0.0.1")),
-            "port": int(proxy.get("port", 8080)),
+            "hostname": proxy.get("hostname", proxy.get("host", default_host)),
+            "port": int(proxy.get("port", default_port)),
             "username": proxy.get("username", ""),
             "password": proxy.get("password", ""),
             "active": True,
-            "type": proxy.get("type", defaults.get("proxy_type", "http")),
+            "type": proxy_type,
         }
 
     def _convert_agent(

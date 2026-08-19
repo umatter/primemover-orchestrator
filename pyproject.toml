@@ -30,10 +30,16 @@ dependencies = [
     "rich>=13.0.0",
     "python-dotenv>=1.0.0",
     "pyyaml>=6.0",
-    "mcp>=1.0.0",
+    "mcp>=1.0.0,<2.0.0",
     "boto3>=1.34.0",
     "requests>=2.28.0",
     "jsonschema>=4.0.0",
+    # Local Lambda service dependencies
+    "flask>=3.0.0",
+    "lxml>=4.9.0",
+    "pandas>=2.0.0",
+    "openai>=1.0.0",
+    "langdetect>=1.0.9",
 ]
 
 [project.optional-dependencies]

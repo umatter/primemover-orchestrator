@@ -58,6 +58,9 @@ dmypy.json
 .env.*.local
 !.env.example
 
+# Pre-incident credential backups (contain old secrets — never commit)
+*.bak.preincident
+
 # Logs
 *.log
 logs/
@@ -96,3 +99,10 @@ runner.pid
 tmp/
 temp/
 *.tmp
+
+# HAR spool-and-drain: real config carries the remote path + an obscured
+# Nextcloud credential. Only the *.template files are tracked.
+infrastructure/har-drain/har-drain.env
+infrastructure/har-drain/rclone.conf
+log/har-drain-staging/
+log/har-drain.log

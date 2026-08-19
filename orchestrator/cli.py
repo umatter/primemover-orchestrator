@@ -803,7 +803,7 @@ def setup(
 # =============================================================================
 
 
-def _get_component_manager(settings):
+def _get_component_manager(settings, lambda_server_enabled: bool = True):
     """Create ComponentManager from settings."""
     from orchestrator.components import ComponentManager
 
@@ -818,6 +818,7 @@ def _get_component_manager(settings):
         runner_java_opts=settings.runner_java_opts,
         runner_spring_profile=settings.runner_spring_profile,
         runner_log_path=Path(settings.pm_runner_log_path).resolve(),
+        lambda_server_enabled=lambda_server_enabled,
     )
 
 
@@ -853,7 +854,8 @@ def status(ctx: click.Context, verbose: bool, legacy: bool) -> None:
         table.add_row("Tempo", tempo_status[0], tempo_status[1])
 
         # Check PrimeMover API
-        api_status = _check_url(settings.pm_api_base_url.rstrip("/api/v1"), "/api/health")
+        api_base = settings.pm_api_base_url.removesuffix("/api/v1").rstrip("/")
+        api_status = _check_url(api_base, "/api/health")
         table.add_row("PrimeMover API", api_status[0], api_status[1])
 
         console.print(table)
@@ -898,20 +900,22 @@ def _check_url(base_url: str, path: str) -> tuple[str, str]:
 @click.option("--api/--no-api", default=True, help="Start API component")
 @click.option("--runner/--no-runner", default=True, help="Start Runner component")
 @click.option("--monitoring/--no-monitoring", default=True, help="Start Monitoring component")
+@click.option("--lambda-local/--no-lambda-local", default=True, help="Start local Lambda server (for runner)")
 @click.pass_context
-def up(ctx: click.Context, api: bool, runner: bool, monitoring: bool) -> None:
+def up(ctx: click.Context, api: bool, runner: bool, monitoring: bool, lambda_local: bool) -> None:
     """
     Start PrimeMover components.
 
     By default starts all components in correct order:
     1. Monitoring (Grafana, Loki, Prometheus, Tempo)
-    2. API (Apache, PHP, MySQL, Redis)
-    3. Runner (Java process)
+    2. Lambda Server (local Python service for video selection)
+    3. API (Apache, PHP, MySQL, Redis)
+    4. Runner (Java process)
 
     Examples:
         orchestrator up                   # Start all components
         orchestrator up --no-runner       # Start API and monitoring only
-        orchestrator up --api --no-monitoring  # Start just API
+        orchestrator up --no-lambda-local # Use AWS Lambda instead of local
     """
     settings = ctx.obj["settings"]
 
@@ -921,8 +925,8 @@ def up(ctx: click.Context, api: bool, runner: bool, monitoring: bool) -> None:
 
     console.print("[bold]Starting PrimeMover components...[/bold]\n")
 
-    manager = _get_component_manager(settings)
-    system_status = manager.start(api=api, runner=runner, monitoring=monitoring)
+    manager = _get_component_manager(settings, lambda_server_enabled=lambda_local)
+    system_status = manager.start(api=api, runner=runner, monitoring=monitoring, lambda_server=lambda_local)
 
     console.print()
     if system_status.overall.value == "running":
@@ -937,16 +941,18 @@ def up(ctx: click.Context, api: bool, runner: bool, monitoring: bool) -> None:
 @click.option("--api/--no-api", default=True, help="Stop API component")
 @click.option("--runner/--no-runner", default=True, help="Stop Runner component")
 @click.option("--monitoring/--no-monitoring", default=True, help="Stop Monitoring component")
+@click.option("--lambda-local/--no-lambda-local", default=True, help="Stop local Lambda server")
 @click.option("--volumes", is_flag=True, help="Also remove Docker volumes (data loss!)")
 @click.pass_context
-def down(ctx: click.Context, api: bool, runner: bool, monitoring: bool, volumes: bool) -> None:
+def down(ctx: click.Context, api: bool, runner: bool, monitoring: bool, lambda_local: bool, volumes: bool) -> None:
     """
     Stop PrimeMover components.
 
     By default stops all components in reverse order:
     1. Runner (Java process)
     2. API (Apache, PHP, MySQL, Redis)
-    3. Monitoring (Grafana, Loki, Prometheus, Tempo)
+    3. Lambda Server (local Python service)
+    4. Monitoring (Grafana, Loki, Prometheus, Tempo)
 
     Examples:
         orchestrator down                 # Stop all components
@@ -969,7 +975,7 @@ def down(ctx: click.Context, api: bool, runner: bool, monitoring: bool, volumes:
     console.print("[bold]Stopping PrimeMover components...[/bold]\n")
 
     manager = _get_component_manager(settings)
-    system_status = manager.stop(api=api, runner=runner, monitoring=monitoring, remove_volumes=volumes)
+    system_status = manager.stop(api=api, runner=runner, monitoring=monitoring, lambda_server=lambda_local, remove_volumes=volumes)
 
     console.print()
     if system_status.overall.value == "stopped":
@@ -982,8 +988,9 @@ def down(ctx: click.Context, api: bool, runner: bool, monitoring: bool, volumes:
 @click.option("--api", is_flag=True, help="Restart API component")
 @click.option("--runner", is_flag=True, help="Restart Runner component")
 @click.option("--monitoring", is_flag=True, help="Restart Monitoring component")
+@click.option("--lambda-local", is_flag=True, help="Restart Lambda Server component")
 @click.pass_context
-def restart(ctx: click.Context, api: bool, runner: bool, monitoring: bool) -> None:
+def restart(ctx: click.Context, api: bool, runner: bool, monitoring: bool, lambda_local: bool) -> None:
     """
     Restart PrimeMover components.
 
@@ -997,13 +1004,13 @@ def restart(ctx: click.Context, api: bool, runner: bool, monitoring: bool) -> No
     settings = ctx.obj["settings"]
 
     # If no specific components selected, restart all
-    if not any([api, runner, monitoring]):
-        api = runner = monitoring = True
+    if not any([api, runner, monitoring, lambda_local]):
+        api = runner = monitoring = lambda_local = True
 
     console.print("[bold]Restarting PrimeMover components...[/bold]\n")
 
     manager = _get_component_manager(settings)
-    system_status = manager.restart(api=api, runner=runner, monitoring=monitoring)
+    system_status = manager.restart(api=api, runner=runner, monitoring=monitoring, lambda_server=lambda_local)
 
     console.print()
     if system_status.overall.value == "running":
@@ -3350,7 +3357,7 @@ def debug_job(
             include_har=not no_har,
             include_cloudwatch=not no_cloudwatch,
             include_logs=not no_logs,
-            time_range=time_range,
+            log_time_range=time_range,
         )
 
     if output_format == "json" or export:
@@ -3611,13 +3618,15 @@ def test(ctx: click.Context, verbose: bool, quick: bool, test_filter: str) -> No
     console.print("[bold cyan]Running End-to-End Tests[/bold cyan]\n")
 
     # Build pytest command
-    test_file = Path(__file__).parent / "tests" / "test_e2e.py"
+    test_file = Path(__file__).parent / "tests" / "test_e2e_new.py"
 
     if not test_file.exists():
         console.print(f"[red]Test file not found: {test_file}[/red]")
         raise SystemExit(1)
 
-    cmd = [sys.executable, "-m", "pytest", str(test_file), "--e2e"]
+    # `orchestrator test` verifies the setup without Multilogin; the full browser
+    # automation run is `orchestrator e2e`.
+    cmd = [sys.executable, "-m", "pytest", str(test_file), "--e2e", "-m", "not multilogin"]
 
     if verbose:
         cmd.append("-v")
@@ -3662,8 +3671,19 @@ def test(ctx: click.Context, verbose: bool, quick: bool, test_filter: str) -> No
     is_flag=True,
     help="Run YouTube-specific e2e test with Lambda selection workflow",
 )
+@click.option(
+    "--chrome",
+    is_flag=True,
+    help="Run e2e test with plain Chrome (no Multilogin X, no proxy)",
+)
 @click.pass_context
-def e2e(ctx: click.Context, timeout: int | None, verbose: bool, youtube: bool) -> None:
+def e2e(
+    ctx: click.Context,
+    timeout: int | None,
+    verbose: bool,
+    youtube: bool,
+    chrome: bool,
+) -> None:
     """
     Run a complete end-to-end test with browser automation.
 
@@ -3672,32 +3692,40 @@ def e2e(ctx: click.Context, timeout: int | None, verbose: bool, youtube: bool) -
     \b
     - API and database connectivity
     - Experiment upload and scheduling
-    - Runner creating a Multilogin profile and executing jobs
+    - Runner executing jobs in a browser
     - Job completion and reporting
 
     \b
     Test types:
-    - Basic (default): Simple visit/wait jobs (~3 min)
+    - Basic (default): Simple visit/wait jobs via Multilogin X (~3 min)
+    - Chrome (--chrome): Same workflow using plain Chrome, no MLX or proxy (~3 min)
     - YouTube (--youtube): Full YouTube workflow with Lambda video selection (~10 min)
 
     \b
     Prerequisites:
     - All components running (orchestrator up)
-    - Multilogin X installed and logged in (runner will create profile automatically)
+    - For basic/youtube: Multilogin X installed and logged in
+    - For chrome: Only Chrome/Chromium and ChromeDriver needed
     - For YouTube test: Lambda function (bot-decision-yt) must be deployed
 
     \b
     Examples:
-        orchestrator e2e                  # Run basic e2e test
+        orchestrator e2e                  # Run basic e2e test (requires MLX)
+        orchestrator e2e --chrome         # Run with plain Chrome (no MLX needed)
+        orchestrator e2e --chrome -v      # Chrome test with verbose output
         orchestrator e2e --youtube        # Run YouTube workflow test
-        orchestrator e2e --youtube -v     # YouTube test with verbose output
         orchestrator e2e --timeout 300 -v # Basic test with custom timeout
     """
     import sys
 
     from orchestrator.e2e import E2ETestRunner
 
-    test_type = "youtube" if youtube else "basic"
+    if chrome:
+        test_type = "chrome"
+    elif youtube:
+        test_type = "youtube"
+    else:
+        test_type = "basic"
 
     runner = E2ETestRunner(
         timeout=timeout,

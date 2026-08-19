@@ -1,0 +1,33 @@
+[Unit]
+Description=PrimeMover HAR spool-and-drain (buffer -> Nextcloud)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=primemover
+Group=primemover
+WorkingDirectory=/home/primemover/primemover-orchestrator
+ExecStart=/home/primemover/primemover-orchestrator/scripts/har-drain.sh
+
+# Resource caps: this is a sidecar on a host that also runs the runner + Chrome.
+# It must always yield to them. CPUQuota=50% == half a core on this 8-core box;
+# idle IO class + Nice keep it off the runner's back; MemoryMax caps rclone/zstd.
+# Network is additionally capped via BWLIMIT in har-drain.env.
+Nice=10
+CPUWeight=20
+CPUQuota=50%
+IOSchedulingClass=idle
+IOSchedulingPriority=7
+MemoryMax=512M
+TasksMax=64
+
+# Read-only except the buffer, staging, and log dirs.
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/home/primemover/primemover_runner/primemover-runner/out/har /home/primemover/primemover-orchestrator/log
+PrivateTmp=true
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,15 @@
+[Unit]
+Description=Run the PrimeMover HAR spool-and-drain periodically
+# Pairs with primemover-har-drain.service.
+
+[Timer]
+# First run 5 min after boot, then every 5 min. The drain is single-shot and
+# self-locking, so a long upload never overlaps the next fire.
+OnBootSec=5min
+OnUnitActiveSec=5min
+# If the machine was asleep/off, run once on catch-up rather than for every miss.
+Persistent=true
+AccuracySec=30s
+
+[Install]
+WantedBy=timers.target

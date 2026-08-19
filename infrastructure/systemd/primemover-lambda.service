@@ -1,0 +1,17 @@
+[Unit]
+Description=PrimeMover Local Lambda Service
+After=network.target
+
+[Service]
+Type=simple
+User=primemover
+Group=primemover
+WorkingDirectory=/home/primemover/primemover-orchestrator
+EnvironmentFile=/home/primemover/primemover-orchestrator/.env
+Environment=PATH=/home/primemover/primemover-orchestrator/venv/bin:/usr/local/bin:/usr/bin:/bin
+ExecStart=/home/primemover/primemover-orchestrator/venv/bin/python -m orchestrator.lambda_service.server --port 5001 --host 127.0.0.1
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target

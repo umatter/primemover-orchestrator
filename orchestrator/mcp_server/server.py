@@ -7,7 +7,6 @@ Provides Claude Code with tools for monitoring, debugging, and managing experime
 import json
 import os
 import sys
-from typing import Optional
 
 from orchestrator.config import get_settings
 
@@ -123,7 +122,7 @@ def _validate_limit(limit: int) -> int:
     return limit
 
 
-def _validate_id(value: Optional[int], name: str) -> Optional[int]:
+def _validate_id(value: int | None, name: str) -> int | None:
     """Validate an ID parameter."""
     if value is None:
         return None
@@ -156,8 +155,8 @@ def query_logs(
     time_range: str = "1h",
     level: str = "all",
     search: str = "",
-    experiment_id: Optional[int] = None,
-    crawler_id: Optional[int] = None,
+    experiment_id: int | None = None,
+    crawler_id: int | None = None,
     limit: int = 100,
 ) -> str:
     """
@@ -176,6 +175,7 @@ def query_logs(
         JSON array of log entries with timestamp, component, level, and message
     """
     import httpx
+
     from orchestrator.clients.loki import escape_logql_string
 
     # Validate inputs
@@ -394,9 +394,10 @@ def _api_request(method: str, endpoint: str, data: dict = None, params: dict = N
 
     # Use context manager to ensure connections are closed
     with httpx.Client(timeout=30.0) as client:
-        # Authenticate
+        # Authenticate. NOTE: the auth route is `/login` (not `/auth/login`).
         auth_response = client.post(
-            f"{settings.pm_api_base_url}/auth/login",
+            f"{settings.pm_api_base_url}/login",
+            headers={"Accept": "application/json"},
             json={
                 "email": settings.pm_api_email,
                 "password": settings.pm_api_password,
@@ -404,10 +405,12 @@ def _api_request(method: str, endpoint: str, data: dict = None, params: dict = N
         )
 
         if auth_response.status_code != 200:
-            raise Exception("API authentication failed")
+            raise Exception(f"API authentication failed ({auth_response.status_code})")
 
         token = auth_response.json().get("access_token")
-        headers = {"Authorization": f"Bearer {token}"}
+        if not token:
+            raise Exception("API authentication returned no access_token")
+        headers = {"Authorization": f"Bearer {token}", "Accept": "application/json"}
 
         # Make request
         url = f"{settings.pm_api_base_url}/{endpoint}"
@@ -416,13 +419,321 @@ def _api_request(method: str, endpoint: str, data: dict = None, params: dict = N
             response = client.get(url, headers=headers, params=params)
         elif method == "POST":
             response = client.post(url, headers=headers, json=data)
+        elif method == "PUT":
+            response = client.put(url, headers=headers, json=data)
+        elif method == "DELETE":
+            response = client.delete(url, headers=headers, params=params)
         else:
             raise Exception(f"Unsupported method: {method}")
 
         if response.status_code >= 400:
-            raise Exception(f"API request failed: {response.status_code}")
+            # Include the body so validation errors (422) are actionable.
+            raise Exception(f"API request failed: {response.status_code} {response.text[:400]}")
 
+        if response.status_code == 204 or not response.text:
+            return {"status": response.status_code}
         return response.json()
+
+
+# =============================================================================
+# Write / control tools (dry-run by default, local-only) — see
+# docs/specs/mcp-control-surface.md
+# =============================================================================
+
+def _require_local_write_target() -> str | None:
+    """Return an error string if the API target is not the local dev server (:8090)."""
+    from urllib.parse import urlparse
+
+    parsed = urlparse(get_settings().pm_api_base_url)
+    host, port = parsed.hostname, parsed.port
+    if host not in ("localhost", "127.0.0.1") or (port is not None and port != 8090):
+        return (
+            f"MCP writes are restricted to the local dev API (:8090); "
+            f"refusing to mutate {get_settings().pm_api_base_url}."
+        )
+    return None
+
+
+def _unwrap(result: dict):
+    """API resources come back as {'data': {...}}; return the inner object when present."""
+    return result.get("data", result) if isinstance(result, dict) else result
+
+
+def _write(action, method, endpoint, payload=None, *, confirm=False, current=None, warnings=None):
+    """Shared dry-run/confirm + local-guard path for every write tool."""
+    guard = _require_local_write_target()
+    if guard:
+        return json.dumps({"error": guard})
+
+    if not confirm:
+        preview = {
+            "dry_run": True,
+            "action": action,
+            "method": method,
+            "endpoint": endpoint,
+            "payload": payload,
+            "to_apply": "call again with confirm=true",
+        }
+        if current is not None:
+            preview["current"] = current
+        if warnings:
+            preview["warnings"] = warnings
+        return json.dumps(preview)
+
+    try:
+        result = _api_request(method, endpoint, data=payload)
+        return json.dumps({"applied": True, "action": action, "result": _unwrap(result)})
+    except Exception as e:
+        return json.dumps({"applied": False, "action": action, "error": str(e)})
+
+
+def _valid_job_api_types() -> list:
+    try:
+        from experiment_designer.spec.job_registry import JobRegistry
+
+        return [j.api_type for j in JobRegistry.list_all()]
+    except Exception:
+        return []
+
+
+def _next_job_slot(queue_id: int):
+    """Return (order, previous_job_id) for appending a job to a queue's existing sequence."""
+    try:
+        result = _api_request("GET", "jobs", params={"filter[queue]": str(queue_id)})
+        rows = result.get("data", []) if isinstance(result, dict) else (result or [])
+        if not rows:
+            return 1, None
+        rows.sort(key=lambda j: j.get("order") or 0)
+        return (rows[-1].get("order") or len(rows)) + 1, rows[-1].get("id")
+    except Exception:
+        return 1, None
+
+
+@mcp.tool()
+def list_library() -> str:
+    """List the Library building blocks a Bot is composed from — agents (browser identity),
+    proxies (connection) and configurations (profile) — with their ids and names. Use this to pick
+    `agent_id`/`proxy_id`/`configuration_id` for pm_add_bot. Read-only (works on any configured API).
+    """
+    fields = ("id", "name", "description", "type", "active")
+    out = {}
+    for key, endpoint in (("agents", "agents"), ("proxies", "proxies"), ("configurations", "configurations")):
+        try:
+            result = _api_request("GET", endpoint, params={"per_page": 100})
+            rows = result.get("data", []) if isinstance(result, dict) else (result or [])
+            out[key] = [{k: r.get(k) for k in fields if k in r} for r in rows]
+        except Exception as e:
+            out[key] = {"error": str(e)}
+    return json.dumps(out)
+
+
+@mcp.tool()
+def pm_create_experiment(name: str, contact: str, description: str = "", testing: bool = False, confirm: bool = False) -> str:
+    """Create an experiment (study). Dry-run unless confirm=true. Local API only.
+
+    Args:
+        name: Study name.
+        contact: Contact person (required by the API).
+        description: Optional description.
+        testing: Mark as a testing experiment (runner uses testing endpoints).
+        confirm: Apply the change; without it, returns a preview only.
+    """
+    payload = {"name": name, "contact": contact, "description": description or name, "testing": testing}
+    return _write("create experiment", "POST", "experiments", payload, confirm=confirm)
+
+
+@mcp.tool()
+def pm_add_bot(experiment_id: int, name: str, agent_id: int, proxy_id: int, configuration_id: int,
+              description: str = "", confirm: bool = False) -> str:
+    """Add a Bot (crawler) to an experiment from Library building blocks. Dry-run unless confirm=true.
+
+    Args:
+        experiment_id: Target experiment.
+        name: Bot name.
+        agent_id / proxy_id / configuration_id: Library block ids (browser identity / connection / profile).
+        description: Optional description.
+        confirm: Apply the change.
+    """
+    payload = {
+        "experiment_id": experiment_id, "name": name, "description": description or name,
+        "agent_id": agent_id, "proxy_id": proxy_id, "configuration_id": configuration_id,
+    }
+    return _write("add bot", "POST", "crawlers", payload, confirm=confirm)
+
+
+@mcp.tool()
+def pm_create_run(crawler_id: int, name: str, start_at: str, timezone: str = "Europe/Berlin",
+                  timezone_utc_offset: str = "+02:00", description: str = "", active: int = 0,
+                  confirm: bool = False) -> str:
+    """Create/schedule a Run (queue) on a Bot. Dry-run unless confirm=true.
+
+    Args:
+        crawler_id: The bot this run belongs to.
+        name: Run name.
+        start_at: Local start datetime, e.g. '2026-08-01T09:00'.
+        timezone / timezone_utc_offset: Scheduling timezone and its UTC offset (e.g. '+02:00').
+        description: Optional (defaults to the run name; the API requires non-empty).
+        active: 0 = scheduled/inactive, 1 = active. Compose jobs before activating.
+        confirm: Apply the change.
+    """
+    payload = {
+        "crawler_id": crawler_id, "name": name, "description": description or name,
+        "start_at": start_at, "timezone": timezone, "timezone_utc_offset": timezone_utc_offset,
+        "active": active,
+    }
+    return _write("create run", "POST", "queues", payload, confirm=confirm)
+
+
+@mcp.tool()
+def pm_activate_run(queue_id: int, active: int = 1, confirm: bool = False) -> str:
+    """Activate (or deactivate) a Run so the runner will pick it up. Dry-run unless confirm=true."""
+    return _write(f"set run {queue_id} active={active}", "PUT", f"queues/{queue_id}", {"active": active},
+                  confirm=confirm)
+
+
+@mcp.tool()
+def pm_add_job(queue_id: int, type: str, name: str, order: int | None = None,
+               description: str = "", active: int = 1, previous_job_id: int | None = None,
+               confirm: bool = False) -> str:
+    """Append a Job to a Run's sequence. `order`/`previous_job_id` auto-computed if omitted.
+    Job parameters are set separately as behaviours (see pm_set_behaviour). Dry-run unless confirm=true.
+
+    Args:
+        queue_id: The run to add the job to.
+        type: API job type, e.g. 'visitjob', 'waitjob', 'clickjob' (see list_job_types).
+        name: Human label for the step.
+        order: Position; if omitted, appended after the last job.
+        description / active: optional.
+        previous_job_id: Predecessor; if omitted, chained to the current last job (null for the first).
+        confirm: Apply the change.
+    """
+    valid = _valid_job_api_types()
+    if valid and type not in valid:
+        return json.dumps({"error": f"Unknown job type '{type}'. Valid: {valid}"})
+    if order is None or previous_job_id is None:
+        auto_order, auto_prev = _next_job_slot(queue_id)
+        order = auto_order if order is None else order
+        previous_job_id = auto_prev if previous_job_id is None else previous_job_id
+    payload = {
+        "queue_id": queue_id, "type": type, "name": name, "description": description,
+        "order": order, "active": active, "previous_job_id": previous_job_id,
+    }
+    return _write("add job", "POST", "jobs", payload, confirm=confirm)
+
+
+@mcp.tool()
+def pm_set_behaviour(job_id: int, name: str, value: str, description: str = "", active: bool = True,
+                     behaviour_id: int | None = None, confirm: bool = False) -> str:
+    """Set a Job behaviour (its type-specific parameter, e.g. url/seconds/selector). Creates, or
+    updates when behaviour_id is given. Dry-run unless confirm=true.
+
+    Args:
+        job_id: The job the behaviour belongs to.
+        name: Parameter name (e.g. 'url').
+        value: Parameter value (e.g. 'https://youtube.com').
+        description / active: optional.
+        behaviour_id: If set, updates that behaviour instead of creating a new one.
+        confirm: Apply the change.
+    """
+    payload = {"job_id": job_id, "name": name, "value": value, "description": description, "active": active}
+    if behaviour_id:
+        return _write("update behaviour", "PUT", f"behaviors/{behaviour_id}", payload, confirm=confirm)
+    return _write("set behaviour", "POST", "behaviors", payload, confirm=confirm)
+
+
+@mcp.tool()
+def pm_delete(entity: str, id: int, confirm: bool = False) -> str:
+    """Delete an entity by id. entity in {experiment, bot, run, job, behaviour}.
+    Dry-run (with a cascade warning) unless confirm=true. Local API only.
+    """
+    routes = {
+        "experiment": (f"experiments/{id}", "its bots, runs, jobs and behaviours"),
+        "bot": (f"crawlers/{id}/destroy", "its runs, jobs and behaviours"),
+        "run": (f"queues/{id}", "its jobs and behaviours"),
+        "job": (f"jobs/{id}", "its behaviours"),
+        "behaviour": (f"behaviors/{id}", None),
+    }
+    if entity not in routes:
+        return json.dumps({"error": f"Unknown entity '{entity}'. Use one of {list(routes)}."})
+    endpoint, cascade = routes[entity]
+    warnings = [f"Deleting this {entity} also removes {cascade}."] if cascade else None
+    return _write(f"delete {entity} {id}", "DELETE", endpoint, confirm=confirm, warnings=warnings)
+
+
+@mcp.tool()
+def pm_compose_run(crawler_id: int, run: dict, jobs: list, confirm: bool = False) -> str:
+    """Compose a whole Run in one call: create the run, then its ordered jobs (chained), each with
+    its behaviours. Dry-run shows the full plan; confirm=true executes it. Local API only.
+
+    Args:
+        crawler_id: The bot to attach the run to.
+        run: {name, start_at, timezone?, timezone_utc_offset?, description?} for the run.
+        jobs: ordered list of {type, name, behaviours?: [{name, value}]} steps.
+        confirm: Execute the plan.
+
+    Example jobs: [
+        {"type": "visitjob", "name": "Open YouTube", "behaviours": [{"name": "url", "value": "https://youtube.com"}]},
+        {"type": "waitjob", "name": "Watch", "behaviours": [{"name": "seconds", "value": "30"}]}
+    ]
+    """
+    guard = _require_local_write_target()
+    if guard:
+        return json.dumps({"error": guard})
+
+    valid = _valid_job_api_types()
+    bad = [j.get("type") for j in jobs if valid and j.get("type") not in valid]
+    if bad:
+        return json.dumps({"error": f"Unknown job type(s): {bad}. Valid: {valid}"})
+
+    if not confirm:
+        return json.dumps({
+            "dry_run": True,
+            "action": "compose run",
+            "plan": {
+                "create_run": {"crawler_id": crawler_id, **run},
+                "jobs": [
+                    {"type": j.get("type"), "name": j.get("name"),
+                     "behaviours": j.get("behaviours", [])}
+                    for j in jobs
+                ],
+            },
+            "to_apply": "call again with confirm=true",
+        })
+
+    try:
+        run_payload = {
+            "crawler_id": crawler_id,
+            "name": run["name"],
+            "description": run.get("description") or run["name"],
+            "start_at": run["start_at"],
+            "timezone": run.get("timezone", "Europe/Berlin"),
+            "timezone_utc_offset": run.get("timezone_utc_offset", "+02:00"),
+            "active": run.get("active", 0),
+        }
+        queue = _unwrap(_api_request("POST", "queues", data=run_payload))
+        queue_id = queue["id"]
+
+        created_jobs = []
+        prev = None
+        for i, j in enumerate(jobs):
+            job_payload = {
+                "queue_id": queue_id, "type": j["type"], "name": j.get("name", j["type"]),
+                "description": j.get("description", ""), "order": i + 1, "active": 1,
+                "previous_job_id": prev,
+            }
+            job = _unwrap(_api_request("POST", "jobs", data=job_payload))
+            prev = job["id"]
+            behaviours = []
+            for b in j.get("behaviours", []):
+                bp = {"job_id": job["id"], "name": b["name"], "value": str(b["value"]),
+                      "description": b.get("description", ""), "active": True}
+                behaviours.append(_unwrap(_api_request("POST", "behaviors", data=bp)).get("id"))
+            created_jobs.append({"id": job["id"], "type": j["type"], "behaviour_ids": behaviours})
+
+        return json.dumps({"applied": True, "action": "compose run",
+                           "run_id": queue_id, "jobs": created_jobs})
+    except Exception as e:
+        return json.dumps({"applied": False, "action": "compose run", "error": str(e)})
 
 
 @mcp.tool()
@@ -628,7 +939,7 @@ def download_experiment(experiment_id: int) -> str:
     try:
         # Authenticate
         auth_response = httpx.post(
-            f"{settings.pm_api_base_url}/auth/login",
+            f"{settings.pm_api_base_url}/login",
             json={
                 "email": settings.pm_api_email,
                 "password": settings.pm_api_password,
@@ -684,7 +995,7 @@ def download_report(job_id: int) -> str:
     try:
         # Authenticate
         auth_response = httpx.post(
-            f"{settings.pm_api_base_url}/auth/login",
+            f"{settings.pm_api_base_url}/login",
             json={
                 "email": settings.pm_api_email,
                 "password": settings.pm_api_password,
@@ -861,7 +1172,7 @@ def trace_job(job_id: int, time_range: str = "7d") -> str:
 
 @mcp.tool()
 def find_failed_executions(
-    time_range: str = "24h", experiment_id: Optional[int] = None
+    time_range: str = "24h", experiment_id: int | None = None
 ) -> str:
     """
     Find all failed job executions with error details.
@@ -912,8 +1223,8 @@ def find_failed_executions(
 @mcp.tool()
 def get_lambda_invocations(
     time_range: str = "1h",
-    crawler_id: Optional[int] = None,
-    experiment_id: Optional[int] = None,
+    crawler_id: int | None = None,
+    experiment_id: int | None = None,
     limit: int = 50,
 ) -> str:
     """
@@ -965,8 +1276,8 @@ def analyze_lambda_decisions(experiment_id: int, group_by: str = "crawler") -> s
 @mcp.tool()
 def get_lambda_cloudwatch_logs(
     time_range: str = "1h",
-    request_id: Optional[str] = None,
-    job_id: Optional[int] = None,
+    request_id: str | None = None,
+    job_id: int | None = None,
     search: str = "",
     limit: int = 100,
 ) -> str:
@@ -1211,9 +1522,13 @@ def validate_experiment_spec(yaml_content: str, strict: bool = False) -> str:
         JSON with validation results including errors, warnings, and summary
     """
     try:
-        from experiment_designer.spec import SpecParser, SpecConverter, SpecValidator
-        from experiment_designer.spec.file_loader import create_file_tag_loader, resolve_file_references
         import yaml as yaml_lib
+
+        from experiment_designer.spec import SpecConverter, SpecParser, SpecValidator
+        from experiment_designer.spec.file_loader import (
+            create_file_tag_loader,
+            resolve_file_references,
+        )
     except ImportError as e:
         return json.dumps({"error": f"experiment_designer not available: {e}"})
 
@@ -1326,7 +1641,7 @@ def convert_spec_to_json(yaml_content: str) -> str:
         JSON string ready for API upload, or error details
     """
     try:
-        from experiment_designer.spec import SpecParser, SpecConverter
+        from experiment_designer.spec import SpecConverter, SpecParser
     except ImportError as e:
         return json.dumps({"error": f"experiment_designer not available: {e}"})
 
@@ -1355,7 +1670,7 @@ def convert_spec_to_json(yaml_content: str) -> str:
 @mcp.tool()
 def upload_experiment(
     yaml_content: str,
-    experiment_id: Optional[int] = None,
+    experiment_id: int | None = None,
     dry_run: bool = False,
 ) -> str:
     """
@@ -1375,9 +1690,11 @@ def upload_experiment(
         or validation errors if the spec is invalid
     """
     try:
-        from experiment_designer.spec import SpecParser, SpecConverter
-        import requests
         from datetime import datetime
+
+        import requests
+
+        from experiment_designer.spec import SpecConverter, SpecParser
     except ImportError as e:
         return json.dumps({"error": f"Required modules not available: {e}"})
 
@@ -1814,7 +2131,7 @@ def summarize_experiment(experiment_id: int) -> str:
     try:
         # Authenticate and fetch experiment
         auth_response = httpx.post(
-            f"{settings.pm_api_base_url}/auth/login",
+            f"{settings.pm_api_base_url}/login",
             json={
                 "email": settings.pm_api_email,
                 "password": settings.pm_api_password,
@@ -1901,7 +2218,7 @@ def compare_experiments(
     def get_api_data(experiment_id: str):
         """Fetch experiment data from API."""
         auth_response = httpx.post(
-            f"{settings.pm_api_base_url}/auth/login",
+            f"{settings.pm_api_base_url}/login",
             json={
                 "email": settings.pm_api_email,
                 "password": settings.pm_api_password,

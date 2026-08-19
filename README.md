@@ -384,6 +384,33 @@ orchestrator experiment upload spec.yaml --dry-run
 orchestrator experiment upload spec.yaml -e 123  # Add to existing
 ```
 
+### Uploading Experiments (JSON Scenario)
+
+Besides the YAML DSL (`pmspec upload`), experiments can be uploaded directly from pre-built JSON scenario files via the API. This is the method used by e2e tests and for re-running existing scenarios.
+
+```bash
+API=http://localhost:8090/api/v1
+
+# 1. Authenticate
+TOKEN=$(curl -s -X POST $API/login \
+  -H "Content-Type: application/json" \
+  -d '{"email":"...","password":"..."}' | python3 -c "import sys,json; print(json.load(sys.stdin)['access_token'])")
+
+# 2. Create experiment
+EXP_ID=$(curl -s -X POST $API/experiments \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"name":"My Experiment","description":"...","active":1}' | python3 -c "import sys,json; print(json.load(sys.stdin)['data']['id'])")
+
+# 3. Upload crawlers JSON (multipart form)
+curl -s -X POST "$API/experiments/$EXP_ID/upload" \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Accept: application/json" \
+  -F "json=@scenario.json;type=application/json"
+```
+
+The scenario JSON is an array of crawler objects each containing `queues` with `jobs`. Set `start_at` to a future time for the runner to pick it up. See `orchestrator/e2e/runner.py:_upload_experiment()` for the reference implementation.
+
 ### End-to-End Testing
 
 ```bash

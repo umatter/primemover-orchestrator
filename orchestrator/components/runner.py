@@ -5,14 +5,13 @@ Manages the Spring Boot Java runner application with PID-based process tracking.
 """
 
 import fcntl
-import glob
 import os
 import signal
 import subprocess
 import time
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Optional, Generator
+from typing import Generator
 
 from orchestrator.components.base import BaseComponent, ComponentHealth, ComponentStatus
 
@@ -44,7 +43,7 @@ def _pid_file_lock(pid_file: Path, timeout: float = 5.0) -> Generator[None, None
             try:
                 fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
                 break
-            except (OSError, IOError):
+            except OSError:
                 if time.time() - start_time > timeout:
                     raise TimeoutError(f"Could not acquire lock on {lock_file} within {timeout}s")
                 time.sleep(0.1)
@@ -53,7 +52,7 @@ def _pid_file_lock(pid_file: Path, timeout: float = 5.0) -> Generator[None, None
     finally:
         try:
             fcntl.flock(fd, fcntl.LOCK_UN)
-        except (OSError, IOError):
+        except OSError:
             pass
         os.close(fd)
 
@@ -85,9 +84,9 @@ class RunnerComponent(BaseComponent):
     def __init__(
         self,
         path: Path,
-        java_opts: Optional[str] = None,
+        java_opts: str | None = None,
         spring_profile: str = "local",
-        log_path: Optional[Path] = None,
+        log_path: Path | None = None,
     ):
         """
         Initialize Runner component.
@@ -101,12 +100,12 @@ class RunnerComponent(BaseComponent):
         super().__init__(name="Runner", path=path)
         self.java_opts = java_opts or self.DEFAULT_JAVA_OPTS
         self.spring_profile = spring_profile
-        self._jar_path: Optional[Path] = None
-        self._config_path: Optional[Path] = None
-        self._log_path: Optional[Path] = log_path
+        self._jar_path: Path | None = None
+        self._config_path: Path | None = None
+        self._log_path: Path | None = log_path
 
     @property
-    def jar_path(self) -> Optional[Path]:
+    def jar_path(self) -> Path | None:
         """Get path to the runner JAR file."""
         if self._jar_path is None:
             self._jar_path = self._find_jar()
@@ -126,7 +125,7 @@ class RunnerComponent(BaseComponent):
             return self._log_path
         return self.path / self.LOG_DIR
 
-    def _find_jar(self) -> Optional[Path]:
+    def _find_jar(self) -> Path | None:
         """Find the runner JAR file."""
         target_dir = self.path / "primemover-runner" / "target"
         if not target_dir.exists():
@@ -171,6 +170,9 @@ class RunnerComponent(BaseComponent):
                         details={"pid": pid},
                     )
 
+                # Clean up any orphaned browsers from a previous run
+                self._cleanup_orphaned_browsers()
+
                 # Build the command
                 jar = self.jar_path
                 cmd = [
@@ -185,6 +187,15 @@ class RunnerComponent(BaseComponent):
                 # Ensure log directory exists
                 self.log_path.mkdir(parents=True, exist_ok=True)
 
+                # TaskOperator.startupChrome builds ChromeOptions without --headless, so
+                # plain-Chrome jobs need an X display. On the headless VM that is the VNC
+                # display; without DISPLAY, Chrome exits immediately and Selenium reports
+                # "session not created: Chrome instance exited". MLX-driven jobs are
+                # unaffected (the launcher spawns its own browser), which is why this only
+                # surfaces on the "chrome" e2e path.
+                env = os.environ.copy()
+                env.setdefault("DISPLAY", os.environ.get("PM_RUNNER_DISPLAY", ":1"))
+
                 # Start the process
                 log_file = self.log_path / "runner-stdout.log"
                 try:
@@ -194,6 +205,7 @@ class RunnerComponent(BaseComponent):
                             stdout=stdout_log,
                             stderr=subprocess.STDOUT,
                             cwd=self.path / "primemover-runner",
+                            env=env,
                             start_new_session=True,  # Detach from terminal
                         )
 
@@ -284,9 +296,13 @@ class RunnerComponent(BaseComponent):
                 for _ in range(self.SHUTDOWN_TIMEOUT):
                     if not self._is_process_running(pid):
                         self._remove_pid_file()
+                        orphaned = self._cleanup_orphaned_browsers()
+                        msg = "Runner stopped gracefully"
+                        if orphaned:
+                            msg += f", cleaned up {orphaned} orphaned browser process(es)"
                         return ComponentHealth(
                             status=ComponentStatus.STOPPED,
-                            message="Runner stopped gracefully",
+                            message=msg,
                         )
                     time.sleep(1)
 
@@ -306,9 +322,16 @@ class RunnerComponent(BaseComponent):
                         details={"pid": pid},
                     )
 
+                # Clean up orphaned browser processes left by the runner
+                orphaned = self._cleanup_orphaned_browsers()
+
+                msg = "Runner stopped (forced)"
+                if orphaned:
+                    msg += f", cleaned up {orphaned} orphaned browser process(es)"
+
                 return ComponentHealth(
                     status=ComponentStatus.STOPPED,
-                    message="Runner stopped (forced)",
+                    message=msg,
                 )
 
         except TimeoutError as e:
@@ -437,7 +460,7 @@ class RunnerComponent(BaseComponent):
         except subprocess.TimeoutExpired:
             return "Error: Log tail command timed out"
 
-    def _get_pid(self) -> Optional[int]:
+    def _get_pid(self) -> int | None:
         """Get PID from file if exists."""
         if not self.PID_FILE.exists():
             return None
@@ -526,3 +549,66 @@ class RunnerComponent(BaseComponent):
         details["profile"] = self.spring_profile
 
         return details
+
+    def _cleanup_orphaned_browsers(self) -> int:
+        """
+        Kill orphaned chrome/chromedriver processes left behind by the runner.
+
+        When the runner is killed (especially via SIGKILL), MLX browser processes
+        survive as orphans reparented to PID 1. These consume significant memory
+        and must be cleaned up.
+
+        Returns:
+            Number of processes killed
+        """
+        import logging
+
+        logger = logging.getLogger(__name__)
+        killed = 0
+
+        try:
+            # Find chrome/chromedriver processes spawned from MLX deps
+            result = subprocess.run(
+                ["pgrep", "-f", "mlx/deps/mimic.*/chrome"],
+                capture_output=True,
+                text=True,
+                timeout=5,
+            )
+            pids = [int(p) for p in result.stdout.strip().split("\n") if p.strip()]
+
+            if not pids:
+                return 0
+
+            # Only kill browsers once the runner itself is gone — at that point every
+            # remaining browser process is an orphan. While the runner is alive its
+            # browsers are left alone, regardless of who their parent is.
+            runner_pid = self._get_pid()
+            for pid in pids:
+                try:
+                    # If the runner is not running, all browser processes are orphans
+                    if runner_pid and self._is_process_running(runner_pid):
+                        continue  # Runner is still alive, don't touch its browsers
+
+                    os.kill(pid, signal.SIGTERM)
+                    killed += 1
+                except (OSError, IndexError, ValueError, ProcessLookupError):
+                    continue
+
+            if killed:
+                # Give them a moment to shut down gracefully
+                time.sleep(2)
+
+                # Force kill any that survived
+                for pid in pids:
+                    try:
+                        if self._is_process_running(pid):
+                            os.kill(pid, signal.SIGKILL)
+                    except (OSError, ProcessLookupError):
+                        pass
+
+                logger.info("Cleaned up %d orphaned browser process(es)", killed)
+
+        except (subprocess.TimeoutExpired, FileNotFoundError, ValueError):
+            pass
+
+        return killed

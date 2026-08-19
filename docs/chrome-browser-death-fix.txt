@@ -1,0 +1,16 @@
+Chrome Browser Death on Headless VMs — Root Cause & Fix
+
+Root cause: Three compounding factors caused the Chrome renderer to become unresponsive after 19-95 jobs:
+
+1. Software video decoding — The VM has no hardware GPU, so YouTube's VP9/AV1 video codecs are decoded entirely on CPU, saturating the renderer's main thread.
+2. V8 heap bloat — A known ChromeDriver memory leak (Selenium #13510/#13533) causes the V8 heap to grow to 4GB+ as window objects from previous SPA navigations are never released.
+3. GC thrashing — At ~4GB heap, V8 garbage collection cycles consume all CPU, leaving zero capacity for WebDriver/CDP commands. The browser appears "dead" but the process is actually running at 100% CPU.
+
+Normal users don't hit this because they have real GPUs for hardware video decode and don't use ChromeDriver.
+
+Fix (two changes in primemover_runner):
+
+1. H.264 codec override (VisitJobHandler.java) — Injects JavaScript after each page load that overrides MediaSource.isTypeSupported to reject VP9/AV1, forcing YouTube to fall back to H.264 (much lighter for software decoding). Includes toString() stealth so the override looks like native code.
+2. V8 heap cap (ProfileService.java, DefaultMultiLoginProfile.json) — Adds --max-old-space-size=1024 Chrome flag to limit the V8 heap to 1GB, preventing runaway growth.
+
+Results: Renderer RSS dropped from 4-6GB to ~800MB, CPU from 100% to ~20%. Two consecutive 131-job queues completed successfully (vs crashing at 19-95 jobs before).

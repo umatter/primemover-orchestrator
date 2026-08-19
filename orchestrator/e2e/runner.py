@@ -8,13 +8,15 @@ from __future__ import annotations
 
 import time
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta, timezone
+from datetime import datetime
 from typing import Any
+from zoneinfo import ZoneInfo
 
 import httpx
 
-from orchestrator.config import get_settings
 from orchestrator.clients.api import APIClient
+from orchestrator.config import get_settings
+
 from .reporter import E2EReporter
 
 
@@ -55,6 +57,13 @@ TEST_TYPES = {
         "name": "Basic E2E Test",
         "timeout": 180,
         "description": "Simple visit and wait jobs",
+    },
+    "chrome": {
+        "template": TEST_EXPERIMENT_JSON,
+        "name": "Chrome E2E Test",
+        "timeout": 180,
+        "description": "Simple visit and wait jobs using plain Chrome (no Multilogin X)",
+        "identification_override": "chrome",
     },
     "youtube": {
         "template": TEST_EXPERIMENT_YOUTUBE_JSON,
@@ -172,12 +181,19 @@ class E2ETestRunner:
         # Step 4: Report results
         self.reporter.print_step(4, 4, "Results")
 
-        # Check if all jobs completed successfully
-        all_completed = all(
-            job.get("status_code", job.get("status")) in ("completed", "done", "success")
-            for job in jobs
-        )
-        failed_jobs = [j for j in jobs if j.get("status_code", j.get("status")) in ("failed", "error", "failure")]
+        # Check if all jobs completed successfully. Best-effort job types
+        # (try*) may fail without failing the run — the runner itself continues
+        # past them (e.g. the YouTube consent dialog is only sometimes shown, so
+        # its tryclickjob times out on profiles that never see it). Jobs the
+        # runner skipped in a best-effort job's wake report status "skipped".
+        def _job_ok(job: dict) -> bool:
+            status = job.get("status_code", job.get("status"))
+            if status in ("completed", "done", "success", "skipped"):
+                return True
+            return str(job.get("type", "")).startswith("try")
+
+        all_completed = bool(jobs) and all(_job_ok(j) for j in jobs)
+        failed_jobs = [j for j in jobs if not _job_ok(j)]
 
         duration = time.time() - start_time
         result = E2EResult(
@@ -254,16 +270,27 @@ class E2ETestRunner:
         test_name = self.test_config["name"]
         experiment_name = f"{test_name} - {timestamp}"
 
-        # Schedule start time - the API runs in CET (+01:00) and incorrectly interprets
-        # the Z suffix as local time. So we need to send current UTC time + 1 hour,
-        # formatted with +01:00 offset, so the API stores the correct UTC time.
-        utc_now = datetime.now(timezone.utc)
-        api_time = utc_now + timedelta(hours=1)  # Add 1 hour to compensate for API timezone
-        start_time = api_time.strftime("%Y-%m-%dT%H:%M:%S.00+01:00")
+        # Schedule start time. The API (Laravel APP_TIMEZONE=Europe/Zurich) strips
+        # the offset and interprets the naive datetime as Europe/Zurich local time,
+        # so we send the current Zurich wall-clock time with its current offset.
+        # Using zoneinfo makes this DST-safe (CET +01:00 winter / CEST +02:00
+        # summer); the previous hard-coded +1h/+01:00 broke under summer DST — the
+        # queue landed an hour in the past and the runner marked the jobs "skipped".
+        # NOTE: the host VM runs in UTC, so we must use the API's zone explicitly,
+        # not the host's local time.
+        api_now = datetime.now(ZoneInfo("Europe/Zurich"))
+        offset = api_now.strftime("%z")              # e.g. +0200
+        offset = offset[:3] + ":" + offset[3:]       # -> +02:00
+        start_time = api_now.strftime("%Y-%m-%dT%H:%M:%S.00") + offset
 
         # Update the crawler data with dynamic values
         crawlers_data[0]["name"] = f"E2E Test Bot - {timestamp}"
         crawlers_data[0]["queues"][0]["start_at"] = start_time
+
+        # Override agent identification if configured (e.g., "chrome" instead of "mlx")
+        id_override = self.test_config.get("identification_override")
+        if id_override:
+            crawlers_data[0]["agent"]["identification"] = id_override
 
         # Get auth token using curl (matching the working script exactly)
         api_base = self.settings.pm_api_base_url.rstrip("/")
@@ -339,6 +366,12 @@ class E2ETestRunner:
 
             if "error" in upload_response:
                 raise ValueError(f"Upload failed: {upload_response}")
+            if "errors" in upload_response:
+                raise ValueError(f"Upload validation failed: {upload_response['errors']}")
+            if "message" in upload_response and upload_response.get("message") != "OK":
+                # Laravel returns {"message": "..."} on validation errors
+                if any(k in str(upload_response).lower() for k in ("invalid", "fail", "required")):
+                    raise ValueError(f"Upload failed: {upload_response}")
 
         finally:
             Path(temp_json_path).unlink(missing_ok=True)

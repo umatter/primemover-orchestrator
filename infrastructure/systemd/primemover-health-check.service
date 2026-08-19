@@ -1,0 +1,17 @@
+[Unit]
+Description=PrimeMover Boot Health Check
+After=network-online.target docker.service vncserver@1.service primemover-lambda.service
+Wants=network-online.target
+# Run after all other PrimeMover services
+
+[Service]
+Type=oneshot
+User=primemover
+Group=primemover
+WorkingDirectory=/home/primemover/primemover-orchestrator
+ExecStartPre=/bin/sleep 60
+ExecStart=/home/primemover/primemover-orchestrator/scripts/boot-health-check.sh --quick
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target

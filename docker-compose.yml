@@ -8,7 +8,7 @@ services:
     image: grafana/grafana:11.4.0
     container_name: pm-orchestrator-grafana
     ports:
-      - "${GRAFANA_PORT:-3000}:3000"
+      - "127.0.0.1:${GRAFANA_PORT:-3000}:3000"
     environment:
       - GF_SECURITY_ADMIN_USER=${GRAFANA_ADMIN_USER:-admin}
       # SECURITY: No default password - must be set via GRAFANA_ADMIN_PASSWORD env var
@@ -18,6 +18,10 @@ services:
       - GF_AUTH_ANONYMOUS_ENABLED=${GRAFANA_ANON_ENABLED:-false}
       - GF_AUTH_ANONYMOUS_ORG_ROLE=Viewer
       - GF_FEATURE_TOGGLES_ENABLE=traceqlEditor
+      # Disable the bundled image-renderer plugin: its binary crash-loops on this
+      # slim image (missing Chromium/system libs -> go-plugin handshake fails),
+      # which takes all of Grafana down. We don't use server-side image rendering.
+      - GF_PLUGINS_DISABLE_PLUGINS=grafana-image-renderer
     volumes:
       - grafana-data:/var/lib/grafana
       - ./infrastructure/grafana/provisioning:/etc/grafana/provisioning:ro
@@ -41,7 +45,7 @@ services:
     image: grafana/loki:3.4.1
     container_name: pm-orchestrator-loki
     ports:
-      - "${LOKI_PORT:-3100}:3100"
+      - "127.0.0.1:${LOKI_PORT:-3100}:3100"
     command: -config.file=/etc/loki/loki-config.yaml
     volumes:
       - ./infrastructure/loki/loki-config.yaml:/etc/loki/loki-config.yaml:ro
@@ -106,7 +110,7 @@ services:
     image: prom/prometheus:v2.54.1
     container_name: pm-orchestrator-prometheus
     ports:
-      - "${PROMETHEUS_PORT:-9090}:9090"
+      - "127.0.0.1:${PROMETHEUS_PORT:-9090}:9090"
     command:
       - '--config.file=/etc/prometheus/prometheus.yml'
       - '--storage.tsdb.path=/prometheus'
@@ -127,10 +131,10 @@ services:
     image: grafana/tempo:2.6.1
     container_name: pm-orchestrator-tempo
     ports:
-      - "${TEMPO_PORT:-3200}:3200"
-      - "4317:4317"   # OTLP gRPC
-      - "4318:4318"   # OTLP HTTP
-      - "9411:9411"   # Zipkin
+      - "127.0.0.1:${TEMPO_PORT:-3200}:3200"
+      - "127.0.0.1:4317:4317"   # OTLP gRPC
+      - "127.0.0.1:4318:4318"   # OTLP HTTP
+      - "127.0.0.1:9411:9411"   # Zipkin
     command: ["-config.file=/etc/tempo/tempo-config.yaml"]
     volumes:
       - ./infrastructure/tempo/tempo-config.yaml:/etc/tempo/tempo-config.yaml:ro

@@ -78,10 +78,10 @@
   "proxy": {
     "name": "E2E YouTube Proxy",
     "description": "Proxy for YouTube e2e testing",
-    "hostname": "103.195.116.28",
+    "hostname": "PROXY_HOST_PLACEHOLDER",
     "port": 5432,
-    "username": "e5ffg",
-    "password": "35qbtiql",
+    "username": "PROXY_USER_PLACEHOLDER",
+    "password": "PROXY_PASSWORD_PLACEHOLDER",
     "active": true,
     "type": "http"
   },
@@ -94,7 +94,7 @@
       "name": "%%AGENTID%%",
       "browser_type": "mimic",
       "folder_id": "%%FOLDERID%%",
-      "core_version": 142,
+      "core_version": 149,
       "auto_update_core": true,
       "os_type": "linux",
       "times": 1,
