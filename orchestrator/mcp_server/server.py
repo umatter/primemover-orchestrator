@@ -1416,10 +1416,10 @@ def get_lambda_invocation_details(request_id: str) -> str:
             "duration_ms": invocation.duration_ms,
             "billed_duration_ms": invocation.billed_duration_ms,
             "memory_size_mb": invocation.memory_size_mb,
-            "max_memory_used_mb": invocation.max_memory_used_mb,
+            "max_memory_used_mb": invocation.memory_used_mb,
             "memory_utilization_pct": (
-                (invocation.max_memory_used_mb / invocation.memory_size_mb * 100)
-                if invocation.memory_size_mb and invocation.max_memory_used_mb else None
+                (invocation.memory_used_mb / invocation.memory_size_mb * 100)
+                if invocation.memory_size_mb and invocation.memory_used_mb else None
             ),
             "init_duration_ms": invocation.init_duration_ms,
             "is_cold_start": invocation.is_cold_start,
@@ -1522,6 +1522,8 @@ def validate_experiment_spec(yaml_content: str, strict: bool = False) -> str:
         JSON with validation results including errors, warnings, and summary
     """
     try:
+        from pathlib import Path
+
         import yaml as yaml_lib
 
         from experiment_designer.spec import SpecConverter, SpecParser, SpecValidator
@@ -1536,7 +1538,10 @@ def validate_experiment_spec(yaml_content: str, strict: bool = False) -> str:
     # SECURITY: FileTagLoader inherits from yaml.SafeLoader, which prevents
     # arbitrary code execution. The only custom tag is !file for loading
     # external data files (CSV/JSON), which are parsed safely.
-    FileTagLoader, file_loader = create_file_tag_loader()
+    # base_dir anchors relative !file paths. The spec arrives here as a string
+    # rather than a file, so there is no containing directory to inherit; the
+    # working directory is the closest equivalent to how the CLI resolves them.
+    FileTagLoader, file_loader = create_file_tag_loader(base_dir=Path.cwd())
 
     try:
         raw_spec = yaml_lib.load(yaml_content, Loader=FileTagLoader)

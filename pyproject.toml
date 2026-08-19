@@ -82,6 +82,15 @@ python_version = "3.10"
 warn_return_any = true
 warn_unused_ignores = true
 
+# numpy ships stubs written with the 3.12+ `type` statement, which mypy cannot
+# parse while checking against python_version 3.10. It fails inside numpy's own
+# .pyi before reaching any of our code, so don't follow imports into it. Our
+# code is still checked as 3.10, which is what the package targets.
+[[tool.mypy.overrides]]
+module = ["numpy", "numpy.*"]
+follow_imports = "skip"
+follow_imports_for_stubs = true
+
 [tool.pytest.ini_options]
 testpaths = ["orchestrator/tests", "experiment_designer/tests"]
 python_files = ["test_*.py"]

@@ -2733,7 +2733,7 @@ def lambda_invocation(ctx: click.Context, request_id: str, as_json: bool) -> Non
                 "duration_ms": invocation.duration_ms,
                 "billed_duration_ms": invocation.billed_duration_ms,
                 "memory_size_mb": invocation.memory_size_mb,
-                "max_memory_used_mb": invocation.max_memory_used_mb,
+                "max_memory_used_mb": invocation.memory_used_mb,
                 "init_duration_ms": invocation.init_duration_ms,
                 "is_cold_start": invocation.is_cold_start,
                 "is_error": invocation.is_error,
@@ -2778,10 +2778,10 @@ def lambda_invocation(ctx: click.Context, request_id: str, as_json: bool) -> Non
             console.print("[bold]Memory:[/bold]")
             if invocation.memory_size_mb:
                 console.print(f"  Configured: {invocation.memory_size_mb} MB")
-            if invocation.max_memory_used_mb:
-                console.print(f"  Max Used:   {invocation.max_memory_used_mb} MB")
+            if invocation.memory_used_mb:
+                console.print(f"  Max Used:   {invocation.memory_used_mb} MB")
                 if invocation.memory_size_mb:
-                    pct = (invocation.max_memory_used_mb / invocation.memory_size_mb) * 100
+                    pct = (invocation.memory_used_mb / invocation.memory_size_mb) * 100
                     style = "red" if pct > 80 else ("yellow" if pct > 60 else "green")
                     console.print(f"  Utilization: [{style}]{pct:.1f}%[/{style}]")
 

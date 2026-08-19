@@ -34,7 +34,10 @@ class TestCliBasics:
         """Test CLI without command shows help."""
         result = cli_runner.invoke(cli, [])
 
-        assert result.exit_code == 0
+        # click.Group defaults to no_args_is_help=True, and since Click 8.2 that
+        # path exits 2 (invoking with no command is a usage error) rather than 0.
+        # What matters here is that the help text is what gets shown.
+        assert result.exit_code == 2
         # Should show available commands
         assert "Commands:" in result.output or "Usage:" in result.output
 

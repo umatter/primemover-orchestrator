@@ -92,6 +92,29 @@ class LambdaInvocation:
     # All log entries
     logs: list[LambdaLogEntry] = field(default_factory=list)
 
+    @property
+    def is_error(self) -> bool:
+        """Whether the invocation failed. Timeouts count as failures."""
+        return self.status in ("error", "timeout")
+
+    @property
+    def is_cold_start(self) -> bool:
+        """Whether this invocation paid init cost.
+
+        AWS only reports "Init Duration" in the REPORT line for cold starts, so
+        the presence of that value is what identifies one.
+        """
+        return self.init_duration_ms is not None
+
+    @property
+    def error(self) -> Optional[str]:
+        """Human-readable error description, or None when the invocation is fine."""
+        if not self.is_error:
+            return None
+        if self.error_type and self.error_message:
+            return f"{self.error_type}: {self.error_message}"
+        return self.error_message or self.error_type or self.status
+
     def to_dict(self) -> dict:
         """Convert to dictionary."""
         return {

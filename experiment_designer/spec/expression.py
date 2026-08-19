@@ -200,12 +200,9 @@ class SafeExpressionEvaluator:
             ExpressionError: If node type is not allowed
         """
         if isinstance(node, ast.Constant):
-            # Python 3.8+ uses Constant for numbers, strings, etc.
+            # Constant covers numbers, strings, booleans and None. The old
+            # ast.Num/ast.Str aliases were removed in Python 3.12.
             return node.value
-
-        elif isinstance(node, ast.Num):
-            # Python < 3.8 compatibility
-            return node.n
 
         elif isinstance(node, ast.BinOp):
             left = self._eval_node(node.left)
@@ -318,7 +315,7 @@ class SafeExpressionEvaluator:
 
     def _validate_node(self, node: ast.AST, errors: List[str]) -> None:
         """Recursively validate an AST node."""
-        if isinstance(node, (ast.Constant, ast.Num)):
+        if isinstance(node, ast.Constant):
             pass
         elif isinstance(node, ast.BinOp):
             if type(node.op) not in BINARY_OPS:

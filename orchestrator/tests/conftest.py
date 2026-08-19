@@ -52,8 +52,12 @@ def cli_runner() -> CliRunner:
 
 @pytest.fixture
 def isolated_cli_runner() -> CliRunner:
-    """Provide a Click CLI test runner with isolated filesystem."""
-    return CliRunner(mix_stderr=False)
+    """Provide a Click CLI test runner that keeps stdout and stderr separate.
+
+    Click 8.2 removed the ``mix_stderr`` argument and now always captures the
+    two streams separately, exposing stderr as ``result.stderr``.
+    """
+    return CliRunner()
 
 
 @pytest.fixture
