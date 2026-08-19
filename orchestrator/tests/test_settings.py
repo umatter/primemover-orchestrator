@@ -102,10 +102,11 @@ class TestSettings:
     def test_grafana_credentials_default(self):
         """Test default Grafana credentials."""
         with patch.dict(os.environ, {}, clear=True):
-            settings = Settings()
+            settings = Settings(_env_file=None)
 
             assert settings.grafana_admin_user == "admin"
-            assert settings.grafana_admin_password == "admin"
+            # No default password for security - must be set via env
+            assert settings.grafana_admin_password is None
 
     def test_lambda_config_defaults(self):
         """Test default Lambda configuration."""

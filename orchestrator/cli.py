@@ -854,7 +854,8 @@ def status(ctx: click.Context, verbose: bool, legacy: bool) -> None:
         table.add_row("Tempo", tempo_status[0], tempo_status[1])
 
         # Check PrimeMover API
-        api_status = _check_url(settings.pm_api_base_url.rstrip("/api/v1"), "/api/health")
+        api_base = settings.pm_api_base_url.removesuffix("/api/v1").rstrip("/")
+        api_status = _check_url(api_base, "/api/health")
         table.add_row("PrimeMover API", api_status[0], api_status[1])
 
         console.print(table)

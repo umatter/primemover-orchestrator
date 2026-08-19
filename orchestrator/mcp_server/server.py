@@ -939,7 +939,7 @@ def download_experiment(experiment_id: int) -> str:
     try:
         # Authenticate
         auth_response = httpx.post(
-            f"{settings.pm_api_base_url}/auth/login",
+            f"{settings.pm_api_base_url}/login",
             json={
                 "email": settings.pm_api_email,
                 "password": settings.pm_api_password,
@@ -995,7 +995,7 @@ def download_report(job_id: int) -> str:
     try:
         # Authenticate
         auth_response = httpx.post(
-            f"{settings.pm_api_base_url}/auth/login",
+            f"{settings.pm_api_base_url}/login",
             json={
                 "email": settings.pm_api_email,
                 "password": settings.pm_api_password,
@@ -2125,7 +2125,7 @@ def summarize_experiment(experiment_id: int) -> str:
     try:
         # Authenticate and fetch experiment
         auth_response = httpx.post(
-            f"{settings.pm_api_base_url}/auth/login",
+            f"{settings.pm_api_base_url}/login",
             json={
                 "email": settings.pm_api_email,
                 "password": settings.pm_api_password,
@@ -2212,7 +2212,7 @@ def compare_experiments(
     def get_api_data(experiment_id: str):
         """Fetch experiment data from API."""
         auth_response = httpx.post(
-            f"{settings.pm_api_base_url}/auth/login",
+            f"{settings.pm_api_base_url}/login",
             json={
                 "email": settings.pm_api_email,
                 "password": settings.pm_api_password,

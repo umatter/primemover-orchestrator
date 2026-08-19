@@ -289,7 +289,7 @@ class JobDebugger:
             # Authenticate
             if not self._token:
                 auth_response = httpx.post(
-                    f"{self.api_base_url}/auth/login",
+                    f"{self.api_base_url}/login",
                     json={"email": self.api_email, "password": self.api_password},
                     timeout=30.0,
                 )
