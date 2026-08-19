@@ -38,10 +38,14 @@ customer-{USER}-sessid-{SESSION}-{LOCATION}-sesstime-30
 
 ## 2. Why the existing integration will not work as-is
 
-> **Status: 2.1, 2.2 and the session-flavour issue are FIXED** in
-> `primemover_runner` commit `c610f15` (54 unit tests). This section is kept as
-> the rationale for what changed. 2.3 (lowercase session ids) is still open;
-> 2.5 and 2.6 remain true.
+> **Status: 2.1, 2.2, 2.3 and the session-flavour issue are all FIXED** in
+> `primemover_runner` (`c610f15`, `957c47b` — 62 unit tests). This section is
+> kept as the rationale for what changed. 2.5 and 2.6 remain true.
+>
+> **GeoSurf has been removed entirely** (`957c47b`, plus `primemover_api`
+> `a53e0f5` and `primemover_gui` `810a4bf`) — the provider no longer exists.
+> References to it below are historical, explaining where our data shapes came
+> from.
 
 Three real defects (2.1–2.3), one thing that is fine but for a non-obvious reason
 (2.4), and two gotchas that will cost an afternoon each if unknown (2.5–2.6).
@@ -129,8 +133,11 @@ Lowercase is not documented as supported (the help-center loosely says
 "alphanumeric string of your choice", so it may well work). No maximum length is
 documented anywhere; published examples are 5–10 characters. Stripping the
 hyphens is correct and important — a hyphen would corrupt the hyphen-delimited
-token stream. **Cheap fix:** `.toUpperCase()` and consider truncating, which
-makes it unambiguously conformant at no cost.
+token stream.
+
+**Fixed.** Now upper-cased. This was previously blocked because the same session
+id fed GeoSurf's `X-session` header; with GeoSurf gone the id has one consumer
+and the change is free.
 
 ### 2.4 `sesstime-30` is fine — but for a subtle reason
 
@@ -224,15 +231,14 @@ Three consequences:
   is about. **Smoke-test this specifically**; falling back to `useHttps=false` is
   a one-line change if it misbehaves.
 - **There is no Oxylabs-specific header block** in `BrowserUpRecorderProxy` —
-  Oxylabs targeting rides entirely on the username string. Note the contrast with
-  GeoSurf, which is *not* username-based at all: it injects `loc` and `X-session`
-  as CONNECT headers via an `HttpFiltersSourceAdapter` (line ~195). So the two
-  providers use fundamentally different mechanisms, and the Oxylabs path being
-  username-only is correct.
+  Oxylabs targeting rides entirely on the username string. GeoSurf worked the
+  opposite way, injecting `loc` and `X-session` as CONNECT headers via an
+  `HttpFiltersSourceAdapter`; that filter has been removed along with the rest of
+  GeoSurf.
 
-That same GeoSurf filter is, incidentally, the proof that **coordinate targeting
-is feasible for us**: `X-Oxylabs-Geolocation` is a proxy/CONNECT header, and we
-already have a working pattern for injecting exactly that.
+Worth remembering that the removed filter demonstrated **coordinate targeting is
+feasible for us**: `X-Oxylabs-Geolocation` is a proxy/CONNECT header, and the
+git history has a working pattern for injecting exactly that (`957c47b^`).
 
 ### Ignore Oxylabs' Multilogin guide
 
@@ -351,27 +357,19 @@ and `US;boston` are both present, so our existing geographies do map.
 Under that split, `OxylabsProxy.getUsername()` reduces to fixing the ordering
 (§2.1) and splicing in an already-valid token string.
 
-### ⚠️ Decision needed: `agents.location` cannot serve both grammars
+### `agents.location` — resolved
 
-This is the one architectural choice that has to be made before any code is
-written. GeoSurf reads `agents.location` and puts it in the `loc` CONNECT header
-in **its own format**; Oxylabs needs the keyed-token format. The same column
-cannot hold both.
+This used to be a blocking choice: GeoSurf read `agents.location` in **its own
+format** while Oxylabs needs keyed tokens, and one column cannot hold both. With
+GeoSurf removed the conflict is gone — `agents.location` may now hold either the
+legacy `US-CO-COLORADO_SPRINGS` form (which `OxylabsLocation` translates) or an
+explicit Oxylabs token string, whichever a spec finds clearer.
 
-Two options:
-
-1. **Repurpose `agents.location`** to the Oxylabs grammar — simplest, but it
-   breaks the GeoSurf path, so it is only safe as part of a clean cutover with no
-   intent to run GeoSurf again.
-2. **Add a provider-agnostic geo field** (e.g. structured `country` / `state` /
-   `city`) and derive each provider's string from it. More work, but it keeps both
-   providers runnable and makes the experiment record store the *intent* rather
-   than one vendor's encoding — which is the better answer for reproducible
-   research.
-
-Recommend option 2. Note `AgentStoreRequest.php` currently validates `location`
-as only `['nullable']` — there is nothing to migrate around, and nothing catching
-a bad value today.
+Still worth doing eventually: store the *intent* as structured
+`country`/`state`/`city` rather than any one vendor's encoding, which is the
+better answer for reproducible research if a second provider ever appears.
+`AgentStoreRequest.php` validates `location` as only `['nullable']`, so nothing
+catches a bad value before the runner does.
 
 ⚠️ Availability is never guaranteed at city/ZIP level: the residential pool is
 dynamic, and Oxylabs repeats that narrowing location has no availability
@@ -496,10 +494,15 @@ The good news: the mechanism ports cleanly. `/location` returns
 `application/json`, so Chrome renders it in a `<pre>` tag — exactly what the
 GeoSurf handler already assumes.
 
-New work: an `AssertProxyByOxylabsJobHandler` plus a job type in the spec DSL.
-`IpInfo` currently lives in package `primemover.model.geosurf` and is reused by
-`AssertProxyByPrimemoverApiJobHandler` — move it somewhere provider-neutral and
-give it a nested-providers shape.
+**Done** (`957c47b`). `AssertProxyByOxylabsJobHandler` replaces both old
+handlers — they were duplicates of each other, both browsing to the now-dead
+`geo.geosurf.io`, and both unreachable because `convertApiJob` had no `case` for
+them. The new one is wired in under `assertproxyjob` / `assertproxybyoxylabsjob`,
+so the assertion can finally be used. `IpInfo` is gone; `OxylabsIpCheck` in
+`primemover.model.ipcheck` models the real nested shape.
+
+Remaining: expose the job type in the `experiment_designer` DSL so specs can
+request it.
 
 ---
 
@@ -706,7 +709,9 @@ Ordered by dependency.
    the failure to `pmspec validate`, before an experiment is ever uploaded.)*
 7. Vendor `us_states.txt` and `City_list.csv` as validation tables (§5).
 8. Reject unmappable locations in `pmspec validate` before upload.
-9. Add an assert-proxy job type pointing at `ip.oxylabs.io/location`.
+9. Add an assert-proxy job type pointing at `ip.oxylabs.io/location`. The runner
+   accepts `assertproxyjob` with `ip` / `country` / `city` behaviours; the DSL
+   still needs to emit it.
 
 **`primemover_api`**
 10. Validate the geo value on the **Agent** — `AgentStoreRequest.php` currently has
@@ -717,13 +722,12 @@ Ordered by dependency.
 **`primemover_runner`**
 12. ~~`OxylabsProxy.getUsername()`: move the location segment **before**
     `-sessid-`.~~ **Done** (`c610f15`).
-13. `SessionDecorator`: uppercase the session id (§2.3). Still open — the session
-    id is shared with GeoSurf's `X-session` header, so changing it globally needs
-    a check that GeoSurf tolerates the new case.
+13. ~~`SessionDecorator`: uppercase the session id (§2.3).~~ **Done**
+    (`957c47b`) — unblocked by the GeoSurf removal.
 14. ~~Support `sessid_oneip`, defaulting to it for experiment runs.~~ **Done**
     (`c610f15`, property `oxylabs.session.oneip`).
-15. `AssertProxyByOxylabsJobHandler` with a **nested-providers** `IpInfo`; assert
-    country strictly, city best-effort; move `IpInfo` out of `model.geosurf` (§7).
+15. ~~`AssertProxyByOxylabsJobHandler` with a **nested-providers** `IpInfo`;
+    assert country strictly, city best-effort.~~ **Done** (`957c47b`).
 16. Handle 502 `Session failed` by minting a fresh session rather than retrying.
 17. Surface `X-Error-Description` into logs/traces and the HAR.
 
