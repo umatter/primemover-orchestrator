@@ -5,9 +5,6 @@ Run with: pytest orchestrator/tests/test_components.py -v
 """
 
 from pathlib import Path
-from unittest.mock import MagicMock, patch
-
-import pytest
 
 from orchestrator.components.base import (
     BaseComponent,

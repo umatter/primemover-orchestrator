@@ -15,7 +15,7 @@ import math
 import random
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional, Union
+from typing import Any
 
 
 class Distribution(ABC):
@@ -55,6 +55,7 @@ class UniformDistribution(Distribution):
           min: -1
           max: 1
     """
+
     min: float
     max: float
 
@@ -81,7 +82,8 @@ class DiscreteDistribution(Distribution):
             1: 0.25   # 1/4 of samples
             2: 0.50   # 2/4 of samples
     """
-    values: Dict[Any, float]
+
+    values: dict[Any, float]
 
     def __post_init__(self):
         """Validate and normalize proportions."""
@@ -120,6 +122,7 @@ class NormalDistribution(Distribution):
           mean: 0.35
           std: 0.1
     """
+
     mean: float
     std: float
 
@@ -150,6 +153,7 @@ class GumbelDistribution(Distribution):
     Note: The Gumbel distribution uses the inverse CDF method:
         X = mu - beta * ln(-ln(U)) where U ~ Uniform(0, 1)
     """
+
     mu: float
     beta: float
 
@@ -183,6 +187,7 @@ class TruncatedNormalDistribution(Distribution):
           min: 0
           max: 0.5
     """
+
     mean: float
     std: float
     min: float
@@ -220,6 +225,7 @@ class BetaDistribution(Distribution):
           alpha: 2
           beta: 5
     """
+
     alpha: float
     beta: float
     min: float = 0.0
@@ -246,6 +252,7 @@ class FixedValue(Distribution):
         tau:
           value: 1
     """
+
     value: Any
 
     def sample(self, rng: random.Random) -> Any:
@@ -270,7 +277,7 @@ class DistributionFactory:
     """
 
     @staticmethod
-    def create(config: Union[Dict[str, Any], Any]) -> Distribution:
+    def create(config: dict[str, Any] | Any) -> Distribution:
         """
         Create a Distribution from a configuration dict.
 
@@ -294,10 +301,7 @@ class DistributionFactory:
         dist_type = config.get("distribution", "fixed")
 
         if dist_type == "uniform":
-            return UniformDistribution(
-                min=float(config["min"]),
-                max=float(config["max"])
-            )
+            return UniformDistribution(min=float(config["min"]), max=float(config["max"]))
 
         elif dist_type == "discrete":
             values = config.get("values", {})
@@ -307,7 +311,7 @@ class DistributionFactory:
                 try:
                     # Try to convert key to int or float
                     if isinstance(k, str):
-                        if '.' in k:
+                        if "." in k:
                             converted[float(k)] = float(v)
                         else:
                             try:
@@ -321,23 +325,17 @@ class DistributionFactory:
             return DiscreteDistribution(values=converted)
 
         elif dist_type == "normal":
-            return NormalDistribution(
-                mean=float(config["mean"]),
-                std=float(config["std"])
-            )
+            return NormalDistribution(mean=float(config["mean"]), std=float(config["std"]))
 
         elif dist_type == "gumbel":
-            return GumbelDistribution(
-                mu=float(config["mu"]),
-                beta=float(config["beta"])
-            )
+            return GumbelDistribution(mu=float(config["mu"]), beta=float(config["beta"]))
 
         elif dist_type == "truncated_normal":
             return TruncatedNormalDistribution(
                 mean=float(config["mean"]),
                 std=float(config["std"]),
                 min=float(config["min"]),
-                max=float(config["max"])
+                max=float(config["max"]),
             )
 
         elif dist_type == "beta":
@@ -345,7 +343,7 @@ class DistributionFactory:
                 alpha=float(config["alpha"]),
                 beta=float(config["beta"]),
                 min=float(config.get("min", 0)),
-                max=float(config.get("max", 1))
+                max=float(config.get("max", 1)),
             )
 
         elif dist_type == "fixed":
@@ -355,20 +353,12 @@ class DistributionFactory:
             raise ValueError(f"Unknown distribution type: {dist_type}")
 
     @staticmethod
-    def list_types() -> List[str]:
+    def list_types() -> list[str]:
         """List all available distribution types."""
-        return [
-            "uniform",
-            "discrete",
-            "normal",
-            "gumbel",
-            "truncated_normal",
-            "beta",
-            "fixed"
-        ]
+        return ["uniform", "discrete", "normal", "gumbel", "truncated_normal", "beta", "fixed"]
 
     @staticmethod
-    def get_schema(dist_type: str) -> Dict[str, Any]:
+    def get_schema(dist_type: str) -> dict[str, Any]:
         """
         Get the parameter schema for a distribution type.
 
@@ -383,44 +373,50 @@ class DistributionFactory:
                 "required": ["min", "max"],
                 "optional": [],
                 "description": "Continuous uniform distribution",
-                "example": {"distribution": "uniform", "min": -1, "max": 1}
+                "example": {"distribution": "uniform", "min": -1, "max": 1},
             },
             "discrete": {
                 "required": ["values"],
                 "optional": [],
                 "description": "Discrete distribution with proportions",
-                "example": {"distribution": "discrete", "values": {0: 0.25, 1: 0.75}}
+                "example": {"distribution": "discrete", "values": {0: 0.25, 1: 0.75}},
             },
             "normal": {
                 "required": ["mean", "std"],
                 "optional": [],
                 "description": "Gaussian distribution",
-                "example": {"distribution": "normal", "mean": 0, "std": 1}
+                "example": {"distribution": "normal", "mean": 0, "std": 1},
             },
             "gumbel": {
                 "required": ["mu", "beta"],
                 "optional": [],
                 "description": "Gumbel (Type I extreme value) distribution",
-                "example": {"distribution": "gumbel", "mu": 0, "beta": 1}
+                "example": {"distribution": "gumbel", "mu": 0, "beta": 1},
             },
             "truncated_normal": {
                 "required": ["mean", "std", "min", "max"],
                 "optional": [],
                 "description": "Bounded Gaussian distribution",
-                "example": {"distribution": "truncated_normal", "mean": 0.5, "std": 0.2, "min": 0, "max": 1}
+                "example": {
+                    "distribution": "truncated_normal",
+                    "mean": 0.5,
+                    "std": 0.2,
+                    "min": 0,
+                    "max": 1,
+                },
             },
             "beta": {
                 "required": ["alpha", "beta"],
                 "optional": ["min", "max"],
                 "description": "Beta distribution (bounded continuous)",
-                "example": {"distribution": "beta", "alpha": 2, "beta": 5}
+                "example": {"distribution": "beta", "alpha": 2, "beta": 5},
             },
             "fixed": {
                 "required": ["value"],
                 "optional": [],
                 "description": "Constant value",
-                "example": {"value": 1}
-            }
+                "example": {"value": 1},
+            },
         }
         return schemas.get(dist_type, {})
 
@@ -443,7 +439,7 @@ class ParameterSampler:
         # [{"pi": 0.352, "kappa": 1}, {"pi": -0.841, "kappa": 0}, ...]
     """
 
-    def __init__(self, seed: Optional[int] = None):
+    def __init__(self, seed: int | None = None):
         """
         Initialize parameter sampler.
 
@@ -451,10 +447,10 @@ class ParameterSampler:
             seed: Random seed for reproducibility
         """
         self.rng = random.Random(seed)
-        self.parameters: Dict[str, Distribution] = {}
-        self.errors: List[str] = []
+        self.parameters: dict[str, Distribution] = {}
+        self.errors: list[str] = []
 
-    def add_parameter(self, name: str, config: Union[Dict[str, Any], Any]) -> None:
+    def add_parameter(self, name: str, config: dict[str, Any] | Any) -> None:
         """
         Add a parameter with its distribution.
 
@@ -468,7 +464,7 @@ class ParameterSampler:
         except Exception as e:
             self.errors.append(f"Error creating distribution for '{name}': {e}")
 
-    def add_parameters(self, params: Dict[str, Any]) -> None:
+    def add_parameters(self, params: dict[str, Any]) -> None:
         """
         Add multiple parameters at once.
 
@@ -478,7 +474,7 @@ class ParameterSampler:
         for name, config in params.items():
             self.add_parameter(name, config)
 
-    def sample(self) -> Dict[str, Any]:
+    def sample(self) -> dict[str, Any]:
         """
         Sample values for all parameters.
 
@@ -487,7 +483,7 @@ class ParameterSampler:
         """
         return {name: dist.sample(self.rng) for name, dist in self.parameters.items()}
 
-    def sample_batch(self, count: int) -> List[Dict[str, Any]]:
+    def sample_batch(self, count: int) -> list[dict[str, Any]]:
         """
         Sample values for multiple crawlers/entities.
 
@@ -499,7 +495,7 @@ class ParameterSampler:
         """
         return [self.sample() for _ in range(count)]
 
-    def describe(self) -> Dict[str, str]:
+    def describe(self) -> dict[str, str]:
         """
         Get descriptions of all parameter distributions.
 

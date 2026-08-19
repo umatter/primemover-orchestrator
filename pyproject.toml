@@ -77,6 +77,12 @@ target-version = "py310"
 select = ["E", "F", "W", "I", "N", "UP", "B", "C4"]
 ignore = ["E501"]
 
+[tool.ruff.lint.pep8-naming]
+# create_file_tag_loader returns a class, so binding it to a PascalCase name is
+# correct rather than a naming violation. Kept here instead of per-line noqa
+# comments, which black relocates when it wraps the call.
+extend-ignore-names = ["FileTagLoader"]
+
 [tool.mypy]
 python_version = "3.10"
 warn_return_any = true

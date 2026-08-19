@@ -6,6 +6,7 @@ Provides Claude Code with tools for monitoring, debugging, and managing experime
 
 import json
 import os
+import re as _re
 import sys
 
 from orchestrator.config import get_settings
@@ -51,8 +52,9 @@ def _get_mcp_config():
 # Parse config before creating FastMCP instance
 _transport, _host, _port = _get_mcp_config()
 
-# Import FastMCP after parsing args
-from mcp.server.fastmcp import FastMCP
+# Import FastMCP after parsing args: creating the instance reads the host/port
+# resolved above, so this import cannot move to the top of the module.
+from mcp.server.fastmcp import FastMCP  # noqa: E402
 
 # Initialize MCP server with correct settings for HTTP mode
 if _transport == "streamable-http":
@@ -65,13 +67,21 @@ else:
 # INPUT VALIDATION HELPERS
 # =============================================================================
 
-import re as _re
-
 # Valid time range pattern (e.g., "15m", "1h", "24h", "7d")
 _TIME_RANGE_PATTERN = _re.compile(r"^(\d{1,3})([mhd])$")
 
 # Valid component names
-_VALID_COMPONENTS = {"all", "api", "runner", "lambda", "apache", "mysql", "redis", "php", "memcached"}
+_VALID_COMPONENTS = {
+    "all",
+    "api",
+    "runner",
+    "lambda",
+    "apache",
+    "mysql",
+    "redis",
+    "php",
+    "memcached",
+}
 
 # Valid log levels
 _VALID_LEVELS = {"all", "debug", "info", "warning", "warn", "error", "critical"}
@@ -87,7 +97,9 @@ def _validate_time_range(time_range: str) -> str:
     if not isinstance(time_range, str):
         raise ValueError("time_range must be a string")
     if not _TIME_RANGE_PATTERN.match(time_range.lower()):
-        raise ValueError(f"Invalid time_range format: {time_range}. Use format like '15m', '1h', '24h', '7d'")
+        raise ValueError(
+            f"Invalid time_range format: {time_range}. Use format like '15m', '1h', '24h', '7d'"
+        )
     return time_range.lower()
 
 
@@ -97,7 +109,9 @@ def _validate_component(component: str) -> str:
         raise ValueError("component must be a string")
     component = component.lower()
     if component not in _VALID_COMPONENTS:
-        raise ValueError(f"Invalid component: {component}. Valid: {', '.join(sorted(_VALID_COMPONENTS))}")
+        raise ValueError(
+            f"Invalid component: {component}. Valid: {', '.join(sorted(_VALID_COMPONENTS))}"
+        )
     return component
 
 
@@ -262,9 +276,7 @@ def get_error_summary(time_range: str = "24h", component: str = "all") -> str:
         JSON with error counts by component and most frequent error messages
     """
     # Query for errors
-    result = query_logs(
-        component=component, time_range=time_range, level="error", limit=500
-    )
+    result = query_logs(component=component, time_range=time_range, level="error", limit=500)
 
     try:
         data = json.loads(result)
@@ -311,9 +323,7 @@ def tail_logs(component: str = "all", filter_text: str = "", lines: int = 50) ->
     Returns:
         JSON array of recent log entries
     """
-    return query_logs(
-        component=component, time_range="15m", search=filter_text, limit=lines
-    )
+    return query_logs(component=component, time_range="15m", search=filter_text, limit=lines)
 
 
 # =============================================================================
@@ -440,6 +450,7 @@ def _api_request(method: str, endpoint: str, data: dict = None, params: dict = N
 # docs/specs/mcp-control-surface.md
 # =============================================================================
 
+
 def _require_local_write_target() -> str | None:
     """Return an error string if the API target is not the local dev server (:8090)."""
     from urllib.parse import urlparse
@@ -517,7 +528,11 @@ def list_library() -> str:
     """
     fields = ("id", "name", "description", "type", "active")
     out = {}
-    for key, endpoint in (("agents", "agents"), ("proxies", "proxies"), ("configurations", "configurations")):
+    for key, endpoint in (
+        ("agents", "agents"),
+        ("proxies", "proxies"),
+        ("configurations", "configurations"),
+    ):
         try:
             result = _api_request("GET", endpoint, params={"per_page": 100})
             rows = result.get("data", []) if isinstance(result, dict) else (result or [])
@@ -528,7 +543,9 @@ def list_library() -> str:
 
 
 @mcp.tool()
-def pm_create_experiment(name: str, contact: str, description: str = "", testing: bool = False, confirm: bool = False) -> str:
+def pm_create_experiment(
+    name: str, contact: str, description: str = "", testing: bool = False, confirm: bool = False
+) -> str:
     """Create an experiment (study). Dry-run unless confirm=true. Local API only.
 
     Args:
@@ -538,13 +555,25 @@ def pm_create_experiment(name: str, contact: str, description: str = "", testing
         testing: Mark as a testing experiment (runner uses testing endpoints).
         confirm: Apply the change; without it, returns a preview only.
     """
-    payload = {"name": name, "contact": contact, "description": description or name, "testing": testing}
+    payload = {
+        "name": name,
+        "contact": contact,
+        "description": description or name,
+        "testing": testing,
+    }
     return _write("create experiment", "POST", "experiments", payload, confirm=confirm)
 
 
 @mcp.tool()
-def pm_add_bot(experiment_id: int, name: str, agent_id: int, proxy_id: int, configuration_id: int,
-              description: str = "", confirm: bool = False) -> str:
+def pm_add_bot(
+    experiment_id: int,
+    name: str,
+    agent_id: int,
+    proxy_id: int,
+    configuration_id: int,
+    description: str = "",
+    confirm: bool = False,
+) -> str:
     """Add a Bot (crawler) to an experiment from Library building blocks. Dry-run unless confirm=true.
 
     Args:
@@ -555,16 +584,27 @@ def pm_add_bot(experiment_id: int, name: str, agent_id: int, proxy_id: int, conf
         confirm: Apply the change.
     """
     payload = {
-        "experiment_id": experiment_id, "name": name, "description": description or name,
-        "agent_id": agent_id, "proxy_id": proxy_id, "configuration_id": configuration_id,
+        "experiment_id": experiment_id,
+        "name": name,
+        "description": description or name,
+        "agent_id": agent_id,
+        "proxy_id": proxy_id,
+        "configuration_id": configuration_id,
     }
     return _write("add bot", "POST", "crawlers", payload, confirm=confirm)
 
 
 @mcp.tool()
-def pm_create_run(crawler_id: int, name: str, start_at: str, timezone: str = "Europe/Berlin",
-                  timezone_utc_offset: str = "+02:00", description: str = "", active: int = 0,
-                  confirm: bool = False) -> str:
+def pm_create_run(
+    crawler_id: int,
+    name: str,
+    start_at: str,
+    timezone: str = "Europe/Berlin",
+    timezone_utc_offset: str = "+02:00",
+    description: str = "",
+    active: int = 0,
+    confirm: bool = False,
+) -> str:
     """Create/schedule a Run (queue) on a Bot. Dry-run unless confirm=true.
 
     Args:
@@ -577,8 +617,12 @@ def pm_create_run(crawler_id: int, name: str, start_at: str, timezone: str = "Eu
         confirm: Apply the change.
     """
     payload = {
-        "crawler_id": crawler_id, "name": name, "description": description or name,
-        "start_at": start_at, "timezone": timezone, "timezone_utc_offset": timezone_utc_offset,
+        "crawler_id": crawler_id,
+        "name": name,
+        "description": description or name,
+        "start_at": start_at,
+        "timezone": timezone,
+        "timezone_utc_offset": timezone_utc_offset,
         "active": active,
     }
     return _write("create run", "POST", "queues", payload, confirm=confirm)
@@ -587,14 +631,26 @@ def pm_create_run(crawler_id: int, name: str, start_at: str, timezone: str = "Eu
 @mcp.tool()
 def pm_activate_run(queue_id: int, active: int = 1, confirm: bool = False) -> str:
     """Activate (or deactivate) a Run so the runner will pick it up. Dry-run unless confirm=true."""
-    return _write(f"set run {queue_id} active={active}", "PUT", f"queues/{queue_id}", {"active": active},
-                  confirm=confirm)
+    return _write(
+        f"set run {queue_id} active={active}",
+        "PUT",
+        f"queues/{queue_id}",
+        {"active": active},
+        confirm=confirm,
+    )
 
 
 @mcp.tool()
-def pm_add_job(queue_id: int, type: str, name: str, order: int | None = None,
-               description: str = "", active: int = 1, previous_job_id: int | None = None,
-               confirm: bool = False) -> str:
+def pm_add_job(
+    queue_id: int,
+    type: str,
+    name: str,
+    order: int | None = None,
+    description: str = "",
+    active: int = 1,
+    previous_job_id: int | None = None,
+    confirm: bool = False,
+) -> str:
     """Append a Job to a Run's sequence. `order`/`previous_job_id` auto-computed if omitted.
     Job parameters are set separately as behaviours (see pm_set_behaviour). Dry-run unless confirm=true.
 
@@ -615,15 +671,27 @@ def pm_add_job(queue_id: int, type: str, name: str, order: int | None = None,
         order = auto_order if order is None else order
         previous_job_id = auto_prev if previous_job_id is None else previous_job_id
     payload = {
-        "queue_id": queue_id, "type": type, "name": name, "description": description,
-        "order": order, "active": active, "previous_job_id": previous_job_id,
+        "queue_id": queue_id,
+        "type": type,
+        "name": name,
+        "description": description,
+        "order": order,
+        "active": active,
+        "previous_job_id": previous_job_id,
     }
     return _write("add job", "POST", "jobs", payload, confirm=confirm)
 
 
 @mcp.tool()
-def pm_set_behaviour(job_id: int, name: str, value: str, description: str = "", active: bool = True,
-                     behaviour_id: int | None = None, confirm: bool = False) -> str:
+def pm_set_behaviour(
+    job_id: int,
+    name: str,
+    value: str,
+    description: str = "",
+    active: bool = True,
+    behaviour_id: int | None = None,
+    confirm: bool = False,
+) -> str:
     """Set a Job behaviour (its type-specific parameter, e.g. url/seconds/selector). Creates, or
     updates when behaviour_id is given. Dry-run unless confirm=true.
 
@@ -635,9 +703,17 @@ def pm_set_behaviour(job_id: int, name: str, value: str, description: str = "", 
         behaviour_id: If set, updates that behaviour instead of creating a new one.
         confirm: Apply the change.
     """
-    payload = {"job_id": job_id, "name": name, "value": value, "description": description, "active": active}
+    payload = {
+        "job_id": job_id,
+        "name": name,
+        "value": value,
+        "description": description,
+        "active": active,
+    }
     if behaviour_id:
-        return _write("update behaviour", "PUT", f"behaviors/{behaviour_id}", payload, confirm=confirm)
+        return _write(
+            "update behaviour", "PUT", f"behaviors/{behaviour_id}", payload, confirm=confirm
+        )
     return _write("set behaviour", "POST", "behaviors", payload, confirm=confirm)
 
 
@@ -686,19 +762,24 @@ def pm_compose_run(crawler_id: int, run: dict, jobs: list, confirm: bool = False
         return json.dumps({"error": f"Unknown job type(s): {bad}. Valid: {valid}"})
 
     if not confirm:
-        return json.dumps({
-            "dry_run": True,
-            "action": "compose run",
-            "plan": {
-                "create_run": {"crawler_id": crawler_id, **run},
-                "jobs": [
-                    {"type": j.get("type"), "name": j.get("name"),
-                     "behaviours": j.get("behaviours", [])}
-                    for j in jobs
-                ],
-            },
-            "to_apply": "call again with confirm=true",
-        })
+        return json.dumps(
+            {
+                "dry_run": True,
+                "action": "compose run",
+                "plan": {
+                    "create_run": {"crawler_id": crawler_id, **run},
+                    "jobs": [
+                        {
+                            "type": j.get("type"),
+                            "name": j.get("name"),
+                            "behaviours": j.get("behaviours", []),
+                        }
+                        for j in jobs
+                    ],
+                },
+                "to_apply": "call again with confirm=true",
+            }
+        )
 
     try:
         run_payload = {
@@ -717,21 +798,31 @@ def pm_compose_run(crawler_id: int, run: dict, jobs: list, confirm: bool = False
         prev = None
         for i, j in enumerate(jobs):
             job_payload = {
-                "queue_id": queue_id, "type": j["type"], "name": j.get("name", j["type"]),
-                "description": j.get("description", ""), "order": i + 1, "active": 1,
+                "queue_id": queue_id,
+                "type": j["type"],
+                "name": j.get("name", j["type"]),
+                "description": j.get("description", ""),
+                "order": i + 1,
+                "active": 1,
                 "previous_job_id": prev,
             }
             job = _unwrap(_api_request("POST", "jobs", data=job_payload))
             prev = job["id"]
             behaviours = []
             for b in j.get("behaviours", []):
-                bp = {"job_id": job["id"], "name": b["name"], "value": str(b["value"]),
-                      "description": b.get("description", ""), "active": True}
+                bp = {
+                    "job_id": job["id"],
+                    "name": b["name"],
+                    "value": str(b["value"]),
+                    "description": b.get("description", ""),
+                    "active": True,
+                }
                 behaviours.append(_unwrap(_api_request("POST", "behaviors", data=bp)).get("id"))
             created_jobs.append({"id": job["id"], "type": j["type"], "behaviour_ids": behaviours})
 
-        return json.dumps({"applied": True, "action": "compose run",
-                           "run_id": queue_id, "jobs": created_jobs})
+        return json.dumps(
+            {"applied": True, "action": "compose run", "run_id": queue_id, "jobs": created_jobs}
+        )
     except Exception as e:
         return json.dumps({"applied": False, "action": "compose run", "error": str(e)})
 
@@ -785,11 +876,18 @@ def list_crawlers(status: str = "") -> str:
     try:
         endpoint = "crawlers"
         if status:
-            valid_statuses = ["processed", "unprocessed", "reviewed", "inactive", "testing", "protected"]
+            valid_statuses = [
+                "processed",
+                "unprocessed",
+                "reviewed",
+                "inactive",
+                "testing",
+                "protected",
+            ]
             if status not in valid_statuses:
-                return json.dumps({
-                    "error": f"Invalid status. Must be one of: {', '.join(valid_statuses)}"
-                })
+                return json.dumps(
+                    {"error": f"Invalid status. Must be one of: {', '.join(valid_statuses)}"}
+                )
             endpoint = f"crawlers-{status}"
 
         result = _api_request("GET", endpoint)
@@ -815,9 +913,9 @@ def list_queues(status: str = "") -> str:
         if status:
             valid_statuses = ["processed", "unprocessed", "reviewed", "unreviewed"]
             if status not in valid_statuses:
-                return json.dumps({
-                    "error": f"Invalid status. Must be one of: {', '.join(valid_statuses)}"
-                })
+                return json.dumps(
+                    {"error": f"Invalid status. Must be one of: {', '.join(valid_statuses)}"}
+                )
             endpoint = f"queues-{status}"
 
         result = _api_request("GET", endpoint)
@@ -964,12 +1062,14 @@ def download_experiment(experiment_id: int) -> str:
             return json.dumps({"error": f"Download failed: {response.status_code}"})
 
         size_mb = len(response.content) / (1024 * 1024)
-        return json.dumps({
-            "success": True,
-            "message": f"Experiment {experiment_id} download available",
-            "size_mb": round(size_mb, 2),
-            "note": "Use CLI 'orchestrator experiment download' to save the file"
-        })
+        return json.dumps(
+            {
+                "success": True,
+                "message": f"Experiment {experiment_id} download available",
+                "size_mb": round(size_mb, 2),
+                "note": "Use CLI 'orchestrator experiment download' to save the file",
+            }
+        )
     except Exception as e:
         return json.dumps({"error": str(e)})
 
@@ -1020,12 +1120,14 @@ def download_report(job_id: int) -> str:
             return json.dumps({"error": f"Download failed: {response.status_code}"})
 
         size_kb = len(response.content) / 1024
-        return json.dumps({
-            "success": True,
-            "message": f"Report for job {job_id} download available",
-            "size_kb": round(size_kb, 2),
-            "note": "Use CLI 'orchestrator job report' to save the file"
-        })
+        return json.dumps(
+            {
+                "success": True,
+                "message": f"Report for job {job_id} download available",
+                "size_kb": round(size_kb, 2),
+                "note": "Use CLI 'orchestrator job report' to save the file",
+            }
+        )
     except Exception as e:
         return json.dumps({"error": str(e)})
 
@@ -1171,9 +1273,7 @@ def trace_job(job_id: int, time_range: str = "7d") -> str:
 
 
 @mcp.tool()
-def find_failed_executions(
-    time_range: str = "24h", experiment_id: int | None = None
-) -> str:
+def find_failed_executions(time_range: str = "24h", experiment_id: int | None = None) -> str:
     """
     Find all failed job executions with error details.
 
@@ -1303,10 +1403,12 @@ def get_lambda_cloudwatch_logs(
         client = CloudWatchClient()
 
         if not client.is_available():
-            return json.dumps({
-                "error": "CloudWatch is not available",
-                "hint": "Ensure AWS credentials are configured"
-            })
+            return json.dumps(
+                {
+                    "error": "CloudWatch is not available",
+                    "hint": "Ensure AWS credentials are configured",
+                }
+            )
 
         result = client.query_logs(
             time_range=time_range,
@@ -1329,10 +1431,7 @@ def get_lambda_cloudwatch_logs(
 
         client.close()
 
-        return json.dumps({
-            "count": len(entries),
-            "entries": entries
-        })
+        return json.dumps({"count": len(entries), "entries": entries})
 
     except Exception as e:
         return json.dumps({"error": str(e)})
@@ -1360,10 +1459,12 @@ def get_lambda_execution_metrics(time_range: str = "1h") -> str:
         client = CloudWatchClient()
 
         if not client.is_available():
-            return json.dumps({
-                "error": "CloudWatch is not available",
-                "hint": "Ensure AWS credentials are configured"
-            })
+            return json.dumps(
+                {
+                    "error": "CloudWatch is not available",
+                    "hint": "Ensure AWS credentials are configured",
+                }
+            )
 
         metrics = client.get_metrics_summary(time_range=time_range)
         client.close()
@@ -1396,18 +1497,22 @@ def get_lambda_invocation_details(request_id: str) -> str:
         client = CloudWatchClient()
 
         if not client.is_available():
-            return json.dumps({
-                "error": "CloudWatch is not available",
-                "hint": "Ensure AWS credentials are configured"
-            })
+            return json.dumps(
+                {
+                    "error": "CloudWatch is not available",
+                    "hint": "Ensure AWS credentials are configured",
+                }
+            )
 
         invocation = client.get_invocation(request_id=request_id)
 
         if not invocation:
-            return json.dumps({
-                "error": f"Invocation not found: {request_id}",
-                "hint": "CloudWatch logs may take a few seconds to appear"
-            })
+            return json.dumps(
+                {
+                    "error": f"Invocation not found: {request_id}",
+                    "hint": "CloudWatch logs may take a few seconds to appear",
+                }
+            )
 
         result = {
             "request_id": invocation.request_id,
@@ -1419,7 +1524,8 @@ def get_lambda_invocation_details(request_id: str) -> str:
             "max_memory_used_mb": invocation.memory_used_mb,
             "memory_utilization_pct": (
                 (invocation.memory_used_mb / invocation.memory_size_mb * 100)
-                if invocation.memory_size_mb and invocation.memory_used_mb else None
+                if invocation.memory_size_mb and invocation.memory_used_mb
+                else None
             ),
             "init_duration_ms": invocation.init_duration_ms,
             "is_cold_start": invocation.is_cold_start,
@@ -1466,37 +1572,34 @@ def get_lambda_recent_errors(time_range: str = "24h", limit: int = 20) -> str:
         client = CloudWatchClient()
 
         if not client.is_available():
-            return json.dumps({
-                "error": "CloudWatch is not available",
-                "hint": "Ensure AWS credentials are configured"
-            })
+            return json.dumps(
+                {
+                    "error": "CloudWatch is not available",
+                    "hint": "Ensure AWS credentials are configured",
+                }
+            )
 
         errors = client.get_recent_errors(time_range=time_range, limit=limit)
 
         if not errors:
-            return json.dumps({
-                "count": 0,
-                "message": "No Lambda errors found",
-                "errors": []
-            })
+            return json.dumps({"count": 0, "message": "No Lambda errors found", "errors": []})
 
         error_list = []
         for inv in errors:
-            error_list.append({
-                "request_id": inv.request_id,
-                "start_time": inv.start_time.isoformat() if inv.start_time else None,
-                "duration_ms": inv.duration_ms,
-                "is_cold_start": inv.is_cold_start,
-                "error": inv.error,
-                "log_count": len(inv.logs),
-            })
+            error_list.append(
+                {
+                    "request_id": inv.request_id,
+                    "start_time": inv.start_time.isoformat() if inv.start_time else None,
+                    "duration_ms": inv.duration_ms,
+                    "is_cold_start": inv.is_cold_start,
+                    "error": inv.error,
+                    "log_count": len(inv.logs),
+                }
+            )
 
         client.close()
 
-        return json.dumps({
-            "count": len(error_list),
-            "errors": error_list
-        })
+        return json.dumps({"count": len(error_list), "errors": error_list})
 
     except Exception as e:
         return json.dumps({"error": str(e)})
@@ -1561,29 +1664,27 @@ def validate_experiment_spec(yaml_content: str, strict: bool = False) -> str:
     result = converter.convert(parsed)
 
     # Combine all errors and warnings
-    all_errors = list(set(
-        validation_result.errors + parsed.errors + result.errors
-    ))
-    all_warnings = list(set(
-        validation_result.warnings + parsed.warnings + result.warnings
-    ))
+    all_errors = list(set(validation_result.errors + parsed.errors + result.errors))
+    all_warnings = list(set(validation_result.warnings + parsed.warnings + result.warnings))
 
     if strict:
         all_errors.extend(all_warnings)
         all_warnings = []
 
-    return json.dumps({
-        "valid": len(all_errors) == 0,
-        "errors": all_errors,
-        "warnings": all_warnings,
-        "summary": {
-            "experiment_name": parsed.experiment.get("name", ""),
-            "crawler_count": result.crawler_count,
-            "total_jobs": result.total_jobs,
-            "has_design": parsed.design is not None,
-        },
-        "design_info": validation_result.info.get("design_info")
-    })
+    return json.dumps(
+        {
+            "valid": len(all_errors) == 0,
+            "errors": all_errors,
+            "warnings": all_warnings,
+            "summary": {
+                "experiment_name": parsed.experiment.get("name", ""),
+                "crawler_count": result.crawler_count,
+                "total_jobs": result.total_jobs,
+                "has_design": parsed.design is not None,
+            },
+            "design_info": validation_result.info.get("design_info"),
+        }
+    )
 
 
 @mcp.tool()
@@ -1612,26 +1713,30 @@ def preview_factorial_design(yaml_content: str) -> str:
         return json.dumps({"errors": parsed.errors})
 
     if not parsed.design:
-        return json.dumps({
-            "experiment_name": parsed.experiment.get("name", ""),
-            "has_design": False,
-            "crawler_count": len(parsed.crawlers),
-            "message": "No factorial design specified"
-        })
+        return json.dumps(
+            {
+                "experiment_name": parsed.experiment.get("name", ""),
+                "has_design": False,
+                "crawler_count": len(parsed.crawlers),
+                "message": "No factorial design specified",
+            }
+        )
 
     expander = DesignExpander()
     preview = expander.preview(parsed.design)
 
-    return json.dumps({
-        "experiment_name": parsed.experiment.get("name", ""),
-        "has_design": True,
-        "design_type": preview.get("design_type", "factorial"),
-        "factors": preview.get("factors", []),
-        "replications": preview.get("replications", 1),
-        "formula": preview.get("formula", ""),
-        "total_cells": preview.get("total_cells", 0),
-        "total_crawlers": preview.get("total_crawlers", 0)
-    })
+    return json.dumps(
+        {
+            "experiment_name": parsed.experiment.get("name", ""),
+            "has_design": True,
+            "design_type": preview.get("design_type", "factorial"),
+            "factors": preview.get("factors", []),
+            "replications": preview.get("replications", 1),
+            "formula": preview.get("formula", ""),
+            "total_cells": preview.get("total_cells", 0),
+            "total_crawlers": preview.get("total_crawlers", 0),
+        }
+    )
 
 
 @mcp.tool()
@@ -1662,14 +1767,16 @@ def convert_spec_to_json(yaml_content: str) -> str:
     if result.errors:
         return json.dumps({"errors": result.errors, "warnings": result.warnings})
 
-    return json.dumps({
-        "experiment_name": result.experiment_name,
-        "experiment_description": result.experiment_description,
-        "crawler_count": result.crawler_count,
-        "total_jobs": result.total_jobs,
-        "crawlers": result.json_data,
-        "warnings": result.warnings
-    })
+    return json.dumps(
+        {
+            "experiment_name": result.experiment_name,
+            "experiment_description": result.experiment_description,
+            "crawler_count": result.crawler_count,
+            "total_jobs": result.total_jobs,
+            "crawlers": result.json_data,
+            "warnings": result.warnings,
+        }
+    )
 
 
 @mcp.tool()
@@ -1710,32 +1817,26 @@ def upload_experiment(
     parsed = parser.parse(yaml_content)
 
     if parsed.errors:
-        return json.dumps({
-            "success": False,
-            "errors": parsed.errors,
-            "warnings": parsed.warnings
-        })
+        return json.dumps({"success": False, "errors": parsed.errors, "warnings": parsed.warnings})
 
     # Convert
     converter = SpecConverter()
     result = converter.convert(parsed)
 
     if result.errors:
-        return json.dumps({
-            "success": False,
-            "errors": result.errors,
-            "warnings": result.warnings
-        })
+        return json.dumps({"success": False, "errors": result.errors, "warnings": result.warnings})
 
     if dry_run:
-        return json.dumps({
-            "success": True,
-            "dry_run": True,
-            "experiment_name": result.experiment_name,
-            "crawler_count": result.crawler_count,
-            "total_jobs": result.total_jobs,
-            "warnings": result.warnings
-        })
+        return json.dumps(
+            {
+                "success": True,
+                "dry_run": True,
+                "experiment_name": result.experiment_name,
+                "crawler_count": result.crawler_count,
+                "total_jobs": result.total_jobs,
+                "warnings": result.warnings,
+            }
+        )
 
     # Get credentials
     api_url = settings.pm_api_base_url
@@ -1743,27 +1844,33 @@ def upload_experiment(
     password = settings.pm_api_password
 
     if not all([api_url, email, password]):
-        return json.dumps({
-            "success": False,
-            "error": "API credentials not configured (PM_API_BASE_URL, PM_API_EMAIL, PM_API_PASSWORD)"
-        })
+        return json.dumps(
+            {
+                "success": False,
+                "error": "API credentials not configured (PM_API_BASE_URL, PM_API_EMAIL, PM_API_PASSWORD)",
+            }
+        )
 
     try:
         # Authenticate
         auth_response = requests.post(
             f"{api_url}/login",
             json={"email": email, "password": password},
-            headers={"Accept": "application/json"}
+            headers={"Accept": "application/json"},
         )
         auth_response.raise_for_status()
         token = auth_response.json().get("access_token")
 
         if not token:
-            return json.dumps({"success": False, "error": "Authentication failed: no token received"})
+            return json.dumps(
+                {"success": False, "error": "Authentication failed: no token received"}
+            )
 
         # Create experiment if needed
         if not experiment_id:
-            exp_name = result.experiment_name or f"Experiment {datetime.now().strftime('%Y%m%d_%H%M%S')}"
+            exp_name = (
+                result.experiment_name or f"Experiment {datetime.now().strftime('%Y%m%d_%H%M%S')}"
+            )
 
             create_response = requests.post(
                 f"{api_url}/experiments",
@@ -1771,53 +1878,59 @@ def upload_experiment(
                     "name": exp_name,
                     "description": result.experiment_description or "Created via MCP",
                     "contact": "PrimeMover Orchestrator MCP",
-                    "active": 1
+                    "active": 1,
                 },
                 headers={
                     "Authorization": f"Bearer {token}",
                     "Accept": "application/json",
-                    "Content-Type": "application/json"
-                }
+                    "Content-Type": "application/json",
+                },
             )
             create_response.raise_for_status()
             create_result = create_response.json()
 
-            experiment_id = (
-                create_result.get("data", {}).get("id") or
-                create_result.get("id")
-            )
+            experiment_id = create_result.get("data", {}).get("id") or create_result.get("id")
 
             if not experiment_id:
-                return json.dumps({"success": False, "error": "Failed to create experiment: no ID returned"})
+                return json.dumps(
+                    {"success": False, "error": "Failed to create experiment: no ID returned"}
+                )
 
         # Upload crawlers
         upload_response = requests.post(
             f"{api_url}/experiments/{experiment_id}/upload",
-            files={"json": ("crawlers.json", json.dumps(result.json_data, indent=2), "application/json")},
-            headers={
-                "Authorization": f"Bearer {token}",
-                "Accept": "application/json"
-            }
+            files={
+                "json": (
+                    "crawlers.json",
+                    json.dumps(result.json_data, indent=2),
+                    "application/json",
+                )
+            },
+            headers={"Authorization": f"Bearer {token}", "Accept": "application/json"},
         )
         upload_response.raise_for_status()
 
-        return json.dumps({
-            "success": True,
-            "experiment_id": experiment_id,
-            "experiment_name": result.experiment_name,
-            "crawler_count": result.crawler_count,
-            "total_jobs": result.total_jobs,
-            "warnings": result.warnings
-        })
+        return json.dumps(
+            {
+                "success": True,
+                "experiment_id": experiment_id,
+                "experiment_name": result.experiment_name,
+                "crawler_count": result.crawler_count,
+                "total_jobs": result.total_jobs,
+                "warnings": result.warnings,
+            }
+        )
 
     except requests.exceptions.HTTPError as e:
         error_detail = ""
-        if hasattr(e, 'response') and e.response is not None:
+        if hasattr(e, "response") and e.response is not None:
             try:
                 error_detail = json.dumps(e.response.json())
             except Exception:
                 error_detail = e.response.text[:500]
-        return json.dumps({"success": False, "error": f"Upload failed: {e}", "detail": error_detail})
+        return json.dumps(
+            {"success": False, "error": f"Upload failed: {e}", "detail": error_detail}
+        )
     except Exception as e:
         return json.dumps({"success": False, "error": str(e)})
 
@@ -1840,13 +1953,15 @@ def list_job_types() -> str:
         required = [b.name for b in job.behaviors if b.required]
         optional = [b.name for b in job.behaviors if not b.required]
 
-        job_types.append({
-            "yaml_name": job.yaml_name,
-            "api_type": job.api_type,
-            "description": job.description,
-            "required_behaviors": required,
-            "optional_behaviors": optional
-        })
+        job_types.append(
+            {
+                "yaml_name": job.yaml_name,
+                "api_type": job.api_type,
+                "description": job.description,
+                "required_behaviors": required,
+                "optional_behaviors": optional,
+            }
+        )
 
     return json.dumps({"job_types": job_types})
 
@@ -1871,27 +1986,28 @@ def get_job_type_schema(job_type: str) -> str:
 
     if not schema:
         available = [j.yaml_name for j in JobRegistry.list_all()]
-        return json.dumps({
-            "error": f"Unknown job type: {job_type}",
-            "available_types": available
-        })
+        return json.dumps({"error": f"Unknown job type: {job_type}", "available_types": available})
 
     behaviors = []
     for b in schema.behaviors:
-        behaviors.append({
-            "name": b.name,
-            "required": b.required,
-            "default": b.default,
-            "description": b.description
-        })
+        behaviors.append(
+            {
+                "name": b.name,
+                "required": b.required,
+                "default": b.default,
+                "description": b.description,
+            }
+        )
 
-    return json.dumps({
-        "yaml_name": schema.yaml_name,
-        "api_type": schema.api_type,
-        "display_name": schema.display_name,
-        "description": schema.description,
-        "behaviors": behaviors
-    })
+    return json.dumps(
+        {
+            "yaml_name": schema.yaml_name,
+            "api_type": schema.api_type,
+            "display_name": schema.display_name,
+            "description": schema.description,
+            "behaviors": behaviors,
+        }
+    )
 
 
 @mcp.tool()
@@ -1906,7 +2022,7 @@ def get_spec_template(template_type: str = "default") -> str:
         YAML template string
     """
     templates = {
-        'default': '''# Experiment Specification
+        "default": """# Experiment Specification
 version: "1.0"
 
 experiment:
@@ -1943,8 +2059,8 @@ crawlers:
       workflow:
         - visit: https://example.com
         - wait: 5s
-''',
-        'youtube': '''# YouTube Research Experiment
+""",
+        "youtube": """# YouTube Research Experiment
 version: "1.0"
 
 experiment:
@@ -2007,8 +2123,8 @@ crawlers:
         - template: cookie_consent
         - repeat: 5
             template: watch_and_recommend
-''',
-        'google': '''# Google Search Experiment
+""",
+        "google": """# Google Search Experiment
 version: "1.0"
 
 experiment:
@@ -2058,10 +2174,10 @@ crawlers:
             query: "climate change"
         - scroll: 30s
         - wait: 5s
-'''
+""",
     }
 
-    template = templates.get(template_type, templates['default'])
+    template = templates.get(template_type, templates["default"])
     return json.dumps({"template": template, "type": template_type})
 
 
@@ -2093,16 +2209,20 @@ def summarize_yaml_spec(yaml_content: str) -> str:
         generator = SummaryGenerator()
         summary = generator.from_yaml_string(yaml_content)
 
-        return json.dumps({
-            "success": True,
-            "summary": summary.to_dict(),
-            "text": summary.to_text(),
-        })
+        return json.dumps(
+            {
+                "success": True,
+                "summary": summary.to_dict(),
+                "text": summary.to_text(),
+            }
+        )
     except Exception as e:
-        return json.dumps({
-            "success": False,
-            "error": str(e),
-        })
+        return json.dumps(
+            {
+                "success": False,
+                "error": str(e),
+            }
+        )
 
 
 @mcp.tool()
@@ -2145,10 +2265,12 @@ def summarize_experiment(experiment_id: int) -> str:
         )
 
         if auth_response.status_code != 200:
-            return json.dumps({
-                "success": False,
-                "error": "API authentication failed",
-            })
+            return json.dumps(
+                {
+                    "success": False,
+                    "error": "API authentication failed",
+                }
+            )
 
         token = auth_response.json().get("access_token")
         headers = {"Authorization": f"Bearer {token}"}
@@ -2161,34 +2283,37 @@ def summarize_experiment(experiment_id: int) -> str:
         )
 
         if exp_response.status_code != 200:
-            return json.dumps({
-                "success": False,
-                "error": f"Failed to fetch experiment: {exp_response.status_code}",
-            })
+            return json.dumps(
+                {
+                    "success": False,
+                    "error": f"Failed to fetch experiment: {exp_response.status_code}",
+                }
+            )
 
         experiment_data = exp_response.json().get("data", exp_response.json())
 
         generator = SummaryGenerator()
         summary = generator.from_api_data(experiment_data)
 
-        return json.dumps({
-            "success": True,
-            "summary": summary.to_dict(),
-            "text": summary.to_text(),
-        })
+        return json.dumps(
+            {
+                "success": True,
+                "summary": summary.to_dict(),
+                "text": summary.to_text(),
+            }
+        )
     except Exception as e:
-        return json.dumps({
-            "success": False,
-            "error": str(e),
-        })
+        return json.dumps(
+            {
+                "success": False,
+                "error": str(e),
+            }
+        )
 
 
 @mcp.tool()
 def compare_experiments(
-    source1: str,
-    source2: str,
-    type1: str = "yaml",
-    type2: str = "yaml"
+    source1: str, source2: str, type1: str = "yaml", type2: str = "yaml"
 ) -> str:
     """
     Compare two experiments and return differences.
@@ -2256,10 +2381,12 @@ def compare_experiments(
             exp_data = get_api_data(source1)
             summary1 = generator.from_api_data(exp_data)
         else:
-            return json.dumps({
-                "success": False,
-                "error": f"Unknown source type: {type1}. Use 'yaml', 'json', or 'api'",
-            })
+            return json.dumps(
+                {
+                    "success": False,
+                    "error": f"Unknown source type: {type1}. Use 'yaml', 'json', or 'api'",
+                }
+            )
 
         # Parse second source
         if type2 == "yaml":
@@ -2270,30 +2397,36 @@ def compare_experiments(
             exp_data = get_api_data(source2)
             summary2 = generator.from_api_data(exp_data)
         else:
-            return json.dumps({
-                "success": False,
-                "error": f"Unknown source type: {type2}. Use 'yaml', 'json', or 'api'",
-            })
+            return json.dumps(
+                {
+                    "success": False,
+                    "error": f"Unknown source type: {type2}. Use 'yaml', 'json', or 'api'",
+                }
+            )
 
         # Compare
         comparison = compare_summaries(summary1, summary2)
 
-        return json.dumps({
-            "success": True,
-            "identical": comparison.is_identical(),
-            "crawler_count_diff": comparison.crawler_count_diff,
-            "job_count_diff": comparison.job_count_diff,
-            "differences": comparison.differences,
-            "crawlers_only_in_a": comparison.crawlers_only_in_a[:10],
-            "crawlers_only_in_b": comparison.crawlers_only_in_b[:10],
-            "experiment1": summary1.to_dict(),
-            "experiment2": summary2.to_dict(),
-        })
+        return json.dumps(
+            {
+                "success": True,
+                "identical": comparison.is_identical(),
+                "crawler_count_diff": comparison.crawler_count_diff,
+                "job_count_diff": comparison.job_count_diff,
+                "differences": comparison.differences,
+                "crawlers_only_in_a": comparison.crawlers_only_in_a[:10],
+                "crawlers_only_in_b": comparison.crawlers_only_in_b[:10],
+                "experiment1": summary1.to_dict(),
+                "experiment2": summary2.to_dict(),
+            }
+        )
     except Exception as e:
-        return json.dumps({
-            "success": False,
-            "error": str(e),
-        })
+        return json.dumps(
+            {
+                "success": False,
+                "error": str(e),
+            }
+        )
 
 
 # =============================================================================
@@ -2343,7 +2476,10 @@ def main():
             print("WARNING: Server bound to all interfaces (0.0.0.0).", file=sys.stderr)
             print("         Ensure proper network security is in place.", file=sys.stderr)
 
-        print(f"Connect with: claude mcp add --transport http primemover http://your-server:{_port}/mcp", file=sys.stderr)
+        print(
+            f"Connect with: claude mcp add --transport http primemover http://your-server:{_port}/mcp",
+            file=sys.stderr,
+        )
         mcp.run(transport="streamable-http")
     else:
         mcp.run(transport="stdio")

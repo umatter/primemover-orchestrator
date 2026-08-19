@@ -82,8 +82,8 @@ def setup(
         # Setup without starting (manual start later)
         orchestrator setup --skip-start
     """
-    import subprocess
     import shutil
+    import subprocess
     from pathlib import Path
 
     console.print("[bold cyan]PrimeMover Development Environment Setup[/bold cyan]\n")
@@ -119,9 +119,10 @@ def setup(
         prereqs_ok = False
 
     # Check Docker Compose (v2 or v1)
-    compose_v2 = subprocess.run(
-        ["docker", "compose", "version"], capture_output=True, text=True
-    ).returncode == 0
+    compose_v2 = (
+        subprocess.run(["docker", "compose", "version"], capture_output=True, text=True).returncode
+        == 0
+    )
     compose_v1 = shutil.which("docker-compose") is not None
 
     if compose_v2:
@@ -138,6 +139,7 @@ def setup(
         java_result = subprocess.run(["java", "-version"], capture_output=True, text=True)
         version_output = java_result.stderr or java_result.stdout
         import re
+
         match = re.search(r'version "(\d+)', version_output)
         if match:
             major_version = int(match.group(1))
@@ -180,8 +182,13 @@ def setup(
     if chrome_found:
         # Get Chrome version
         chrome_result = subprocess.run(
-            ["google-chrome", "--version"] if shutil.which("google-chrome") else ["chromium", "--version"],
-            capture_output=True, text=True
+            (
+                ["google-chrome", "--version"]
+                if shutil.which("google-chrome")
+                else ["chromium", "--version"]
+            ),
+            capture_output=True,
+            text=True,
         )
         if chrome_result.returncode == 0:
             version = chrome_result.stdout.strip()
@@ -196,7 +203,9 @@ def setup(
     if shutil.which("mlx"):
         console.print("  [green]✓[/green] Multilogin X (mlx) installed")
     else:
-        console.print("  [dim]○[/dim] Multilogin X not found (optional, for production browser profiles)")
+        console.print(
+            "  [dim]○[/dim] Multilogin X not found (optional, for production browser profiles)"
+        )
 
     # Check Node.js (for GUI - optional if Docker available)
     node_path = shutil.which("node")
@@ -211,7 +220,9 @@ def setup(
         if has_docker:
             console.print("  [dim]○[/dim] Node.js not found (optional, GUI builds with Docker)")
         else:
-            console.print("  [yellow]⚠[/yellow] Node.js not found (needed to build GUI without Docker)")
+            console.print(
+                "  [yellow]⚠[/yellow] Node.js not found (needed to build GUI without Docker)"
+            )
 
     # Check npm
     if shutil.which("npm"):
@@ -275,7 +286,7 @@ def setup(
     env_example = orchestrator_path / ".env.example"
 
     if env_file.exists():
-        console.print(f"  [green]✓[/green] .env already exists")
+        console.print("  [green]✓[/green] .env already exists")
     elif env_example.exists():
         import secrets
 
@@ -284,12 +295,16 @@ def setup(
 
         # Update paths to be relative from orchestrator
         content = content.replace("PM_API_PATH=../primemover_api", "PM_API_PATH=../primemover_api")
-        content = content.replace("PM_RUNNER_PATH=../primemover_runner", "PM_RUNNER_PATH=../primemover_runner")
+        content = content.replace(
+            "PM_RUNNER_PATH=../primemover_runner", "PM_RUNNER_PATH=../primemover_runner"
+        )
         content = content.replace("PM_GUI_PATH=../primemover_gui", "PM_GUI_PATH=../primemover_gui")
 
         # Generate a random Grafana admin password (required - no default)
         grafana_password = secrets.token_urlsafe(16)
-        content = content.replace("GRAFANA_ADMIN_PASSWORD=", f"GRAFANA_ADMIN_PASSWORD={grafana_password}")
+        content = content.replace(
+            "GRAFANA_ADMIN_PASSWORD=", f"GRAFANA_ADMIN_PASSWORD={grafana_password}"
+        )
 
         # Set API credentials to match Laravel seed defaults
         content = content.replace("PM_API_EMAIL=", "PM_API_EMAIL=admin@primemover.example")
@@ -300,11 +315,11 @@ def setup(
         content = content.replace("PM_REDIS_PASSWORD=", "PM_REDIS_PASSWORD=secret")
 
         env_file.write_text(content)
-        console.print(f"  [green]✓[/green] Created .env from template")
+        console.print("  [green]✓[/green] Created .env from template")
         console.print(f"    [dim]Grafana password: {grafana_password}[/dim]")
-        console.print(f"    [dim]API credentials: admin@primemover.example / password[/dim]")
+        console.print("    [dim]API credentials: admin@primemover.example / password[/dim]")
     else:
-        console.print(f"  [red]✗[/red] .env.example not found")
+        console.print("  [red]✗[/red] .env.example not found")
 
     # Step 3: Build runner JAR
     if not skip_build:
@@ -314,14 +329,18 @@ def setup(
         runner_module = runner_path / "primemover-runner"
 
         if not runner_path.exists():
-            console.print(f"  [yellow]⚠[/yellow] Runner path not found, skipping build")
+            console.print("  [yellow]⚠[/yellow] Runner path not found, skipping build")
         elif not shutil.which("mvn"):
-            console.print(f"  [yellow]⚠[/yellow] Maven (mvn) not found, skipping build")
-            console.print(f"    [dim]Install Maven and run: cd {runner_path} && mvn package -DskipTests[/dim]")
+            console.print("  [yellow]⚠[/yellow] Maven (mvn) not found, skipping build")
+            console.print(
+                f"    [dim]Install Maven and run: cd {runner_path} && mvn package -DskipTests[/dim]"
+            )
         else:
             # Check if JAR already exists
             target_dir = runner_module / "target"
-            existing_jars = list(target_dir.glob("primemover-runner-*.jar")) if target_dir.exists() else []
+            existing_jars = (
+                list(target_dir.glob("primemover-runner-*.jar")) if target_dir.exists() else []
+            )
             existing_jars = [j for j in existing_jars if "-sources" not in j.name]
 
             if existing_jars:
@@ -330,10 +349,12 @@ def setup(
                     skip_build = True
 
             if not skip_build:
-                console.print(f"  [dim]Building from parent directory to include all modules:[/dim]")
-                console.print(f"  [dim]  - primemover-generated (Multilogin API client)[/dim]")
-                console.print(f"  [dim]  - primemover-runner (main application)[/dim]")
-                console.print(f"  [cyan]⋯[/cyan] Running mvn package (this may take a few minutes)...")
+                console.print("  [dim]Building from parent directory to include all modules:[/dim]")
+                console.print("  [dim]  - primemover-generated (Multilogin API client)[/dim]")
+                console.print("  [dim]  - primemover-runner (main application)[/dim]")
+                console.print(
+                    "  [cyan]⋯[/cyan] Running mvn package (this may take a few minutes)..."
+                )
 
                 # Run from parent directory to build both modules
                 result = subprocess.run(
@@ -349,12 +370,19 @@ def setup(
                     if new_jars:
                         console.print(f"  [green]✓[/green] Built: {new_jars[0].name}")
                     else:
-                        console.print(f"  [green]✓[/green] Build completed")
+                        console.print("  [green]✓[/green] Build completed")
                 else:
-                    console.print(f"  [red]✗[/red] Build failed")
-                    if "primemover-generated" in result.stdout or "primemover-generated" in result.stderr:
-                        console.print(f"    [dim]Hint: Error may be in primemover-generated module[/dim]")
-                    console.print(f"    [dim]Run manually: cd {runner_path} && mvn package -DskipTests[/dim]")
+                    console.print("  [red]✗[/red] Build failed")
+                    if (
+                        "primemover-generated" in result.stdout
+                        or "primemover-generated" in result.stderr
+                    ):
+                        console.print(
+                            "    [dim]Hint: Error may be in primemover-generated module[/dim]"
+                        )
+                    console.print(
+                        f"    [dim]Run manually: cd {runner_path} && mvn package -DskipTests[/dim]"
+                    )
     else:
         console.print("\n[bold]Step 3: Building runner[/bold] [dim](skipped)[/dim]\n")
 
@@ -366,11 +394,11 @@ def setup(
         api_public_gui = repos["api"]["path"] / "public" / "gui"
 
         if not gui_path.exists():
-            console.print(f"  [yellow]⚠[/yellow] GUI path not found, skipping build")
+            console.print("  [yellow]⚠[/yellow] GUI path not found, skipping build")
         else:
             # Check if already deployed
             if api_public_gui.exists() and (api_public_gui / "index.html").exists():
-                console.print(f"  [green]✓[/green] GUI already deployed to API")
+                console.print("  [green]✓[/green] GUI already deployed to API")
                 if not click.confirm("  Rebuild anyway?", default=False):
                     skip_gui = True
 
@@ -381,7 +409,9 @@ def setup(
 
                 # Prefer Docker build (no Node.js dependency on host)
                 if gui_dockerfile.exists() and has_docker:
-                    console.print(f"  [cyan]⋯[/cyan] Building GUI with Docker (this may take a few minutes)...")
+                    console.print(
+                        "  [cyan]⋯[/cyan] Building GUI with Docker (this may take a few minutes)..."
+                    )
 
                     # Build Docker image
                     result = subprocess.run(
@@ -391,13 +421,13 @@ def setup(
                         text=True,
                     )
                     if result.returncode != 0:
-                        console.print(f"  [red]✗[/red] Docker build failed")
+                        console.print("  [red]✗[/red] Docker build failed")
                         console.print(f"    [dim]{result.stderr[:300]}[/dim]")
                     else:
-                        console.print(f"  [green]✓[/green] Docker image built")
+                        console.print("  [green]✓[/green] Docker image built")
 
                         # Extract built files from container
-                        console.print(f"  [cyan]⋯[/cyan] Extracting built files...")
+                        console.print("  [cyan]⋯[/cyan] Extracting built files...")
 
                         # Create temporary container and copy files out
                         container_name = "primemover-gui-extract"
@@ -417,7 +447,12 @@ def setup(
 
                         # Copy from container's nginx html directory
                         result = subprocess.run(
-                            ["docker", "cp", f"{container_name}:/usr/share/nginx/html/.", str(api_public_gui)],
+                            [
+                                "docker",
+                                "cp",
+                                f"{container_name}:/usr/share/nginx/html/.",
+                                str(api_public_gui),
+                            ],
                             capture_output=True,
                             text=True,
                         )
@@ -430,19 +465,19 @@ def setup(
 
                         if result.returncode == 0 and (api_public_gui / "index.html").exists():
                             console.print(f"  [green]✓[/green] GUI deployed to {api_public_gui}")
-                            console.print(f"    [dim]Access at: http://localhost:8090/gui[/dim]")
+                            console.print("    [dim]Access at: http://localhost:8090/gui[/dim]")
                         else:
-                            console.print(f"  [red]✗[/red] Failed to extract files from container")
+                            console.print("  [red]✗[/red] Failed to extract files from container")
 
                 # Fallback to native npm build
                 elif has_npm:
-                    console.print(f"  [dim]No Dockerfile found, using npm build...[/dim]")
+                    console.print("  [dim]No Dockerfile found, using npm build...[/dim]")
                     gui_dist = gui_path / "dist"
                     gui_modules = gui_path / "node_modules"
 
                     # Install dependencies if needed
                     if not gui_modules.exists():
-                        console.print(f"  [cyan]⋯[/cyan] Installing npm dependencies...")
+                        console.print("  [cyan]⋯[/cyan] Installing npm dependencies...")
                         result = subprocess.run(
                             ["npm", "install"],
                             cwd=gui_path,
@@ -450,13 +485,13 @@ def setup(
                             text=True,
                         )
                         if result.returncode == 0:
-                            console.print(f"  [green]✓[/green] npm install completed")
+                            console.print("  [green]✓[/green] npm install completed")
                         else:
-                            console.print(f"  [red]✗[/red] npm install failed")
+                            console.print("  [red]✗[/red] npm install failed")
                             console.print(f"    [dim]{result.stderr[:200]}[/dim]")
 
                     # Build
-                    console.print(f"  [cyan]⋯[/cyan] Building GUI (this may take a minute)...")
+                    console.print("  [cyan]⋯[/cyan] Building GUI (this may take a minute)...")
                     result = subprocess.run(
                         ["npm", "run", "build"],
                         cwd=gui_path,
@@ -464,13 +499,13 @@ def setup(
                         text=True,
                     )
                     if result.returncode == 0:
-                        console.print(f"  [green]✓[/green] GUI built successfully")
+                        console.print("  [green]✓[/green] GUI built successfully")
 
                         # Deploy to API's public/gui folder
                         gui_dist_src = gui_path / "dist" / "primemover-frontend"
 
                         if gui_dist_src.exists():
-                            console.print(f"  [cyan]⋯[/cyan] Deploying GUI to API public folder...")
+                            console.print("  [cyan]⋯[/cyan] Deploying GUI to API public folder...")
 
                             # Remove old deployment if exists
                             if api_public_gui.exists():
@@ -479,23 +514,35 @@ def setup(
                             # Copy new build
                             shutil.copytree(gui_dist_src, api_public_gui)
                             console.print(f"  [green]✓[/green] GUI deployed to {api_public_gui}")
-                            console.print(f"    [dim]Access at: http://localhost:8090/gui[/dim]")
+                            console.print("    [dim]Access at: http://localhost:8090/gui[/dim]")
                         else:
-                            console.print(f"  [yellow]⚠[/yellow] Build output not found at {gui_dist_src}")
+                            console.print(
+                                f"  [yellow]⚠[/yellow] Build output not found at {gui_dist_src}"
+                            )
                     else:
-                        console.print(f"  [red]✗[/red] Build failed")
-                        console.print(f"    [dim]Run manually: cd {gui_path} && npm run build[/dim]")
+                        console.print("  [red]✗[/red] Build failed")
+                        console.print(
+                            f"    [dim]Run manually: cd {gui_path} && npm run build[/dim]"
+                        )
                 else:
                     # Provide more accurate message about why GUI can't be built
                     if not gui_dockerfile.exists() and not has_npm:
-                        console.print(f"  [yellow]⚠[/yellow] GUI has no Dockerfile and npm not available, skipping build")
-                        console.print(f"    [dim]Install Node.js/npm to build the GUI, or add a Dockerfile[/dim]")
+                        console.print(
+                            "  [yellow]⚠[/yellow] GUI has no Dockerfile and npm not available, skipping build"
+                        )
+                        console.print(
+                            "    [dim]Install Node.js/npm to build the GUI, or add a Dockerfile[/dim]"
+                        )
                     elif not gui_dockerfile.exists():
-                        console.print(f"  [yellow]⚠[/yellow] GUI has no Dockerfile, npm build would be needed")
-                        console.print(f"    [dim]Add a Dockerfile to the GUI repo for Docker-based builds[/dim]")
+                        console.print(
+                            "  [yellow]⚠[/yellow] GUI has no Dockerfile, npm build would be needed"
+                        )
+                        console.print(
+                            "    [dim]Add a Dockerfile to the GUI repo for Docker-based builds[/dim]"
+                        )
                     else:
-                        console.print(f"  [yellow]⚠[/yellow] Docker or npm required for GUI build")
-                        console.print(f"    [dim]Install Docker or Node.js to build the GUI[/dim]")
+                        console.print("  [yellow]⚠[/yellow] Docker or npm required for GUI build")
+                        console.print("    [dim]Install Docker or Node.js to build the GUI[/dim]")
     else:
         console.print("\n[bold]Step 3b: Building GUI[/bold] [dim](skipped)[/dim]\n")
 
@@ -507,15 +554,15 @@ def setup(
     # Check API
     api_compose = repos["api"]["path"] / "docker-compose.yml"
     if api_compose.exists():
-        console.print(f"  [green]✓[/green] API: docker-compose.yml found")
+        console.print("  [green]✓[/green] API: docker-compose.yml found")
     else:
-        console.print(f"  [red]✗[/red] API: docker-compose.yml not found")
+        console.print("  [red]✗[/red] API: docker-compose.yml not found")
         all_ok = False
 
     # Check API .env
     api_env = repos["api"]["path"] / ".env"
     if api_env.exists():
-        console.print(f"  [green]✓[/green] API: .env configured")
+        console.print("  [green]✓[/green] API: .env configured")
     else:
         # Prefer .env.docker (Docker-ready) over .env.example
         api_env_docker = repos["api"]["path"] / ".env.docker"
@@ -524,10 +571,13 @@ def setup(
         if api_env_docker.exists():
             # Use .env.docker - already has all Docker-specific settings
             import shutil
+
             shutil.copy(api_env_docker, api_env)
-            console.print(f"  [green]✓[/green] API: .env created from .env.docker")
+            console.print("  [green]✓[/green] API: .env created from .env.docker")
         elif api_env_example.exists():
-            console.print(f"  [yellow]⚠[/yellow] API: .env missing (will be created from .env.example)")
+            console.print(
+                "  [yellow]⚠[/yellow] API: .env missing (will be created from .env.example)"
+            )
             # Copy .env.example to .env and configure for Docker
             content = api_env_example.read_text()
 
@@ -552,16 +602,18 @@ def setup(
                     content = content.replace(f"{var}=\n", f"{var}={value}\n")
 
             api_env.write_text(content)
-            console.print(f"  [green]✓[/green] API: .env created from template (configured for Docker)")
+            console.print(
+                "  [green]✓[/green] API: .env created from template (configured for Docker)"
+            )
         else:
-            console.print(f"  [red]✗[/red] API: .env, .env.docker, and .env.example not found")
+            console.print("  [red]✗[/red] API: .env, .env.docker, and .env.example not found")
 
     # Check if vendor exists (composer install done)
     api_vendor = repos["api"]["path"] / "vendor"
     if api_vendor.exists():
-        console.print(f"  [green]✓[/green] API: vendor/ exists (dependencies installed)")
+        console.print("  [green]✓[/green] API: vendor/ exists (dependencies installed)")
     else:
-        console.print(f"  [dim]○[/dim] API: vendor/ not found (composer install needed)")
+        console.print("  [dim]○[/dim] API: vendor/ not found (composer install needed)")
 
     # Check primemover-generated (Multilogin API client)
     generated_target = repos["runner"]["path"] / "primemover-generated" / "target"
@@ -570,20 +622,22 @@ def setup(
         if generated_jars:
             console.print(f"  [green]✓[/green] Generated: {generated_jars[0].name}")
         else:
-            console.print(f"  [yellow]⚠[/yellow] Generated: JAR not built (Multilogin API client)")
+            console.print("  [yellow]⚠[/yellow] Generated: JAR not built (Multilogin API client)")
     else:
-        console.print(f"  [yellow]⚠[/yellow] Generated: not built yet (primemover-generated)")
+        console.print("  [yellow]⚠[/yellow] Generated: not built yet (primemover-generated)")
 
     # Check Runner JAR
     runner_target = repos["runner"]["path"] / "primemover-runner" / "target"
     if runner_target.exists():
-        jars = [j for j in runner_target.glob("primemover-runner-*.jar") if "-sources" not in j.name]
+        jars = [
+            j for j in runner_target.glob("primemover-runner-*.jar") if "-sources" not in j.name
+        ]
         if jars:
             console.print(f"  [green]✓[/green] Runner: {jars[0].name}")
         else:
-            console.print(f"  [yellow]⚠[/yellow] Runner: JAR not built yet")
+            console.print("  [yellow]⚠[/yellow] Runner: JAR not built yet")
     else:
-        console.print(f"  [yellow]⚠[/yellow] Runner: target/ directory not found")
+        console.print("  [yellow]⚠[/yellow] Runner: target/ directory not found")
 
     # Check and configure runner config for local development
     runner_config_dir = repos["runner"]["path"] / "primemover-runner" / "config"
@@ -594,7 +648,7 @@ def setup(
 
         # Check if already configured for local API
         if "backend.endpoint.api=http://localhost:8090" in content:
-            console.print(f"  [green]✓[/green] Runner config: configured for local API")
+            console.print("  [green]✓[/green] Runner config: configured for local API")
         else:
             # Update to point to local API
             import re
@@ -631,9 +685,11 @@ def setup(
             )
 
             runner_config.write_text(content)
-            console.print(f"  [green]✓[/green] Runner config: updated for local API (localhost:8090, 1min polling)")
+            console.print(
+                "  [green]✓[/green] Runner config: updated for local API (localhost:8090, 1min polling)"
+            )
     else:
-        console.print(f"  [red]✗[/red] Runner config: application.properties not found")
+        console.print("  [red]✗[/red] Runner config: application.properties not found")
         all_ok = False
 
     # Check GUI
@@ -642,54 +698,57 @@ def setup(
     api_public_gui = repos["api"]["path"] / "public" / "gui"
 
     if gui_package.exists():
-        console.print(f"  [green]✓[/green] GUI: package.json found")
+        console.print("  [green]✓[/green] GUI: package.json found")
 
         # Check for Docker support
         if gui_dockerfile.exists():
-            console.print(f"  [green]✓[/green] GUI: Dockerfile found (Docker build supported)")
+            console.print("  [green]✓[/green] GUI: Dockerfile found (Docker build supported)")
         else:
-            console.print(f"  [dim]○[/dim] GUI: No Dockerfile (requires npm to build)")
+            console.print("  [dim]○[/dim] GUI: No Dockerfile (requires npm to build)")
 
             # Only check node_modules if no Docker
             gui_modules = repos["gui"]["path"] / "node_modules"
             if gui_modules.exists():
-                console.print(f"  [green]✓[/green] GUI: node_modules installed")
+                console.print("  [green]✓[/green] GUI: node_modules installed")
             else:
-                console.print(f"  [dim]○[/dim] GUI: node_modules not found (npm install needed)")
+                console.print("  [dim]○[/dim] GUI: node_modules not found (npm install needed)")
 
             # Check if built locally
             gui_dist = repos["gui"]["path"] / "dist"
             if gui_dist.exists():
-                console.print(f"  [green]✓[/green] GUI: dist/ built")
+                console.print("  [green]✓[/green] GUI: dist/ built")
             else:
-                console.print(f"  [dim]○[/dim] GUI: not built yet")
+                console.print("  [dim]○[/dim] GUI: not built yet")
 
         # Check if deployed to API (most important check)
         if api_public_gui.exists() and (api_public_gui / "index.html").exists():
-            console.print(f"  [green]✓[/green] GUI: deployed to API (public/gui)")
+            console.print("  [green]✓[/green] GUI: deployed to API (public/gui)")
         else:
-            console.print(f"  [dim]○[/dim] GUI: not deployed to API yet")
+            console.print("  [dim]○[/dim] GUI: not deployed to API yet")
     else:
-        console.print(f"  [yellow]⚠[/yellow] GUI: package.json not found")
+        console.print("  [yellow]⚠[/yellow] GUI: package.json not found")
 
     # Check .env
     if env_file.exists():
-        console.print(f"  [green]✓[/green] Config: .env exists")
+        console.print("  [green]✓[/green] Config: .env exists")
     else:
-        console.print(f"  [red]✗[/red] Config: .env missing")
+        console.print("  [red]✗[/red] Config: .env missing")
         all_ok = False
 
     # Lambda note (runs in AWS, not locally)
-    console.print(f"\n  [dim]Note: Lambda (bot-decision-yt) runs in AWS, not locally.[/dim]")
-    console.print(f"  [dim]The runner invokes it via HTTP during job execution.[/dim]")
+    console.print("\n  [dim]Note: Lambda (bot-decision-yt) runs in AWS, not locally.[/dim]")
+    console.print("  [dim]The runner invokes it via HTTP during job execution.[/dim]")
 
     # Check AWS credentials (optional, for log viewing)
     import os
+
     if os.environ.get("AWS_ACCESS_KEY_ID") or os.environ.get("AWS_SECRET_ACCESS_KEY"):
-        console.print(f"  [green]✓[/green] AWS credentials configured (for Lambda log viewing)")
+        console.print("  [green]✓[/green] AWS credentials configured (for Lambda log viewing)")
     else:
-        console.print(f"  [dim]○[/dim] AWS credentials not set (optional, for Lambda log viewing)")
-        console.print(f"    [dim]Set AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY in .env for 'orchestrator lambda' commands[/dim]")
+        console.print("  [dim]○[/dim] AWS credentials not set (optional, for Lambda log viewing)")
+        console.print(
+            "    [dim]Set AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY in .env for 'orchestrator lambda' commands[/dim]"
+        )
 
     # Step 5: Start components
     if not skip_start and all_ok:
@@ -698,6 +757,7 @@ def setup(
         if click.confirm("Start all PrimeMover components now?", default=True):
             # Reload settings to pick up new .env
             from orchestrator.config.settings import Settings
+
             settings = Settings()
 
             manager = _get_component_manager(settings)
@@ -724,10 +784,21 @@ def setup(
                     if command.startswith("composer"):
                         # Use the API component's compose command detection
                         from orchestrator.components.api import _get_compose_cmd
+
                         compose_cmd = _get_compose_cmd()
                         api_compose_file = repos["api"]["path"] / "docker-compose.yml"
                         result = subprocess.run(
-                            compose_cmd + ["-f", str(api_compose_file), "exec", "-T", "php", "composer", "install", "--no-interaction"],
+                            compose_cmd
+                            + [
+                                "-f",
+                                str(api_compose_file),
+                                "exec",
+                                "-T",
+                                "php",
+                                "composer",
+                                "install",
+                                "--no-interaction",
+                            ],
                             cwd=repos["api"]["path"],
                             capture_output=True,
                             text=True,
@@ -741,7 +812,10 @@ def setup(
                         console.print(f"  [green]✓[/green] {step_name}")
                     else:
                         # Some commands may "fail" but are OK (e.g., storage link already exists)
-                        if "already exists" in output.lower() or "nothing to migrate" in output.lower():
+                        if (
+                            "already exists" in output.lower()
+                            or "nothing to migrate" in output.lower()
+                        ):
                             console.print(f"  [green]✓[/green] {step_name} (already done)")
                         else:
                             console.print(f"  [yellow]⚠[/yellow] {step_name}: {output[:100]}...")
@@ -753,8 +827,9 @@ def setup(
                 console.print("\n[bold]Step 7: Verifying API[/bold]\n")
                 console.print("  [cyan]⋯[/cyan] Testing API authentication...")
 
-                import httpx
                 import time
+
+                import httpx
 
                 # Give API a moment to stabilize after initialization
                 time.sleep(2)
@@ -768,10 +843,14 @@ def setup(
                     if response.status_code == 200 and "access_token" in response.text:
                         console.print("  [green]✓[/green] API authentication working")
                     else:
-                        console.print(f"  [yellow]⚠[/yellow] API responded but auth may have issues: {response.status_code}")
+                        console.print(
+                            f"  [yellow]⚠[/yellow] API responded but auth may have issues: {response.status_code}"
+                        )
                 except Exception as e:
                     console.print(f"  [yellow]⚠[/yellow] Could not verify API: {e}")
-                    console.print("    [dim]The API may still be starting up. Try: curl -X POST http://localhost:8090/api/v1/login -H 'Content-Type: application/json' -d '{\"email\":\"admin@primemover.example\",\"password\":\"password\"}'[/dim]")
+                    console.print(
+                        '    [dim]The API may still be starting up. Try: curl -X POST http://localhost:8090/api/v1/login -H \'Content-Type: application/json\' -d \'{"email":"admin@primemover.example","password":"password"}\'[/dim]'
+                    )
 
     elif skip_start:
         console.print("\n[bold]Step 5: Starting components[/bold] [dim](skipped)[/dim]\n")
@@ -900,7 +979,9 @@ def _check_url(base_url: str, path: str) -> tuple[str, str]:
 @click.option("--api/--no-api", default=True, help="Start API component")
 @click.option("--runner/--no-runner", default=True, help="Start Runner component")
 @click.option("--monitoring/--no-monitoring", default=True, help="Start Monitoring component")
-@click.option("--lambda-local/--no-lambda-local", default=True, help="Start local Lambda server (for runner)")
+@click.option(
+    "--lambda-local/--no-lambda-local", default=True, help="Start local Lambda server (for runner)"
+)
 @click.pass_context
 def up(ctx: click.Context, api: bool, runner: bool, monitoring: bool, lambda_local: bool) -> None:
     """
@@ -920,19 +1001,25 @@ def up(ctx: click.Context, api: bool, runner: bool, monitoring: bool, lambda_loc
     settings = ctx.obj["settings"]
 
     if not any([api, runner, monitoring]):
-        console.print("[yellow]No components selected. Use --api, --runner, or --monitoring.[/yellow]")
+        console.print(
+            "[yellow]No components selected. Use --api, --runner, or --monitoring.[/yellow]"
+        )
         return
 
     console.print("[bold]Starting PrimeMover components...[/bold]\n")
 
     manager = _get_component_manager(settings, lambda_server_enabled=lambda_local)
-    system_status = manager.start(api=api, runner=runner, monitoring=monitoring, lambda_server=lambda_local)
+    system_status = manager.start(
+        api=api, runner=runner, monitoring=monitoring, lambda_server=lambda_local
+    )
 
     console.print()
     if system_status.overall.value == "running":
         console.print("[green bold]All requested components started successfully![/green bold]")
     elif system_status.overall.value == "error":
-        console.print("[red bold]Some components failed to start. Check the output above.[/red bold]")
+        console.print(
+            "[red bold]Some components failed to start. Check the output above.[/red bold]"
+        )
     else:
         console.print(f"[yellow]Components status: {system_status.overall.value}[/yellow]")
 
@@ -944,7 +1031,9 @@ def up(ctx: click.Context, api: bool, runner: bool, monitoring: bool, lambda_loc
 @click.option("--lambda-local/--no-lambda-local", default=True, help="Stop local Lambda server")
 @click.option("--volumes", is_flag=True, help="Also remove Docker volumes (data loss!)")
 @click.pass_context
-def down(ctx: click.Context, api: bool, runner: bool, monitoring: bool, lambda_local: bool, volumes: bool) -> None:
+def down(
+    ctx: click.Context, api: bool, runner: bool, monitoring: bool, lambda_local: bool, volumes: bool
+) -> None:
     """
     Stop PrimeMover components.
 
@@ -962,7 +1051,9 @@ def down(ctx: click.Context, api: bool, runner: bool, monitoring: bool, lambda_l
     settings = ctx.obj["settings"]
 
     if not any([api, runner, monitoring]):
-        console.print("[yellow]No components selected. Use --api, --runner, or --monitoring.[/yellow]")
+        console.print(
+            "[yellow]No components selected. Use --api, --runner, or --monitoring.[/yellow]"
+        )
         return
 
     if volumes:
@@ -975,13 +1066,21 @@ def down(ctx: click.Context, api: bool, runner: bool, monitoring: bool, lambda_l
     console.print("[bold]Stopping PrimeMover components...[/bold]\n")
 
     manager = _get_component_manager(settings)
-    system_status = manager.stop(api=api, runner=runner, monitoring=monitoring, lambda_server=lambda_local, remove_volumes=volumes)
+    system_status = manager.stop(
+        api=api,
+        runner=runner,
+        monitoring=monitoring,
+        lambda_server=lambda_local,
+        remove_volumes=volumes,
+    )
 
     console.print()
     if system_status.overall.value == "stopped":
         console.print("[green bold]All requested components stopped successfully![/green bold]")
     elif system_status.overall.value == "error":
-        console.print("[red bold]Some components failed to stop. Check the output above.[/red bold]")
+        console.print(
+            "[red bold]Some components failed to stop. Check the output above.[/red bold]"
+        )
 
 
 @cli.command()
@@ -990,7 +1089,9 @@ def down(ctx: click.Context, api: bool, runner: bool, monitoring: bool, lambda_l
 @click.option("--monitoring", is_flag=True, help="Restart Monitoring component")
 @click.option("--lambda-local", is_flag=True, help="Restart Lambda Server component")
 @click.pass_context
-def restart(ctx: click.Context, api: bool, runner: bool, monitoring: bool, lambda_local: bool) -> None:
+def restart(
+    ctx: click.Context, api: bool, runner: bool, monitoring: bool, lambda_local: bool
+) -> None:
     """
     Restart PrimeMover components.
 
@@ -1010,13 +1111,17 @@ def restart(ctx: click.Context, api: bool, runner: bool, monitoring: bool, lambd
     console.print("[bold]Restarting PrimeMover components...[/bold]\n")
 
     manager = _get_component_manager(settings)
-    system_status = manager.restart(api=api, runner=runner, monitoring=monitoring, lambda_server=lambda_local)
+    system_status = manager.restart(
+        api=api, runner=runner, monitoring=monitoring, lambda_server=lambda_local
+    )
 
     console.print()
     if system_status.overall.value == "running":
         console.print("[green bold]All requested components restarted successfully![/green bold]")
     elif system_status.overall.value == "error":
-        console.print("[red bold]Some components failed to restart. Check the output above.[/red bold]")
+        console.print(
+            "[red bold]Some components failed to restart. Check the output above.[/red bold]"
+        )
 
 
 @cli.command()
@@ -1034,7 +1139,6 @@ def doctor(ctx: click.Context) -> None:
     """
     import shutil
     import subprocess
-    from pathlib import Path
 
     settings = ctx.obj["settings"]
 
@@ -1053,11 +1157,15 @@ def doctor(ctx: click.Context) -> None:
         all_ok = False
 
     # Check Docker Compose (v2 or v1)
-    compose_v2_result = subprocess.run(["docker", "compose", "version"], capture_output=True, text=True)
+    compose_v2_result = subprocess.run(
+        ["docker", "compose", "version"], capture_output=True, text=True
+    )
     compose_v1_path = shutil.which("docker-compose")
 
     if compose_v2_result.returncode == 0:
-        version = compose_v2_result.stdout.strip().split()[-1] if compose_v2_result.stdout else "unknown"
+        version = (
+            compose_v2_result.stdout.strip().split()[-1] if compose_v2_result.stdout else "unknown"
+        )
         console.print(f"  [green]✓[/green] Docker Compose v2 (plugin) version {version}")
     elif compose_v1_path:
         result = subprocess.run(["docker-compose", "--version"], capture_output=True, text=True)
@@ -1075,6 +1183,7 @@ def doctor(ctx: click.Context) -> None:
         output = result.stderr or result.stdout
         if "version" in output:
             import re
+
             match = re.search(r'version "(\d+)', output)
             version = match.group(1) if match else "unknown"
             if version != "unknown" and int(version) >= 17:
@@ -1082,7 +1191,7 @@ def doctor(ctx: click.Context) -> None:
             else:
                 console.print(f"  [yellow]⚠[/yellow] Java version {version} (17+ recommended)")
         else:
-            console.print(f"  [green]✓[/green] Java found")
+            console.print("  [green]✓[/green] Java found")
     else:
         console.print("  [yellow]⚠[/yellow] Java not found (needed for Runner)")
 
@@ -1095,7 +1204,7 @@ def doctor(ctx: click.Context) -> None:
         if compose_file.exists():
             console.print(f"  [green]✓[/green] API path exists: {api_path}")
         else:
-            console.print(f"  [yellow]⚠[/yellow] API path exists but missing docker-compose.yml")
+            console.print("  [yellow]⚠[/yellow] API path exists but missing docker-compose.yml")
             all_ok = False
     else:
         console.print(f"  [red]✗[/red] API path not found: {api_path}")
@@ -1104,12 +1213,17 @@ def doctor(ctx: click.Context) -> None:
     # Check Runner path
     runner_path = settings.get_runner_path()
     if runner_path.exists():
-        jar_pattern = runner_path / "primemover-runner" / "target" / "primemover-runner-*.jar"
-        jars = list((runner_path / "primemover-runner" / "target").glob("primemover-runner-*.jar")) if (runner_path / "primemover-runner" / "target").exists() else []
+        jars = (
+            list((runner_path / "primemover-runner" / "target").glob("primemover-runner-*.jar"))
+            if (runner_path / "primemover-runner" / "target").exists()
+            else []
+        )
         if jars:
             console.print(f"  [green]✓[/green] Runner path exists: {runner_path}")
         else:
-            console.print(f"  [yellow]⚠[/yellow] Runner path exists but JAR not found (run mvn package)")
+            console.print(
+                "  [yellow]⚠[/yellow] Runner path exists but JAR not found (run mvn package)"
+            )
     else:
         console.print(f"  [red]✗[/red] Runner path not found: {runner_path}")
         all_ok = False
@@ -1120,7 +1234,7 @@ def doctor(ctx: click.Context) -> None:
     if compose_file.exists():
         console.print(f"  [green]✓[/green] Orchestrator path: {orch_path}")
     else:
-        console.print(f"  [red]✗[/red] Orchestrator docker-compose.yml not found")
+        console.print("  [red]✗[/red] Orchestrator docker-compose.yml not found")
         all_ok = False
 
     console.print("\n[bold]Checking ports...[/bold]\n")
@@ -1130,7 +1244,7 @@ def doctor(ctx: click.Context) -> None:
     def check_port(port: int, name: str):
         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         sock.settimeout(1)
-        result = sock.connect_ex(('localhost', port))
+        result = sock.connect_ex(("localhost", port))
         sock.close()
         if result == 0:
             # Port is in use
@@ -1148,7 +1262,9 @@ def doctor(ctx: click.Context) -> None:
         if check_port(port, name):
             console.print(f"  [green]✓[/green] Port {port} available ({name})")
         else:
-            console.print(f"  [yellow]⚠[/yellow] Port {port} in use ({name}) - component may be running")
+            console.print(
+                f"  [yellow]⚠[/yellow] Port {port} in use ({name}) - component may be running"
+            )
 
     console.print()
     if all_ok:
@@ -1178,7 +1294,6 @@ def config_init(ctx: click.Context, force: bool) -> None:
     Creates a .env file from .env.example with interactive prompts
     for customizing paths and ports.
     """
-    from pathlib import Path
 
     settings = ctx.obj["settings"]
     orchestrator_path = settings.get_orchestrator_path()
@@ -1243,7 +1358,6 @@ def config_validate(ctx: click.Context) -> None:
     - Ports are available or in use by expected services
     """
     import socket
-    from pathlib import Path
 
     settings = ctx.obj["settings"]
 
@@ -1259,7 +1373,7 @@ def config_validate(ctx: click.Context) -> None:
         if compose_file.exists():
             console.print(f"  [green]✓[/green] API path: {api_path}")
         else:
-            console.print(f"  [red]✗[/red] API path exists but missing docker-compose.yml")
+            console.print("  [red]✗[/red] API path exists but missing docker-compose.yml")
             all_valid = False
     else:
         console.print(f"  [red]✗[/red] API path not found: {api_path}")
@@ -1276,10 +1390,10 @@ def config_validate(ctx: click.Context) -> None:
                 console.print(f"  [green]✓[/green] Runner path: {runner_path}")
                 console.print(f"      JAR: {jars[0].name}")
             else:
-                console.print(f"  [yellow]⚠[/yellow] Runner path exists but JAR not built")
+                console.print("  [yellow]⚠[/yellow] Runner path exists but JAR not built")
                 warnings.append("Run 'mvn package' in the runner directory")
         else:
-            console.print(f"  [yellow]⚠[/yellow] Runner path exists but target/ not found")
+            console.print("  [yellow]⚠[/yellow] Runner path exists but target/ not found")
             warnings.append("Run 'mvn package' in the runner directory")
     else:
         console.print(f"  [red]✗[/red] Runner path not found: {runner_path}")
@@ -1291,7 +1405,7 @@ def config_validate(ctx: click.Context) -> None:
     if compose_file.exists():
         console.print(f"  [green]✓[/green] Orchestrator path: {orch_path}")
     else:
-        console.print(f"  [red]✗[/red] Orchestrator docker-compose.yml not found")
+        console.print("  [red]✗[/red] Orchestrator docker-compose.yml not found")
         all_valid = False
 
     console.print("\n[bold]Checking ports...[/bold]\n")
@@ -1300,7 +1414,7 @@ def config_validate(ctx: click.Context) -> None:
         """Check if port is available or in use."""
         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         sock.settimeout(1)
-        result = sock.connect_ex(('localhost', port))
+        result = sock.connect_ex(("localhost", port))
         sock.close()
         if result == 0:
             return False, "in use"
@@ -1576,11 +1690,11 @@ def db_status(ctx: click.Context) -> None:
 
     if success:
         # Parse and format the output
-        lines = output.strip().split('\n')
+        lines = output.strip().split("\n")
         for line in lines:
-            if 'Ran' in line or '✓' in line or 'Yes' in line:
+            if "Ran" in line or "✓" in line or "Yes" in line:
                 console.print(f"  [green]✓[/green] {line.strip()}")
-            elif 'Pending' in line or '✗' in line or 'No' in line:
+            elif "Pending" in line or "✗" in line or "No" in line:
                 console.print(f"  [yellow]○[/yellow] {line.strip()}")
             elif line.strip():
                 console.print(f"  {line.strip()}")
@@ -1646,11 +1760,22 @@ def db_init(ctx: click.Context, force: bool, skip_composer: bool) -> None:
         # composer install needs special handling (not artisan)
         if command.startswith("composer"):
             from orchestrator.components.api import _get_compose_cmd
+
             api_path = settings.get_api_path()
             compose_cmd = _get_compose_cmd()
             api_compose_file = api_path / "docker-compose.yml"
             result = subprocess.run(
-                compose_cmd + ["-f", str(api_compose_file), "exec", "-T", "php", "composer", "install", "--no-interaction"],
+                compose_cmd
+                + [
+                    "-f",
+                    str(api_compose_file),
+                    "exec",
+                    "-T",
+                    "php",
+                    "composer",
+                    "install",
+                    "--no-interaction",
+                ],
                 cwd=api_path,
                 capture_output=True,
                 text=True,
@@ -1742,7 +1867,13 @@ def logs() -> None:
 @click.option("--crawler-id", type=int, help="Filter by crawler ID")
 @click.option("--job-id", type=int, help="Filter by job ID")
 @click.option("-n", "--limit", default=100, help="Max results")
-@click.option("-f", "--format", "output_format", type=click.Choice(["table", "json", "plain"]), default="plain")
+@click.option(
+    "-f",
+    "--format",
+    "output_format",
+    type=click.Choice(["table", "json", "plain"]),
+    default="plain",
+)
 @click.pass_context
 def logs_query(
     ctx: click.Context,
@@ -1761,7 +1892,9 @@ def logs_query(
 
     aggregator = LogAggregator()
 
-    console.print(f"[dim]Querying logs: component={component}, time={time_range}, level={level}[/dim]")
+    console.print(
+        f"[dim]Querying logs: component={component}, time={time_range}, level={level}[/dim]"
+    )
     if search:
         console.print(f"[dim]Search: {search}[/dim]")
     if experiment_id:
@@ -1791,6 +1924,7 @@ def logs_query(
 
         if output_format == "json":
             import json
+
             entries = [
                 {
                     "timestamp": e.timestamp.isoformat(),
@@ -1838,13 +1972,18 @@ def logs_query(
 
                 time_str = entry.timestamp.strftime("%H:%M:%S")
                 comp = f"[cyan]{entry.component:6}[/cyan]"
-                lvl = f"[{level_style}]{entry.level:5}[/{level_style}]" if level_style else entry.level
+                lvl = (
+                    f"[{level_style}]{entry.level:5}[/{level_style}]"
+                    if level_style
+                    else entry.level
+                )
 
                 console.print(f"[dim]{time_str}[/dim] {comp} {lvl} {entry.message[:150]}")
 
     except Exception as e:
         console.print(f"[red]Error querying logs: {e}[/red]")
         import traceback
+
         console.print(f"[dim]{traceback.format_exc()}[/dim]")
     finally:
         aggregator.close()
@@ -1862,6 +2001,7 @@ def logs_query(
 def logs_errors(ctx: click.Context, time_range: str, component: str) -> None:
     """Get error summary and patterns."""
     from collections import Counter
+
     from orchestrator.logs.aggregator import LogAggregator
 
     console.print(f"[dim]Fetching errors from last {time_range}...[/dim]\n")
@@ -1897,7 +2037,7 @@ def logs_errors(ctx: click.Context, time_range: str, component: str) -> None:
         for comp, count in by_component.most_common():
             console.print(f"  [cyan]{comp}[/cyan]: {count}")
 
-        console.print(f"\n[bold]Top Error Messages:[/bold]")
+        console.print("\n[bold]Top Error Messages:[/bold]")
         for msg, count in by_message.most_common(10):
             console.print(f"  [red]{count:3}x[/red] {msg[:70]}...")
 
@@ -2007,7 +2147,13 @@ def trace() -> None:
 @click.option("--jobs/--no-jobs", default=False, help="Include job-level details")
 @click.option("--crawlers/--no-crawlers", default=True, help="Include crawler-level details")
 @click.option("-t", "--time-range", default="7d", help="Time range for log queries")
-@click.option("-f", "--format", "output_format", type=click.Choice(["tree", "json", "summary"]), default="tree")
+@click.option(
+    "-f",
+    "--format",
+    "output_format",
+    type=click.Choice(["tree", "json", "summary"]),
+    default="tree",
+)
 @click.pass_context
 def trace_experiment(
     ctx: click.Context,
@@ -2042,6 +2188,7 @@ def trace_experiment(
     except Exception as e:
         console.print(f"[red]Error tracing experiment: {e}[/red]")
         import traceback
+
         console.print(f"[dim]{traceback.format_exc()}[/dim]")
     finally:
         builder.close()
@@ -2051,7 +2198,13 @@ def trace_experiment(
 @click.argument("crawler_id", type=int)
 @click.option("--jobs/--no-jobs", default=True, help="Include job-level details")
 @click.option("-t", "--time-range", default="7d", help="Time range for log queries")
-@click.option("-f", "--format", "output_format", type=click.Choice(["tree", "json", "summary"]), default="tree")
+@click.option(
+    "-f",
+    "--format",
+    "output_format",
+    type=click.Choice(["tree", "json", "summary"]),
+    default="tree",
+)
 @click.pass_context
 def trace_crawler(
     ctx: click.Context,
@@ -2084,6 +2237,7 @@ def trace_crawler(
     except Exception as e:
         console.print(f"[red]Error tracing crawler: {e}[/red]")
         import traceback
+
         console.print(f"[dim]{traceback.format_exc()}[/dim]")
     finally:
         builder.close()
@@ -2093,7 +2247,13 @@ def trace_crawler(
 @click.argument("job_id", type=int)
 @click.option("--include-logs/--no-logs", "include_logs", default=True, help="Show log entries")
 @click.option("-t", "--time-range", default="7d", help="Time range for log queries")
-@click.option("-f", "--format", "output_format", type=click.Choice(["tree", "json", "summary"]), default="tree")
+@click.option(
+    "-f",
+    "--format",
+    "output_format",
+    type=click.Choice(["tree", "json", "summary"]),
+    default="tree",
+)
 @click.pass_context
 def trace_job(
     ctx: click.Context,
@@ -2122,6 +2282,7 @@ def trace_job(
     except Exception as e:
         console.print(f"[red]Error tracing job: {e}[/red]")
         import traceback
+
         console.print(f"[dim]{traceback.format_exc()}[/dim]")
     finally:
         builder.close()
@@ -2164,7 +2325,6 @@ def _print_trace_summary(trace) -> None:
 def _print_trace_tree(trace, indent: int = 0, show_logs: bool = False) -> None:
     """Print a trace as a tree structure."""
     from rich.tree import Tree
-    from rich.panel import Panel
 
     def _status_style(status: str) -> str:
         return {
@@ -2176,14 +2336,13 @@ def _print_trace_tree(trace, indent: int = 0, show_logs: bool = False) -> None:
         }.get(status, "dim")
 
     def _add_span_to_tree(tree, span) -> None:
-        status_style = _status_style(span.status.value if hasattr(span.status, 'value') else span.status)
         status_icon = {
             "success": "[green]✓[/green]",
             "failed": "[red]✗[/red]",
             "running": "[yellow]⋯[/yellow]",
             "pending": "[dim]○[/dim]",
             "unknown": "[dim]?[/dim]",
-        }.get(span.status.value if hasattr(span.status, 'value') else span.status, "?")
+        }.get(span.status.value if hasattr(span.status, "value") else span.status, "?")
 
         # Build span label
         component = f"[cyan]{span.component}[/cyan]"
@@ -2224,7 +2383,9 @@ def _print_trace_tree(trace, indent: int = 0, show_logs: bool = False) -> None:
                 time_str = log.timestamp.strftime("%H:%M:%S") if log.timestamp else "?"
                 msg = log.message[:80]
                 if level_style:
-                    logs_branch.add(f"[dim]{time_str}[/dim] [{level_style}]{log.level}[/{level_style}] {msg}")
+                    logs_branch.add(
+                        f"[dim]{time_str}[/dim] [{level_style}]{log.level}[/{level_style}] {msg}"
+                    )
                 else:
                     logs_branch.add(f"[dim]{time_str}[/dim] {log.level} {msg}")
 
@@ -2233,10 +2394,6 @@ def _print_trace_tree(trace, indent: int = 0, show_logs: bool = False) -> None:
             _add_span_to_tree(branch, child)
 
     # Build the tree
-    root_status = _status_style(
-        trace.root_span.status.value if trace.root_span and hasattr(trace.root_span.status, 'value')
-        else "unknown"
-    )
     tree_title = f"[bold]{trace.entity_type.title()} {trace.entity_id}[/bold]"
 
     if trace.entity_data.get("name"):
@@ -2318,7 +2475,9 @@ def lambda_invocations(
             table.add_row(
                 entry.timestamp.strftime("%Y-%m-%d %H:%M"),
                 str(entry.job_id) if entry.job_id else "?",
-                entry.message[17:67] if len(entry.message) > 17 else entry.message,  # Skip "Lambda decision: "
+                (
+                    entry.message[17:67] if len(entry.message) > 17 else entry.message
+                ),  # Skip "Lambda decision: "
                 entry.labels.get("xpath", "")[:50],
             )
 
@@ -2342,6 +2501,7 @@ def lambda_invocations(
 def lambda_decisions(ctx: click.Context, experiment_id: int, group_by: str) -> None:
     """Analyze Lambda decision patterns for an experiment."""
     from collections import Counter
+
     from orchestrator.logs.aggregator import LogAggregator
 
     console.print(f"[bold]Analyzing decisions for experiment {experiment_id}...[/bold]\n")
@@ -2401,6 +2561,7 @@ def lambda_decisions(ctx: click.Context, experiment_id: int, group_by: str) -> N
 def lambda_show(ctx: click.Context, job_id: int, as_json: bool) -> None:
     """Show full Lambda output for a specific job."""
     import json
+
     from orchestrator.logs.aggregator import LogAggregator
 
     console.print(f"[dim]Fetching Lambda output for job {job_id}...[/dim]\n")
@@ -2429,15 +2590,15 @@ def lambda_show(ctx: click.Context, job_id: int, as_json: bool) -> None:
             console.print(f"  Channel: {selected.get('channel', 'N/A')}")
 
             # XPath
-            console.print(f"\n[bold]XPath:[/bold]")
+            console.print("\n[bold]XPath:[/bold]")
             console.print(f"  {output.get('xpath', 'N/A')}")
 
             # Timestamps
             if "timestamps" in output:
-                console.print(f"\n[bold]Execution Timeline:[/bold]")
+                console.print("\n[bold]Execution Timeline:[/bold]")
                 ts = output["timestamps"]
                 if isinstance(ts, dict) and "progress" in ts:
-                    for idx, step in ts["progress"].items():
+                    for step in ts["progress"].values():
                         console.print(f"  - {step}")
 
             # Warnings
@@ -2459,7 +2620,13 @@ def lambda_show(ctx: click.Context, job_id: int, as_json: bool) -> None:
 @click.option("-j", "--job-id", type=int, help="Filter by job ID")
 @click.option("-s", "--search", default="", help="Search pattern")
 @click.option("-n", "--limit", default=100, help="Max results")
-@click.option("-f", "--format", "output_format", type=click.Choice(["plain", "json", "table"]), default="plain")
+@click.option(
+    "-f",
+    "--format",
+    "output_format",
+    type=click.Choice(["plain", "json", "table"]),
+    default="plain",
+)
 @click.pass_context
 def lambda_logs(
     ctx: click.Context,
@@ -2472,6 +2639,7 @@ def lambda_logs(
 ) -> None:
     """Query Lambda logs from CloudWatch."""
     import json
+
     try:
         from orchestrator.clients.cloudwatch import CloudWatchClient
     except ImportError as e:
@@ -2549,8 +2717,16 @@ def lambda_logs(
                 }.get(entry.level.lower(), "")
 
                 time_str = entry.timestamp.strftime("%H:%M:%S")
-                req_id = f"[cyan]{entry.request_id[:8]}[/cyan]" if entry.request_id else "[dim]--------[/dim]"
-                lvl = f"[{level_style}]{entry.level:5}[/{level_style}]" if level_style else entry.level
+                req_id = (
+                    f"[cyan]{entry.request_id[:8]}[/cyan]"
+                    if entry.request_id
+                    else "[dim]--------[/dim]"
+                )
+                lvl = (
+                    f"[{level_style}]{entry.level:5}[/{level_style}]"
+                    if level_style
+                    else entry.level
+                )
 
                 console.print(f"[dim]{time_str}[/dim] {req_id} {lvl} {entry.message[:120]}")
 
@@ -2559,16 +2735,20 @@ def lambda_logs(
     except Exception as e:
         console.print(f"[red]Error querying CloudWatch: {e}[/red]")
         import traceback
+
         console.print(f"[dim]{traceback.format_exc()}[/dim]")
 
 
 @lambda_.command("metrics")
 @click.option("-t", "--time-range", default="1h", help="Time range (15m, 1h, 24h, 7d)")
-@click.option("-f", "--format", "output_format", type=click.Choice(["summary", "json"]), default="summary")
+@click.option(
+    "-f", "--format", "output_format", type=click.Choice(["summary", "json"]), default="summary"
+)
 @click.pass_context
 def lambda_metrics(ctx: click.Context, time_range: str, output_format: str) -> None:
     """Show Lambda execution metrics."""
     import json
+
     try:
         from orchestrator.clients.cloudwatch import CloudWatchClient
     except ImportError as e:
@@ -2591,30 +2771,32 @@ def lambda_metrics(ctx: click.Context, time_range: str, output_format: str) -> N
         else:
             console.print("[bold]Lambda Execution Metrics[/bold]\n")
 
-            console.print(f"[bold]Invocations:[/bold]")
+            console.print("[bold]Invocations:[/bold]")
             console.print(f"  Total:       {metrics.get('invocation_count', 0)}")
             console.print(f"  Errors:      {metrics.get('error_count', 0)}")
             console.print(f"  Cold Starts: {metrics.get('cold_start_count', 0)}")
 
             console.print()
-            console.print(f"[bold]Duration (ms):[/bold]")
-            duration = metrics.get('duration', {})
+            console.print("[bold]Duration (ms):[/bold]")
+            duration = metrics.get("duration", {})
             console.print(f"  Average:  {duration.get('avg', 0):.1f}")
             console.print(f"  Min:      {duration.get('min', 0):.1f}")
             console.print(f"  Max:      {duration.get('max', 0):.1f}")
             console.print(f"  P99:      {duration.get('p99', 0):.1f}")
 
             console.print()
-            console.print(f"[bold]Memory (MB):[/bold]")
-            memory = metrics.get('memory', {})
+            console.print("[bold]Memory (MB):[/bold]")
+            memory = metrics.get("memory", {})
             console.print(f"  Configured: {memory.get('configured', 0)}")
             console.print(f"  Avg Used:   {memory.get('avg_used', 0):.1f}")
             console.print(f"  Max Used:   {memory.get('max_used', 0)}")
 
-            if metrics.get('recent_errors'):
+            if metrics.get("recent_errors"):
                 console.print()
-                console.print(f"[bold red]Recent Errors ({len(metrics['recent_errors'])}):[/bold red]")
-                for err in metrics['recent_errors'][:5]:
+                console.print(
+                    f"[bold red]Recent Errors ({len(metrics['recent_errors'])}):[/bold red]"
+                )
+                for err in metrics["recent_errors"][:5]:
                     console.print(f"  [red]- {err.get('message', '')[:80]}[/red]")
                     console.print(f"    [dim]{err.get('timestamp', '')}[/dim]")
 
@@ -2623,17 +2805,21 @@ def lambda_metrics(ctx: click.Context, time_range: str, output_format: str) -> N
     except Exception as e:
         console.print(f"[red]Error fetching metrics: {e}[/red]")
         import traceback
+
         console.print(f"[dim]{traceback.format_exc()}[/dim]")
 
 
 @lambda_.command("errors")
 @click.option("-t", "--time-range", default="24h", help="Time range")
 @click.option("-n", "--limit", default=20, help="Max errors to show")
-@click.option("-f", "--format", "output_format", type=click.Choice(["table", "json"]), default="table")
+@click.option(
+    "-f", "--format", "output_format", type=click.Choice(["table", "json"]), default="table"
+)
 @click.pass_context
 def lambda_errors(ctx: click.Context, time_range: str, limit: int, output_format: str) -> None:
     """Show recent Lambda errors from CloudWatch."""
     import json
+
     try:
         from orchestrator.clients.cloudwatch import CloudWatchClient
     except ImportError as e:
@@ -2660,13 +2846,15 @@ def lambda_errors(ctx: click.Context, time_range: str, limit: int, output_format
         if output_format == "json":
             error_data = []
             for inv in errors:
-                error_data.append({
-                    "request_id": inv.request_id,
-                    "start_time": inv.start_time.isoformat() if inv.start_time else None,
-                    "duration_ms": inv.duration_ms,
-                    "error": inv.error,
-                    "log_count": len(inv.logs),
-                })
+                error_data.append(
+                    {
+                        "request_id": inv.request_id,
+                        "start_time": inv.start_time.isoformat() if inv.start_time else None,
+                        "duration_ms": inv.duration_ms,
+                        "error": inv.error,
+                        "log_count": len(inv.logs),
+                    }
+                )
             console.print(json.dumps(error_data, indent=2))
         else:
             table = Table(title="Lambda Errors")
@@ -2693,6 +2881,7 @@ def lambda_errors(ctx: click.Context, time_range: str, limit: int, output_format
     except Exception as e:
         console.print(f"[red]Error fetching Lambda errors: {e}[/red]")
         import traceback
+
         console.print(f"[dim]{traceback.format_exc()}[/dim]")
 
 
@@ -2703,6 +2892,7 @@ def lambda_errors(ctx: click.Context, time_range: str, limit: int, output_format
 def lambda_invocation(ctx: click.Context, request_id: str, as_json: bool) -> None:
     """Get detailed info about a specific Lambda invocation."""
     import json
+
     try:
         from orchestrator.clients.cloudwatch import CloudWatchClient
     except ImportError as e:
@@ -2771,7 +2961,9 @@ def lambda_invocation(ctx: click.Context, request_id: str, as_json: bool) -> Non
             if invocation.billed_duration_ms:
                 console.print(f"  Billed:   {invocation.billed_duration_ms:.1f} ms")
             if invocation.is_cold_start and invocation.init_duration_ms:
-                console.print(f"  [cyan]Cold Start Init: {invocation.init_duration_ms:.1f} ms[/cyan]")
+                console.print(
+                    f"  [cyan]Cold Start Init: {invocation.init_duration_ms:.1f} ms[/cyan]"
+                )
 
             # Memory
             console.print()
@@ -2798,7 +2990,11 @@ def lambda_invocation(ctx: click.Context, request_id: str, as_json: bool) -> Non
                     }.get(log.level.lower(), "")
 
                     time_str = log.timestamp.strftime("%H:%M:%S.%f")[:-3]
-                    lvl = f"[{level_style}]{log.level:5}[/{level_style}]" if level_style else log.level
+                    lvl = (
+                        f"[{level_style}]{log.level:5}[/{level_style}]"
+                        if level_style
+                        else log.level
+                    )
                     console.print(f"  [dim]{time_str}[/dim] {lvl} {log.message[:100]}")
 
                 if len(invocation.logs) > 30:
@@ -2809,6 +3005,7 @@ def lambda_invocation(ctx: click.Context, request_id: str, as_json: bool) -> Non
     except Exception as e:
         console.print(f"[red]Error: {e}[/red]")
         import traceback
+
         console.print(f"[dim]{traceback.format_exc()}[/dim]")
 
 
@@ -2827,7 +3024,9 @@ def experiment() -> None:
 @click.argument("file", type=click.Path(exists=True))
 @click.option("--strict", is_flag=True, help="Treat warnings as errors")
 @click.option("--seed", "-s", type=int, help="Random seed for reproducible randomization")
-@click.option("-f", "--format", "output_format", type=click.Choice(["text", "json"]), default="text")
+@click.option(
+    "-f", "--format", "output_format", type=click.Choice(["text", "json"]), default="text"
+)
 @click.pass_context
 def experiment_validate(
     ctx: click.Context, file: str, strict: bool, seed: int | None, output_format: str
@@ -2837,10 +3036,14 @@ def experiment_validate(
     from pathlib import Path
 
     try:
-        from experiment_designer.spec import SpecParser, SpecConverter, SpecValidator
-        from experiment_designer.spec.design_expander import DesignExpander
-        from experiment_designer.spec.file_loader import create_file_tag_loader, resolve_file_references
         import yaml as yaml_lib
+
+        from experiment_designer.spec import SpecConverter, SpecParser, SpecValidator
+        from experiment_designer.spec.design_expander import DesignExpander
+        from experiment_designer.spec.file_loader import (
+            create_file_tag_loader,
+            resolve_file_references,
+        )
     except ImportError as e:
         console.print(f"[red]Error importing experiment_designer: {e}[/red]")
         console.print("[dim]Install with: pip install -e .[/dim]")
@@ -2849,7 +3052,7 @@ def experiment_validate(
     file_path = Path(file)
     base_dir = file_path.parent
 
-    with open(file, 'r') as f:
+    with open(file) as f:
         content = f.read()
 
     # Create custom YAML loader with !file tag support
@@ -2860,8 +3063,10 @@ def experiment_validate(
         raw_spec = yaml_lib.load(content, Loader=FileTagLoader)
         raw_spec = resolve_file_references(raw_spec, file_loader)
     except yaml_lib.YAMLError as e:
-        if output_format == 'json':
-            console.print(json.dumps({"valid": False, "errors": [f"YAML parse error: {e}"], "warnings": []}))
+        if output_format == "json":
+            console.print(
+                json.dumps({"valid": False, "errors": [f"YAML parse error: {e}"], "warnings": []})
+            )
         else:
             console.print("[red bold]Validation FAILED[/red bold]")
             console.print(f"  [red]YAML parse error: {e}[/red]")
@@ -2879,18 +3084,14 @@ def experiment_validate(
     result = converter.convert(parsed)
 
     # Combine all errors and warnings
-    all_errors = list(set(
-        validation_result.errors + parsed.errors + result.errors
-    ))
-    all_warnings = list(set(
-        validation_result.warnings + parsed.warnings + result.warnings
-    ))
+    all_errors = list(set(validation_result.errors + parsed.errors + result.errors))
+    all_warnings = list(set(validation_result.warnings + parsed.warnings + result.warnings))
 
     if strict:
         all_errors.extend(all_warnings)
         all_warnings = []
 
-    if output_format == 'json':
+    if output_format == "json":
         output = {
             "valid": len(all_errors) == 0,
             "errors": all_errors,
@@ -2938,13 +3139,13 @@ def experiment_upload(
 ) -> None:
     """Upload experiment from YAML spec to PrimeMover API."""
     import json
-    import os
-    from pathlib import Path
     from datetime import datetime
+    from pathlib import Path
 
     try:
-        from experiment_designer.spec import SpecParser, SpecConverter
         import requests
+
+        from experiment_designer.spec import SpecConverter, SpecParser
     except ImportError as e:
         console.print(f"[red]Error importing required modules: {e}[/red]")
         return
@@ -2954,7 +3155,7 @@ def experiment_upload(
     file_path = Path(file)
     base_dir = file_path.parent
 
-    with open(file, 'r') as f:
+    with open(file) as f:
         content = f.read()
 
     # Parse and validate
@@ -3012,7 +3213,7 @@ def experiment_upload(
         auth_response = requests.post(
             f"{api_url}/login",
             json={"email": email, "password": password},
-            headers={"Accept": "application/json"}
+            headers={"Accept": "application/json"},
         )
         auth_response.raise_for_status()
         token = auth_response.json().get("access_token")
@@ -3024,7 +3225,9 @@ def experiment_upload(
         # Create experiment if needed
         if not experiment_id:
             console.print("Creating new experiment...")
-            exp_name = result.experiment_name or f"Experiment {datetime.now().strftime('%Y%m%d_%H%M%S')}"
+            exp_name = (
+                result.experiment_name or f"Experiment {datetime.now().strftime('%Y%m%d_%H%M%S')}"
+            )
 
             create_response = requests.post(
                 f"{api_url}/experiments",
@@ -3032,21 +3235,18 @@ def experiment_upload(
                     "name": exp_name,
                     "description": result.experiment_description or "Created via orchestrator CLI",
                     "contact": "PrimeMover Orchestrator",
-                    "active": 1
+                    "active": 1,
                 },
                 headers={
                     "Authorization": f"Bearer {token}",
                     "Accept": "application/json",
-                    "Content-Type": "application/json"
-                }
+                    "Content-Type": "application/json",
+                },
             )
             create_response.raise_for_status()
             create_result = create_response.json()
 
-            experiment_id = (
-                create_result.get("data", {}).get("id") or
-                create_result.get("id")
-            )
+            experiment_id = create_result.get("data", {}).get("id") or create_result.get("id")
 
             if not experiment_id:
                 console.print("[red]Failed to create experiment: no ID returned[/red]")
@@ -3064,10 +3264,7 @@ def experiment_upload(
         upload_response = requests.post(
             f"{api_url}/experiments/{experiment_id}/upload",
             files={"json": ("crawlers.json", json_content, "application/json")},
-            headers={
-                "Authorization": f"Bearer {token}",
-                "Accept": "application/json"
-            }
+            headers={"Authorization": f"Bearer {token}", "Accept": "application/json"},
         )
         upload_response.raise_for_status()
 
@@ -3078,7 +3275,7 @@ def experiment_upload(
 
     except requests.exceptions.HTTPError as e:
         console.print(f"[red]Upload failed: {e}[/red]")
-        if hasattr(e, 'response') and e.response is not None:
+        if hasattr(e, "response") and e.response is not None:
             try:
                 error_detail = e.response.json()
                 console.print(f"API Error: {json.dumps(error_detail, indent=2)}")
@@ -3103,7 +3300,7 @@ def experiment_generate(
     from pathlib import Path
 
     try:
-        from experiment_designer.spec import SpecParser, SpecConverter
+        from experiment_designer.spec import SpecConverter, SpecParser
     except ImportError as e:
         console.print(f"[red]Error importing experiment_designer: {e}[/red]")
         return
@@ -3111,7 +3308,7 @@ def experiment_generate(
     file_path = Path(file)
     base_dir = file_path.parent
 
-    with open(file, 'r') as f:
+    with open(file) as f:
         content = f.read()
 
     parser = SpecParser(base_dir=base_dir, seed=seed)
@@ -3135,7 +3332,7 @@ def experiment_generate(
     json_output = result.to_json(pretty=pretty)
 
     if output:
-        with open(output, 'w') as f:
+        with open(output, "w") as f:
             f.write(json_output)
         console.print(f"[green]Generated: {output}[/green]")
         console.print(f"  Crawlers: {result.crawler_count}")
@@ -3162,7 +3359,7 @@ def experiment_preview(ctx: click.Context, file: str, seed: int | None) -> None:
     file_path = Path(file)
     base_dir = file_path.parent
 
-    with open(file, 'r') as f:
+    with open(file) as f:
         content = f.read()
 
     parser = SpecParser(base_dir=base_dir, seed=seed)
@@ -3189,9 +3386,9 @@ def experiment_preview(ctx: click.Context, file: str, seed: int | None) -> None:
     console.print(f"Design Type: {preview_info.get('design_type', 'factorial')}\n")
 
     console.print("[bold]Factors:[/bold]")
-    for factor in preview_info.get('factors', []):
+    for factor in preview_info.get("factors", []):
         console.print(f"  [cyan]{factor['name']}[/cyan]: {factor['levels']}")
-        if factor.get('maps_to'):
+        if factor.get("maps_to"):
             console.print(f"    [dim]-> maps to: {', '.join(factor['maps_to'])}[/dim]")
 
     console.print()
@@ -3232,7 +3429,7 @@ def experiment_list(ctx: click.Context, status: str, limit: int) -> None:
         auth_response = requests.post(
             f"{api_url}/login",
             json={"email": email, "password": password},
-            headers={"Accept": "application/json"}
+            headers={"Accept": "application/json"},
         )
         auth_response.raise_for_status()
         token = auth_response.json().get("access_token")
@@ -3241,10 +3438,7 @@ def experiment_list(ctx: click.Context, status: str, limit: int) -> None:
         list_response = requests.get(
             f"{api_url}/experiments",
             params={"per_page": limit},
-            headers={
-                "Authorization": f"Bearer {token}",
-                "Accept": "application/json"
-            }
+            headers={"Authorization": f"Bearer {token}", "Accept": "application/json"},
         )
         list_response.raise_for_status()
         data = list_response.json()
@@ -3267,11 +3461,7 @@ def experiment_list(ctx: click.Context, status: str, limit: int) -> None:
             updated = exp.get("updated_at", "")[:10] if exp.get("updated_at") else ""
 
             table.add_row(
-                str(exp.get("id", "")),
-                exp.get("name", "")[:40],
-                active,
-                crawler_count,
-                updated
+                str(exp.get("id", "")), exp.get("name", "")[:40], active, crawler_count, updated
             )
 
         console.print(table)
@@ -3382,7 +3572,6 @@ def debug_job(
 def _print_debug_report(report, verbose: bool = False) -> None:
     """Print formatted debug report to console."""
     from rich.panel import Panel
-    from rich.text import Text
 
     from orchestrator.debug.har_parser import format_bytes, format_ms
 
@@ -3422,7 +3611,9 @@ def _print_debug_report(report, verbose: bool = False) -> None:
         lambda_table.add_column("Key", style="dim")
         lambda_table.add_column("Value")
 
-        lambda_table.add_row("Selected Video", ld.selected_title[:60] if ld.selected_title else "N/A")
+        lambda_table.add_row(
+            "Selected Video", ld.selected_title[:60] if ld.selected_title else "N/A"
+        )
         lambda_table.add_row("Video ID", ld.selected_id or "N/A")
         lambda_table.add_row("XPath", ld.xpath[:80] if ld.xpath else "N/A")
 
@@ -3430,7 +3621,9 @@ def _print_debug_report(report, verbose: bool = False) -> None:
             scores = ", ".join(f"{k}: {v:.2f}" for k, v in list(ld.scoring.items())[:3])
             lambda_table.add_row("Top Scores", scores)
 
-        console.print(Panel(lambda_table, title="[bold]Lambda Decision[/bold]", border_style="green"))
+        console.print(
+            Panel(lambda_table, title="[bold]Lambda Decision[/bold]", border_style="green")
+        )
 
         if ld.warnings:
             console.print("[yellow]Warnings:[/yellow]")
@@ -3449,8 +3642,12 @@ def _print_debug_report(report, verbose: bool = False) -> None:
         har_table.add_column("Value")
 
         har_table.add_row("Total Requests", str(har.total_requests))
-        har_table.add_row("Failed Requests", f"[red]{har.failed_count}[/red]" if har.failed_count else "0")
-        har_table.add_row("Slow Requests", f"[yellow]{har.slow_count}[/yellow]" if har.slow_count else "0")
+        har_table.add_row(
+            "Failed Requests", f"[red]{har.failed_count}[/red]" if har.failed_count else "0"
+        )
+        har_table.add_row(
+            "Slow Requests", f"[yellow]{har.slow_count}[/yellow]" if har.slow_count else "0"
+        )
         har_table.add_row("Total Time", format_ms(har.total_time_ms))
         har_table.add_row("Total Transfer", format_bytes(har.total_transfer_bytes))
 
@@ -3471,14 +3668,18 @@ def _print_debug_report(report, verbose: bool = False) -> None:
         if har.slow_requests and verbose:
             console.print("[yellow]Slow Requests:[/yellow]")
             for req in har.slow_requests[:3]:
-                console.print(f"  [yellow]{format_ms(req.time_ms)}[/yellow] {req.method} {req.url[:70]}")
+                console.print(
+                    f"  [yellow]{format_ms(req.time_ms)}[/yellow] {req.method} {req.url[:70]}"
+                )
             console.print()
 
         # Domain breakdown (verbose)
         if verbose and har.domain_stats:
             console.print("[dim]Domain Breakdown:[/dim]")
             for domain, stats in list(har.domain_stats.items())[:5]:
-                failed_str = f" [red]({stats.failed_count} failed)[/red]" if stats.failed_count else ""
+                failed_str = (
+                    f" [red]({stats.failed_count} failed)[/red]" if stats.failed_count else ""
+                )
                 console.print(f"  {domain}: {stats.request_count} requests{failed_str}")
             console.print()
 
@@ -3503,7 +3704,9 @@ def _print_debug_report(report, verbose: bool = False) -> None:
         if cw.init_duration_ms:
             cw_table.add_row("Cold Start", f"{cw.init_duration_ms:.0f}ms")
 
-        console.print(Panel(cw_table, title="[bold]CloudWatch Metrics[/bold]", border_style="magenta"))
+        console.print(
+            Panel(cw_table, title="[bold]CloudWatch Metrics[/bold]", border_style="magenta")
+        )
 
         if cw.errors:
             console.print("[red]Lambda Errors:[/red]")
@@ -3650,7 +3853,7 @@ def test(ctx: click.Context, verbose: bool, quick: bool, test_filter: str) -> No
         sys.exit(result.returncode)
     except FileNotFoundError:
         console.print("[red]pytest not found. Install with: pip install pytest[/red]")
-        raise SystemExit(1)
+        raise SystemExit(1) from None
 
 
 # =============================================================================

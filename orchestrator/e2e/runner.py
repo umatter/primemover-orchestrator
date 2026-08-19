@@ -6,9 +6,13 @@ Executes end-to-end tests of the PrimeMover system.
 
 from __future__ import annotations
 
+import json
+import subprocess
+import tempfile
 import time
 from dataclasses import dataclass, field
 from datetime import datetime
+from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo
 
@@ -40,11 +44,6 @@ class E2EResult:
     queue_id: int | None = None
     jobs: list[dict[str, Any]] = field(default_factory=list)
 
-
-import json
-import subprocess
-import tempfile
-from pathlib import Path
 
 # Path to the test experiment JSON templates
 TEST_EXPERIMENT_JSON = Path(__file__).parent / "test_experiment.json"
@@ -100,7 +99,9 @@ class E2ETestRunner:
             test_type: Type of test to run ("basic" or "youtube")
         """
         if test_type not in TEST_TYPES:
-            raise ValueError(f"Unknown test type: {test_type}. Available: {list(TEST_TYPES.keys())}")
+            raise ValueError(
+                f"Unknown test type: {test_type}. Available: {list(TEST_TYPES.keys())}"
+            )
 
         self.test_type = test_type
         self.test_config = TEST_TYPES[test_type]
@@ -136,7 +137,9 @@ class E2ETestRunner:
         # Step 2: Upload test experiment
         self.reporter.print_step(2, 4, "Uploading test experiment...")
         try:
-            experiment_id, crawler_id, queue_id, job_count, exp_name, sched_time = self._upload_experiment()
+            experiment_id, crawler_id, queue_id, job_count, exp_name, sched_time = (
+                self._upload_experiment()
+            )
             self.reporter.print_upload(
                 experiment_id=experiment_id,
                 experiment_name=exp_name,
@@ -220,7 +223,9 @@ class E2ETestRunner:
             client.close()
             checks["API"] = {
                 "ok": auth_ok,
-                "message": f"localhost:{self.settings.pm_api_http_port}" if auth_ok else "Auth failed",
+                "message": (
+                    f"localhost:{self.settings.pm_api_http_port}" if auth_ok else "Auth failed"
+                ),
             }
         except httpx.ConnectError:
             checks["API"] = {"ok": False, "message": "Connection refused"}
@@ -232,7 +237,9 @@ class E2ETestRunner:
             response = httpx.get(f"{self.settings.loki_url}/ready", timeout=5.0)
             checks["Monitoring (Loki)"] = {
                 "ok": response.status_code == 200,
-                "message": "Healthy" if response.status_code == 200 else f"Status {response.status_code}",
+                "message": (
+                    "Healthy" if response.status_code == 200 else f"Status {response.status_code}"
+                ),
             }
         except Exception as e:
             checks["Monitoring (Loki)"] = {"ok": False, "message": str(e)}
@@ -242,7 +249,9 @@ class E2ETestRunner:
             response = httpx.get(f"{self.settings.grafana_url}/api/health", timeout=5.0)
             checks["Monitoring (Grafana)"] = {
                 "ok": response.status_code == 200,
-                "message": "Healthy" if response.status_code == 200 else f"Status {response.status_code}",
+                "message": (
+                    "Healthy" if response.status_code == 200 else f"Status {response.status_code}"
+                ),
             }
         except Exception as e:
             checks["Monitoring (Grafana)"] = {"ok": False, "message": str(e)}
@@ -279,8 +288,8 @@ class E2ETestRunner:
         # NOTE: the host VM runs in UTC, so we must use the API's zone explicitly,
         # not the host's local time.
         api_now = datetime.now(ZoneInfo("Europe/Zurich"))
-        offset = api_now.strftime("%z")              # e.g. +0200
-        offset = offset[:3] + ":" + offset[3:]       # -> +02:00
+        offset = api_now.strftime("%z")  # e.g. +0200
+        offset = offset[:3] + ":" + offset[3:]  # -> +02:00
         start_time = api_now.strftime("%Y-%m-%dT%H:%M:%S.00") + offset
 
         # Update the crawler data with dynamic values
@@ -300,10 +309,17 @@ class E2ETestRunner:
         # Authenticate
         auth_result = subprocess.run(
             [
-                "curl", "-s", "-X", "POST", f"{api_base}/login",
-                "-H", "Content-Type: application/json",
-                "-H", "Accept: application/json",
-                "-d", json.dumps({"email": email, "password": password}),
+                "curl",
+                "-s",
+                "-X",
+                "POST",
+                f"{api_base}/login",
+                "-H",
+                "Content-Type: application/json",
+                "-H",
+                "Accept: application/json",
+                "-d",
+                json.dumps({"email": email, "password": password}),
             ],
             capture_output=True,
             text=True,
@@ -316,16 +332,26 @@ class E2ETestRunner:
         # Create experiment
         create_result = subprocess.run(
             [
-                "curl", "-s", "-X", "POST", f"{api_base}/experiments",
-                "-H", f"Authorization: Bearer {token}",
-                "-H", "Content-Type: application/json",
-                "-H", "Accept: application/json",
-                "-d", json.dumps({
-                    "name": experiment_name,
-                    "description": "Automated end-to-end verification test",
-                    "contact": "Orchestrator E2E Test",
-                    "active": 1,
-                }),
+                "curl",
+                "-s",
+                "-X",
+                "POST",
+                f"{api_base}/experiments",
+                "-H",
+                f"Authorization: Bearer {token}",
+                "-H",
+                "Content-Type: application/json",
+                "-H",
+                "Accept: application/json",
+                "-d",
+                json.dumps(
+                    {
+                        "name": experiment_name,
+                        "description": "Automated end-to-end verification test",
+                        "contact": "Orchestrator E2E Test",
+                        "active": 1,
+                    }
+                ),
             ],
             capture_output=True,
             text=True,
@@ -342,16 +368,25 @@ class E2ETestRunner:
 
         if self.verbose:
             print(f"  [DEBUG] Temp JSON file: {temp_json_path}")
-            print(f"  [DEBUG] Crawlers data queues: {json.dumps(crawlers_data[0].get('queues', [])[:1], indent=2)[:300]}")
+            print(
+                f"  [DEBUG] Crawlers data queues: {json.dumps(crawlers_data[0].get('queues', [])[:1], indent=2)[:300]}"
+            )
 
         try:
             # Upload crawlers using curl -F (exactly like the working script)
             upload_result = subprocess.run(
                 [
-                    "curl", "-s", "-X", "POST", f"{api_base}/experiments/{experiment_id}/upload",
-                    "-H", f"Authorization: Bearer {token}",
-                    "-H", "Accept: application/json",
-                    "-F", f"json=@{temp_json_path};type=application/json",
+                    "curl",
+                    "-s",
+                    "-X",
+                    "POST",
+                    f"{api_base}/experiments/{experiment_id}/upload",
+                    "-H",
+                    f"Authorization: Bearer {token}",
+                    "-H",
+                    "Accept: application/json",
+                    "-F",
+                    f"json=@{temp_json_path};type=application/json",
                 ],
                 capture_output=True,
                 text=True,
@@ -441,7 +476,11 @@ class E2ETestRunner:
                 jobs = queue.get("jobs", [])
 
                 # Update status display
-                completed_jobs = sum(1 for j in jobs if j.get("status_code", j.get("status")) in ("completed", "done", "success"))
+                completed_jobs = sum(
+                    1
+                    for j in jobs
+                    if j.get("status_code", j.get("status")) in ("completed", "done", "success")
+                )
                 last_status = queue_status
 
                 if self.verbose:
@@ -473,7 +512,9 @@ class E2ETestRunner:
 
                 # Still waiting
                 if elapsed < 30:
-                    self.reporter.print_waiting(f"Waiting for runner to pick up job... ({elapsed:.0f}s)")
+                    self.reporter.print_waiting(
+                        f"Waiting for runner to pick up job... ({elapsed:.0f}s)"
+                    )
 
                 time.sleep(poll_interval)
 

@@ -7,7 +7,6 @@ Manages the Laravel API with Apache, PHP-FPM, MySQL, Redis, and Memcached.
 import subprocess
 import time
 from pathlib import Path
-from typing import Optional
 
 import httpx
 
@@ -327,7 +326,10 @@ class ApiComponent(BaseComponent):
         try:
             compose_cmd = _get_compose_cmd()
             compose_check = subprocess.run(
-                compose_cmd + ["version"], capture_output=True, text=True, timeout=HEALTH_CHECK_TIMEOUT
+                compose_cmd + ["version"],
+                capture_output=True,
+                text=True,
+                timeout=HEALTH_CHECK_TIMEOUT,
             )
             if compose_check.returncode != 0:
                 errors.append("Docker Compose is not installed or not accessible")
@@ -346,9 +348,7 @@ class ApiComponent(BaseComponent):
         Returns:
             Tuple of (success, output)
         """
-        result = self._run_compose(
-            ["exec", "-T", "php", "php", "artisan"] + command.split()
-        )
+        result = self._run_compose(["exec", "-T", "php", "php", "artisan"] + command.split())
         return result.returncode == 0, result.stdout + result.stderr
 
     def _cleanup_old_containers(self) -> None:
@@ -391,7 +391,7 @@ class ApiComponent(BaseComponent):
         except subprocess.TimeoutExpired:
             pass  # Ignore timeout, best effort cleanup
 
-    def get_network_name(self) -> Optional[str]:
+    def get_network_name(self) -> str | None:
         """
         Get the Docker network name for the API stack.
 
@@ -418,11 +418,13 @@ class ApiComponent(BaseComponent):
             container_names = [f"{self.CONTAINER_PREFIX}-{service}"]
             if service == "php":
                 # PHP container may be versioned (php8.1, php8.2, etc.)
-                container_names.extend([
-                    f"{self.CONTAINER_PREFIX}-php8.1",
-                    f"{self.CONTAINER_PREFIX}-php8.2",
-                    f"{self.CONTAINER_PREFIX}-php8.3",
-                ])
+                container_names.extend(
+                    [
+                        f"{self.CONTAINER_PREFIX}-php8.1",
+                        f"{self.CONTAINER_PREFIX}-php8.2",
+                        f"{self.CONTAINER_PREFIX}-php8.3",
+                    ]
+                )
 
             inspect_result = None
             container_name = container_names[0]

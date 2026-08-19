@@ -6,9 +6,6 @@ Run with: pytest orchestrator/tests/test_cli.py -v
 
 from unittest.mock import MagicMock, patch
 
-import pytest
-from click.testing import CliRunner
-
 from orchestrator.cli import cli
 
 

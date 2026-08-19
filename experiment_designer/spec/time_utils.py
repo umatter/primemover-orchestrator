@@ -1,10 +1,10 @@
 """Time parsing utilities for experiment specs."""
-from datetime import datetime, timedelta, timezone
+
 import re
-from typing import Optional
+from datetime import datetime, timedelta
 
 
-def parse_relative_time(value: str, base_time: Optional[datetime] = None) -> str:
+def parse_relative_time(value: str, base_time: datetime | None = None) -> str:
     """
     Parse relative or absolute time to ISO 8601 string.
 
@@ -39,14 +39,14 @@ def parse_relative_time(value: str, base_time: Optional[datetime] = None) -> str
         return format_iso8601(base_time)
 
     # Handle relative offsets: +5m, +30s, +1h, +1d
-    match = re.match(r'^([+-])(\d+)([smhd])$', value.lower())
+    match = re.match(r"^([+-])(\d+)([smhd])$", value.lower())
     if match:
         sign, amount, unit = match.groups()
         amount = int(amount)
-        if sign == '-':
+        if sign == "-":
             amount = -amount
 
-        units = {'s': 'seconds', 'm': 'minutes', 'h': 'hours', 'd': 'days'}
+        units = {"s": "seconds", "m": "minutes", "h": "hours", "d": "days"}
         delta = timedelta(**{units[unit]: amount})
         return format_iso8601(base_time + delta)
 
@@ -111,6 +111,6 @@ def is_relative_time(value: str) -> bool:
     value = value.strip().lower()
     if value == "now":
         return True
-    if re.match(r'^[+-]\d+[smhd]$', value):
+    if re.match(r"^[+-]\d+[smhd]$", value):
         return True
     return False

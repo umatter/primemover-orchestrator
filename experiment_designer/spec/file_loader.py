@@ -11,9 +11,9 @@ Supports:
 import csv
 import json
 import random
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Union
+from typing import Any
 
 import yaml
 
@@ -31,24 +31,25 @@ class FileReference:
         filter: Filter criteria as dict of field -> value
         columns: Column mapping for CSV (source_name -> target_name)
     """
+
     path: str
-    format: Optional[str] = None
+    format: str | None = None
     select: str = "all"
-    count: Optional[int] = None
-    filter: Optional[Dict[str, Any]] = None
-    columns: Optional[Dict[str, str]] = None
+    count: int | None = None
+    filter: dict[str, Any] | None = None
+    columns: dict[str, str] | None = None
 
     def __post_init__(self):
         """Auto-detect format from file extension if not specified."""
         if self.format is None:
             ext = Path(self.path).suffix.lower()
             format_map = {
-                '.csv': 'csv',
-                '.json': 'json',
-                '.yaml': 'yaml',
-                '.yml': 'yaml',
+                ".csv": "csv",
+                ".json": "json",
+                ".yaml": "yaml",
+                ".yml": "yaml",
             }
-            self.format = format_map.get(ext, 'csv')
+            self.format = format_map.get(ext, "csv")
 
 
 class FileLoader:
@@ -73,7 +74,7 @@ class FileLoader:
         data = loader.load(ref)
     """
 
-    def __init__(self, base_dir: Optional[Path] = None, seed: Optional[int] = None):
+    def __init__(self, base_dir: Path | None = None, seed: int | None = None):
         """
         Initialize file loader.
 
@@ -83,11 +84,13 @@ class FileLoader:
         """
         self.base_dir = base_dir or Path.cwd()
         self.rng = random.Random(seed)
-        self.errors: List[str] = []
-        self.warnings: List[str] = []
-        self._cache: Dict[str, List[Dict[str, Any]]] = {}
+        self.errors: list[str] = []
+        self.warnings: list[str] = []
+        self._cache: dict[str, list[dict[str, Any]]] = {}
 
-    def load(self, ref: FileReference, context: Optional[Dict[str, Any]] = None) -> List[Dict[str, Any]]:
+    def load(
+        self, ref: FileReference, context: dict[str, Any] | None = None
+    ) -> list[dict[str, Any]]:
         """
         Load and process a file reference.
 
@@ -136,7 +139,7 @@ class FileLoader:
             return p
         return self.base_dir / p
 
-    def _load_file(self, path: Path, format: str) -> Optional[List[Dict[str, Any]]]:
+    def _load_file(self, path: Path, format: str) -> list[dict[str, Any]] | None:
         """
         Load a file and return list of records.
 
@@ -148,11 +151,11 @@ class FileLoader:
             List of dictionaries or None on error
         """
         try:
-            if format == 'csv':
+            if format == "csv":
                 return self._load_csv(path)
-            elif format == 'json':
+            elif format == "json":
                 return self._load_json(path)
-            elif format == 'yaml':
+            elif format == "yaml":
                 return self._load_yaml(path)
             else:
                 self.errors.append(f"Unsupported file format: {format}")
@@ -161,9 +164,9 @@ class FileLoader:
             self.errors.append(f"Error loading {path}: {e}")
             return None
 
-    def _load_csv(self, path: Path) -> List[Dict[str, Any]]:
+    def _load_csv(self, path: Path) -> list[dict[str, Any]]:
         """Load CSV file using DictReader."""
-        with open(path, 'r', encoding='utf-8-sig') as f:
+        with open(path, encoding="utf-8-sig") as f:
             reader = csv.DictReader(f)
             data = []
             for row in reader:
@@ -176,34 +179,34 @@ class FileLoader:
                 data.append(processed)
             return data
 
-    def _load_json(self, path: Path) -> List[Dict[str, Any]]:
+    def _load_json(self, path: Path) -> list[dict[str, Any]]:
         """Load JSON file."""
-        with open(path, 'r', encoding='utf-8') as f:
+        with open(path, encoding="utf-8") as f:
             content = json.load(f)
 
         # Handle both array and object with 'data' key
         if isinstance(content, list):
             return content
         elif isinstance(content, dict):
-            if 'data' in content:
-                return content['data']
+            if "data" in content:
+                return content["data"]
             # Single object - wrap in list
             return [content]
         else:
             self.errors.append(f"JSON file must contain array or object: {path}")
             return []
 
-    def _load_yaml(self, path: Path) -> List[Dict[str, Any]]:
+    def _load_yaml(self, path: Path) -> list[dict[str, Any]]:
         """Load YAML file."""
-        with open(path, 'r', encoding='utf-8') as f:
+        with open(path, encoding="utf-8") as f:
             content = yaml.safe_load(f)
 
         # Handle both array and object with 'data' key
         if isinstance(content, list):
             return content
         elif isinstance(content, dict):
-            if 'data' in content:
-                return content['data']
+            if "data" in content:
+                return content["data"]
             # Single object - wrap in list
             return [content]
         else:
@@ -212,12 +215,12 @@ class FileLoader:
 
     def _convert_value(self, value: str) -> Any:
         """Convert string value to appropriate type."""
-        if value is None or value == '':
+        if value is None or value == "":
             return None
 
         # Try integer
         try:
-            if '.' not in value:
+            if "." not in value:
                 return int(value)
         except ValueError:
             pass
@@ -229,19 +232,17 @@ class FileLoader:
             pass
 
         # Try boolean
-        if value.lower() in ('true', 'yes', '1'):
+        if value.lower() in ("true", "yes", "1"):
             return True
-        if value.lower() in ('false', 'no', '0'):
+        if value.lower() in ("false", "no", "0"):
             return False
 
         # Keep as string
         return value
 
     def _apply_column_mapping(
-        self,
-        data: List[Dict[str, Any]],
-        columns: Dict[str, str]
-    ) -> List[Dict[str, Any]]:
+        self, data: list[dict[str, Any]], columns: dict[str, str]
+    ) -> list[dict[str, Any]]:
         """
         Apply column mapping (rename columns).
 
@@ -264,10 +265,10 @@ class FileLoader:
 
     def _apply_filter(
         self,
-        data: List[Dict[str, Any]],
-        filter_spec: Dict[str, Any],
-        context: Optional[Dict[str, Any]] = None
-    ) -> List[Dict[str, Any]]:
+        data: list[dict[str, Any]],
+        filter_spec: dict[str, Any],
+        context: dict[str, Any] | None = None,
+    ) -> list[dict[str, Any]]:
         """
         Filter records by field values.
 
@@ -305,11 +306,8 @@ class FileLoader:
         return result
 
     def _apply_selection(
-        self,
-        data: List[Dict[str, Any]],
-        strategy: str,
-        count: Optional[int]
-    ) -> List[Dict[str, Any]]:
+        self, data: list[dict[str, Any]], strategy: str, count: int | None
+    ) -> list[dict[str, Any]]:
         """
         Apply selection strategy.
 
@@ -328,9 +326,7 @@ class FileLoader:
             return data
 
         if count > len(data):
-            self.warnings.append(
-                f"Requested {count} records but only {len(data)} available"
-            )
+            self.warnings.append(f"Requested {count} records but only {len(data)} available")
             return data
 
         if strategy == "random":
@@ -342,7 +338,7 @@ class FileLoader:
             return data
 
 
-def create_file_tag_loader(base_dir: Path, seed: Optional[int] = None):
+def create_file_tag_loader(base_dir: Path, seed: int | None = None):
     """
     Create a custom YAML loader class with !file tag support.
 
@@ -372,9 +368,10 @@ def create_file_tag_loader(base_dir: Path, seed: Optional[int] = None):
 
     class FileTagLoader(yaml.SafeLoader):
         """Custom YAML loader with !file tag support."""
+
         pass
 
-    def file_constructor(loader: yaml.SafeLoader, node: yaml.Node) -> Dict[str, Any]:
+    def file_constructor(loader: yaml.SafeLoader, node: yaml.Node) -> dict[str, Any]:
         """
         Construct a file reference marker from YAML node.
 
@@ -394,15 +391,13 @@ def create_file_tag_loader(base_dir: Path, seed: Optional[int] = None):
         else:
             raise yaml.YAMLError(f"!file tag requires scalar or mapping, got {type(node)}")
 
-    FileTagLoader.add_constructor('!file', file_constructor)
+    FileTagLoader.add_constructor("!file", file_constructor)
 
     return FileTagLoader, file_loader
 
 
 def resolve_file_references(
-    obj: Any,
-    file_loader: FileLoader,
-    context: Optional[Dict[str, Any]] = None
+    obj: Any, file_loader: FileLoader, context: dict[str, Any] | None = None
 ) -> Any:
     """
     Recursively resolve file reference markers in a data structure.
@@ -431,7 +426,7 @@ def resolve_file_references(
                     select=ref_data.get("select", "all"),
                     count=ref_data.get("count"),
                     filter=ref_data.get("filter"),
-                    columns=ref_data.get("columns")
+                    columns=ref_data.get("columns"),
                 )
             else:
                 file_loader.errors.append(f"Invalid file reference: {ref_data}")

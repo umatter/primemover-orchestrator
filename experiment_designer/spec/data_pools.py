@@ -25,12 +25,12 @@ Example YAML:
 """
 
 import random
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Union
+from typing import Any
 
+from .expression import ExpressionError, SafeExpressionEvaluator
 from .file_loader import FileLoader, FileReference
-from .expression import SafeExpressionEvaluator, ExpressionError
 
 
 @dataclass
@@ -44,10 +44,11 @@ class PoolDefinition:
         format: File format (csv, json, yaml) - auto-detected if not specified
         columns: Expected columns (for documentation/validation)
     """
+
     name: str
     source: str
-    format: Optional[str] = None
-    columns: Optional[List[str]] = None
+    format: str | None = None
+    columns: list[str] | None = None
 
 
 @dataclass
@@ -63,12 +64,13 @@ class PoolReference:
         filter: Filter criteria
         columns: Column mapping for output
     """
+
     from_pool: str
     select: str = "all"
-    count: Optional[int] = None
-    score: Optional[str] = None
-    filter: Optional[Dict[str, Any]] = None
-    columns: Optional[Dict[str, str]] = None
+    count: int | None = None
+    score: str | None = None
+    filter: dict[str, Any] | None = None
+    columns: dict[str, str] | None = None
 
 
 class DataPoolManager:
@@ -93,11 +95,7 @@ class DataPoolManager:
         outlets = manager.resolve(pool_ref, crawler_context)
     """
 
-    def __init__(
-        self,
-        base_dir: Optional[Path] = None,
-        seed: Optional[int] = None
-    ):
+    def __init__(self, base_dir: Path | None = None, seed: int | None = None):
         """
         Initialize pool manager.
 
@@ -111,12 +109,12 @@ class DataPoolManager:
         self.file_loader = FileLoader(base_dir=self.base_dir, seed=seed)
         self.expression_evaluator = SafeExpressionEvaluator()
 
-        self.pools: Dict[str, List[Dict[str, Any]]] = {}
-        self.pool_definitions: Dict[str, PoolDefinition] = {}
-        self.errors: List[str] = []
-        self.warnings: List[str] = []
+        self.pools: dict[str, list[dict[str, Any]]] = {}
+        self.pool_definitions: dict[str, PoolDefinition] = {}
+        self.errors: list[str] = []
+        self.warnings: list[str] = []
 
-    def load_pools_from_spec(self, data_pools: Dict[str, Any]) -> None:
+    def load_pools_from_spec(self, data_pools: dict[str, Any]) -> None:
         """
         Load all pool definitions from a spec's data_pools section.
 
@@ -126,7 +124,7 @@ class DataPoolManager:
         for name, config in data_pools.items():
             self.load_pool(name, config)
 
-    def load_pool(self, name: str, config: Union[str, Dict[str, Any]]) -> bool:
+    def load_pool(self, name: str, config: str | dict[str, Any]) -> bool:
         """
         Load a data pool from configuration.
 
@@ -148,18 +146,13 @@ class DataPoolManager:
 
         # Create definition
         definition = PoolDefinition(
-            name=name,
-            source=source,
-            format=config.get("format"),
-            columns=config.get("columns")
+            name=name, source=source, format=config.get("format"), columns=config.get("columns")
         )
         self.pool_definitions[name] = definition
 
         # Load data using file loader
         ref = FileReference(
-            path=source,
-            format=definition.format,
-            columns=config.get("column_mapping")
+            path=source, format=definition.format, columns=config.get("column_mapping")
         )
         data = self.file_loader.load(ref)
 
@@ -175,10 +168,8 @@ class DataPoolManager:
         return False
 
     def resolve(
-        self,
-        pool_ref: Union[Dict[str, Any], PoolReference],
-        crawler_context: Dict[str, Any]
-    ) -> List[Dict[str, Any]]:
+        self, pool_ref: dict[str, Any] | PoolReference, crawler_context: dict[str, Any]
+    ) -> list[dict[str, Any]]:
         """
         Resolve a pool reference to actual data.
 
@@ -197,7 +188,7 @@ class DataPoolManager:
                 count=pool_ref.get("count"),
                 score=pool_ref.get("score"),
                 filter=pool_ref.get("filter"),
-                columns=pool_ref.get("columns")
+                columns=pool_ref.get("columns"),
             )
 
         # Get pool data
@@ -218,7 +209,7 @@ class DataPoolManager:
         elif pool_ref.select == "random" and pool_ref.count:
             data = self._select_random(data, pool_ref.count)
         elif pool_ref.select == "first" and pool_ref.count:
-            data = data[:pool_ref.count]
+            data = data[: pool_ref.count]
 
         # Apply column mapping for output
         if pool_ref.columns:
@@ -227,11 +218,8 @@ class DataPoolManager:
         return data
 
     def _apply_filter(
-        self,
-        data: List[Dict[str, Any]],
-        filter_spec: Dict[str, Any],
-        context: Dict[str, Any]
-    ) -> List[Dict[str, Any]]:
+        self, data: list[dict[str, Any]], filter_spec: dict[str, Any], context: dict[str, Any]
+    ) -> list[dict[str, Any]]:
         """Filter records by field values."""
         result = []
         for item in data:
@@ -240,7 +228,7 @@ class DataPoolManager:
                 actual = item.get(field)
 
                 # Substitute variables in expected value
-                if isinstance(expected, str) and '{' in expected:
+                if isinstance(expected, str) and "{" in expected:
                     try:
                         expected = self.expression_evaluator.evaluate(expected, context)
                     except ExpressionError:
@@ -258,11 +246,11 @@ class DataPoolManager:
 
     def _select_top(
         self,
-        data: List[Dict[str, Any]],
-        count: Optional[int],
+        data: list[dict[str, Any]],
+        count: int | None,
         score_expr: str,
-        crawler_context: Dict[str, Any]
-    ) -> List[Dict[str, Any]]:
+        crawler_context: dict[str, Any],
+    ) -> list[dict[str, Any]]:
         """
         Select top N items by score expression.
 
@@ -291,7 +279,7 @@ class DataPoolManager:
             except ExpressionError as e:
                 self.warnings.append(f"Scoring error for item: {e}")
                 # Assign low score on error
-                scored.append((float('-inf'), item))
+                scored.append((float("-inf"), item))
 
         # Sort by score (descending)
         scored.sort(key=lambda x: x[0], reverse=True)
@@ -302,21 +290,15 @@ class DataPoolManager:
 
         return [item for _, item in scored]
 
-    def _select_random(
-        self,
-        data: List[Dict[str, Any]],
-        count: int
-    ) -> List[Dict[str, Any]]:
+    def _select_random(self, data: list[dict[str, Any]], count: int) -> list[dict[str, Any]]:
         """Select random N items."""
         if count >= len(data):
             return data
         return self.rng.sample(data, count)
 
     def _apply_column_mapping(
-        self,
-        data: List[Dict[str, Any]],
-        columns: Dict[str, str]
-    ) -> List[Dict[str, Any]]:
+        self, data: list[dict[str, Any]], columns: dict[str, str]
+    ) -> list[dict[str, Any]]:
         """Rename columns in output."""
         result = []
         for row in data:
@@ -331,11 +313,11 @@ class DataPoolManager:
         """Check if a value is a pool reference."""
         return isinstance(value, dict) and "from_pool" in value
 
-    def get_pool_names(self) -> List[str]:
+    def get_pool_names(self) -> list[str]:
         """Get list of loaded pool names."""
         return list(self.pools.keys())
 
-    def get_pool_info(self, name: str) -> Optional[Dict[str, Any]]:
+    def get_pool_info(self, name: str) -> dict[str, Any] | None:
         """Get information about a pool."""
         if name not in self.pools:
             return None
@@ -357,9 +339,7 @@ class DataPoolManager:
 
 
 def resolve_pool_references(
-    obj: Any,
-    pool_manager: DataPoolManager,
-    crawler_context: Dict[str, Any]
+    obj: Any, pool_manager: DataPoolManager, crawler_context: dict[str, Any]
 ) -> Any:
     """
     Recursively resolve pool references in a data structure.
@@ -379,13 +359,9 @@ def resolve_pool_references(
         else:
             # Regular dict - recurse into values
             return {
-                k: resolve_pool_references(v, pool_manager, crawler_context)
-                for k, v in obj.items()
+                k: resolve_pool_references(v, pool_manager, crawler_context) for k, v in obj.items()
             }
     elif isinstance(obj, list):
-        return [
-            resolve_pool_references(item, pool_manager, crawler_context)
-            for item in obj
-        ]
+        return [resolve_pool_references(item, pool_manager, crawler_context) for item in obj]
     else:
         return obj

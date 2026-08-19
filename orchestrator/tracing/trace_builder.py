@@ -12,23 +12,17 @@ import logging
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from enum import Enum
-from typing import Any, Optional
 
+from orchestrator.clients.loki import LogEntry
 from orchestrator.config import get_settings
 from orchestrator.logs.aggregator import LogAggregator
-from orchestrator.clients.loki import LogEntry
 
 logger = logging.getLogger(__name__)
-
-from .correlation import (
-    CorrelationId,
-    extract_correlation_from_labels,
-    extract_correlation_from_message,
-)
 
 
 class SpanStatus(str, Enum):
     """Status of a trace span."""
+
     PENDING = "pending"
     RUNNING = "running"
     SUCCESS = "success"
@@ -44,14 +38,14 @@ class TraceSpan:
     component: str  # api, runner, lambda
     status: SpanStatus = SpanStatus.UNKNOWN
 
-    start_time: Optional[datetime] = None
-    end_time: Optional[datetime] = None
+    start_time: datetime | None = None
+    end_time: datetime | None = None
 
     # Correlation context
-    experiment_id: Optional[int] = None
-    crawler_id: Optional[int] = None
-    queue_id: Optional[int] = None
-    job_id: Optional[int] = None
+    experiment_id: int | None = None
+    crawler_id: int | None = None
+    queue_id: int | None = None
+    job_id: int | None = None
 
     # Additional data
     metadata: dict = field(default_factory=dict)
@@ -60,7 +54,7 @@ class TraceSpan:
     children: list["TraceSpan"] = field(default_factory=list)
 
     @property
-    def duration_ms(self) -> Optional[float]:
+    def duration_ms(self) -> float | None:
         """Calculate span duration in milliseconds."""
         if self.start_time and self.end_time:
             return (self.end_time - self.start_time).total_seconds() * 1000
@@ -94,7 +88,7 @@ class ExecutionTrace:
     entity_id: int
 
     # Root span
-    root_span: Optional[TraceSpan] = None
+    root_span: TraceSpan | None = None
 
     # Entity metadata from API
     entity_data: dict = field(default_factory=dict)
@@ -105,8 +99,8 @@ class ExecutionTrace:
     error_count: int = 0
 
     # Timeline
-    first_event: Optional[datetime] = None
-    last_event: Optional[datetime] = None
+    first_event: datetime | None = None
+    last_event: datetime | None = None
 
     def to_dict(self) -> dict:
         """Convert to dictionary for JSON serialization."""
@@ -123,7 +117,8 @@ class ExecutionTrace:
                 "last_event": self.last_event.isoformat() if self.last_event else None,
                 "duration_ms": (
                     (self.last_event - self.first_event).total_seconds() * 1000
-                    if self.first_event and self.last_event else None
+                    if self.first_event and self.last_event
+                    else None
                 ),
             },
         }
@@ -145,9 +140,9 @@ class TraceBuilder:
 
     def __init__(
         self,
-        api_base_url: Optional[str] = None,
-        api_email: Optional[str] = None,
-        api_password: Optional[str] = None,
+        api_base_url: str | None = None,
+        api_email: str | None = None,
+        api_password: str | None = None,
     ):
         """
         Initialize trace builder.
@@ -163,9 +158,9 @@ class TraceBuilder:
         self.api_email = api_email or settings.pm_api_email
         self.api_password = api_password or settings.pm_api_password
 
-        self._token: Optional[str] = None
-        self._token_expiry: Optional[datetime] = None
-        self._log_aggregator: Optional[LogAggregator] = None
+        self._token: str | None = None
+        self._token_expiry: datetime | None = None
+        self._log_aggregator: LogAggregator | None = None
 
         # Token validity duration (default: 55 minutes, gives 5 min buffer before 1h expiry)
         self._token_validity_minutes = 55
@@ -188,7 +183,7 @@ class TraceBuilder:
         self._token = None
         self._token_expiry = None
 
-    def _authenticate(self, force_refresh: bool = False) -> Optional[str]:
+    def _authenticate(self, force_refresh: bool = False) -> str | None:
         """
         Authenticate with the API and get a token.
 
@@ -229,7 +224,7 @@ class TraceBuilder:
             self._clear_token()
             return None
 
-    def _api_get(self, endpoint: str, retry_on_401: bool = True) -> Optional[dict]:
+    def _api_get(self, endpoint: str, retry_on_401: bool = True) -> dict | None:
         """
         Make an authenticated GET request to the API.
 
@@ -407,8 +402,8 @@ class TraceBuilder:
     def _build_crawler_span(
         self,
         crawler_data: dict,
-        experiment_id: Optional[int] = None,
-        crawler_id: Optional[int] = None,
+        experiment_id: int | None = None,
+        crawler_id: int | None = None,
         include_jobs: bool = False,
         time_range: str = "7d",
     ) -> TraceSpan:
@@ -523,10 +518,10 @@ class TraceBuilder:
     def _build_job_span(
         self,
         job_data: dict,
-        experiment_id: Optional[int] = None,
-        crawler_id: Optional[int] = None,
-        queue_id: Optional[int] = None,
-        job_id: Optional[int] = None,
+        experiment_id: int | None = None,
+        crawler_id: int | None = None,
+        queue_id: int | None = None,
+        job_id: int | None = None,
         time_range: str = "7d",
     ) -> TraceSpan:
         """Build a span for a job."""

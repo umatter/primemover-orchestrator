@@ -14,14 +14,14 @@ Commands:
     pmspec schema job <type>          Show job type details
 """
 
-import sys
 import json
+import sys
 from pathlib import Path
-from typing import Optional
 
 # Load .env file if present
 try:
     from dotenv import load_dotenv
+
     load_dotenv()
 except ImportError:
     pass  # dotenv not required
@@ -32,10 +32,10 @@ except ImportError:
     print("Error: 'click' package is required. Install with: pip install click")
     sys.exit(1)
 
-from .spec.parser import SpecParser
 from .spec.converter import SpecConverter
 from .spec.design_expander import DesignExpander
 from .spec.job_registry import JobRegistry
+from .spec.parser import SpecParser
 from .spec.validator import SpecValidator
 
 
@@ -51,12 +51,13 @@ def cli():
 
 
 @cli.command()
-@click.argument('file', type=click.Path(exists=True))
-@click.option('--format', '-f', type=click.Choice(['text', 'json']), default='text',
-              help='Output format')
-@click.option('--strict', is_flag=True, help='Treat warnings as errors')
-@click.option('--seed', '-s', type=int, help='Random seed for reproducible randomization')
-def validate(file: str, format: str, strict: bool, seed: Optional[int]):
+@click.argument("file", type=click.Path(exists=True))
+@click.option(
+    "--format", "-f", type=click.Choice(["text", "json"]), default="text", help="Output format"
+)
+@click.option("--strict", is_flag=True, help="Treat warnings as errors")
+@click.option("--seed", "-s", type=int, help="Random seed for reproducible randomization")
+def validate(file: str, format: str, strict: bool, seed: int | None):
     """Validate an experiment specification.
 
     Performs three levels of validation:
@@ -67,12 +68,13 @@ def validate(file: str, format: str, strict: bool, seed: Optional[int]):
     Use --seed for reproducible file selections with !file tags.
     """
     import yaml as yaml_lib
+
     from .spec.file_loader import create_file_tag_loader, resolve_file_references
 
     file_path = Path(file)
     base_dir = file_path.parent
 
-    with open(file, 'r') as f:
+    with open(file) as f:
         content = f.read()
 
     # Create custom YAML loader with !file tag support
@@ -84,11 +86,13 @@ def validate(file: str, format: str, strict: bool, seed: Optional[int]):
         # Resolve file references for schema validation
         raw_spec = resolve_file_references(raw_spec, file_loader)
     except yaml_lib.YAMLError as e:
-        if format == 'json':
-            click.echo(json.dumps({"valid": False, "errors": [f"YAML parse error: {e}"], "warnings": []}))
+        if format == "json":
+            click.echo(
+                json.dumps({"valid": False, "errors": [f"YAML parse error: {e}"], "warnings": []})
+            )
         else:
-            click.secho("Validation FAILED", fg='red', bold=True)
-            click.secho(f"  YAML parse error: {e}", fg='red')
+            click.secho("Validation FAILED", fg="red", bold=True)
+            click.secho(f"  YAML parse error: {e}", fg="red")
         sys.exit(1)
 
     # Run enhanced validator on raw spec
@@ -103,23 +107,15 @@ def validate(file: str, format: str, strict: bool, seed: Optional[int]):
     result = converter.convert(parsed)
 
     # Combine all errors and warnings
-    all_errors = list(set(
-        validation_result.errors +
-        parsed.errors +
-        result.errors
-    ))
-    all_warnings = list(set(
-        validation_result.warnings +
-        parsed.warnings +
-        result.warnings
-    ))
+    all_errors = list(set(validation_result.errors + parsed.errors + result.errors))
+    all_warnings = list(set(validation_result.warnings + parsed.warnings + result.warnings))
 
     # In strict mode, warnings become errors
     if strict:
         all_errors.extend(all_warnings)
         all_warnings = []
 
-    if format == 'json':
+    if format == "json":
         output = {
             "valid": len(all_errors) == 0,
             "errors": all_errors,
@@ -130,22 +126,22 @@ def validate(file: str, format: str, strict: bool, seed: Optional[int]):
                 "total_jobs": result.total_jobs,
                 "has_design": parsed.design is not None,
             },
-            "design_info": validation_result.info.get("design_info", None)
+            "design_info": validation_result.info.get("design_info", None),
         }
         click.echo(json.dumps(output, indent=2))
     else:
         if all_errors:
-            click.secho("Validation FAILED", fg='red', bold=True)
+            click.secho("Validation FAILED", fg="red", bold=True)
             click.echo()
             for error in all_errors:
-                click.secho(f"  ERROR: {error}", fg='red')
+                click.secho(f"  ERROR: {error}", fg="red")
         else:
-            click.secho("Validation PASSED", fg='green', bold=True)
+            click.secho("Validation PASSED", fg="green", bold=True)
 
         if all_warnings:
             click.echo()
             for warning in all_warnings:
-                click.secho(f"  WARNING: {warning}", fg='yellow')
+                click.secho(f"  WARNING: {warning}", fg="yellow")
 
         click.echo()
         click.echo(f"Experiment: {parsed.experiment.get('name', 'N/A')}")
@@ -170,11 +166,11 @@ def validate(file: str, format: str, strict: bool, seed: Optional[int]):
 
 
 @cli.command()
-@click.argument('file', type=click.Path(exists=True))
-@click.option('--output', '-o', type=click.Path(), help='Output file (default: stdout)')
-@click.option('--pretty/--compact', default=True, help='Pretty-print JSON')
-@click.option('--seed', '-s', type=int, help='Random seed for reproducible randomization')
-def generate(file: str, output: Optional[str], pretty: bool, seed: Optional[int]):
+@click.argument("file", type=click.Path(exists=True))
+@click.option("--output", "-o", type=click.Path(), help="Output file (default: stdout)")
+@click.option("--pretty/--compact", default=True, help="Pretty-print JSON")
+@click.option("--seed", "-s", type=int, help="Random seed for reproducible randomization")
+def generate(file: str, output: str | None, pretty: bool, seed: int | None):
     """Generate API JSON from YAML spec.
 
     Converts the specification to JSON format compatible with
@@ -185,33 +181,33 @@ def generate(file: str, output: Optional[str], pretty: bool, seed: Optional[int]
     file_path = Path(file)
     base_dir = file_path.parent
 
-    with open(file, 'r') as f:
+    with open(file) as f:
         content = f.read()
 
     parser = SpecParser(base_dir=base_dir, seed=seed)
     parsed = parser.parse(content)
 
     if parsed.errors:
-        click.secho("Cannot generate: validation errors found", fg='red')
+        click.secho("Cannot generate: validation errors found", fg="red")
         for error in parsed.errors:
-            click.secho(f"  {error}", fg='red')
+            click.secho(f"  {error}", fg="red")
         sys.exit(1)
 
     converter = SpecConverter()
     result = converter.convert(parsed)
 
     if result.errors:
-        click.secho("Conversion errors:", fg='red')
+        click.secho("Conversion errors:", fg="red")
         for error in result.errors:
-            click.secho(f"  {error}", fg='red')
+            click.secho(f"  {error}", fg="red")
         sys.exit(1)
 
     json_output = result.to_json(pretty=pretty)
 
     if output:
-        with open(output, 'w') as f:
+        with open(output, "w") as f:
             f.write(json_output)
-        click.secho(f"Generated: {output}", fg='green')
+        click.secho(f"Generated: {output}", fg="green")
         click.echo(f"  Crawlers: {result.crawler_count}")
         click.echo(f"  Jobs:     {result.total_jobs}")
     else:
@@ -219,16 +215,22 @@ def generate(file: str, output: Optional[str], pretty: bool, seed: Optional[int]
 
 
 @cli.command()
-@click.argument('file', type=click.Path(exists=True))
-@click.option('--experiment-id', '-e', type=int, help='Add to existing experiment ID')
-@click.option('--dry-run', is_flag=True, help='Validate and convert without uploading')
-@click.option('--api-url', envvar='PM_API_BASE_URL', help='API base URL')
-@click.option('--email', envvar='PM_API_USERNAME', help='API username/email')
-@click.option('--password', envvar='PM_API_PASSWORD', help='API password')
-@click.option('--seed', '-s', type=int, help='Random seed for reproducible randomization')
-def upload(file: str, experiment_id: Optional[int], dry_run: bool,
-           api_url: Optional[str], email: Optional[str], password: Optional[str],
-           seed: Optional[int]):
+@click.argument("file", type=click.Path(exists=True))
+@click.option("--experiment-id", "-e", type=int, help="Add to existing experiment ID")
+@click.option("--dry-run", is_flag=True, help="Validate and convert without uploading")
+@click.option("--api-url", envvar="PM_API_BASE_URL", help="API base URL")
+@click.option("--email", envvar="PM_API_USERNAME", help="API username/email")
+@click.option("--password", envvar="PM_API_PASSWORD", help="API password")
+@click.option("--seed", "-s", type=int, help="Random seed for reproducible randomization")
+def upload(
+    file: str,
+    experiment_id: int | None,
+    dry_run: bool,
+    api_url: str | None,
+    email: str | None,
+    password: str | None,
+    seed: int | None,
+):
     """Upload experiment spec to PrimeMover API.
 
     Validates the YAML spec, converts to JSON, and uploads to the API.
@@ -244,16 +246,16 @@ def upload(file: str, experiment_id: Optional[int], dry_run: bool,
     # Robust fallbacks for credentials from environment
     # Click's envvar doesn't always work reliably, so check os.getenv directly
     if not api_url:
-        api_url = os.getenv('PM_API_BASE_URL')
+        api_url = os.getenv("PM_API_BASE_URL")
     if not email:
-        email = os.getenv('PM_API_USERNAME') or os.getenv('PM_API_EMAIL')
+        email = os.getenv("PM_API_USERNAME") or os.getenv("PM_API_EMAIL")
     if not password:
-        password = os.getenv('PM_API_PASSWORD')
+        password = os.getenv("PM_API_PASSWORD")
 
     file_path = Path(file)
     base_dir = file_path.parent
 
-    with open(file, 'r') as f:
+    with open(file) as f:
         content = f.read()
 
     # Parse and validate
@@ -261,9 +263,9 @@ def upload(file: str, experiment_id: Optional[int], dry_run: bool,
     parsed = parser.parse(content)
 
     if parsed.errors:
-        click.secho("Validation FAILED", fg='red', bold=True)
+        click.secho("Validation FAILED", fg="red", bold=True)
         for error in parsed.errors:
-            click.secho(f"  {error}", fg='red')
+            click.secho(f"  {error}", fg="red")
         sys.exit(1)
 
     # Convert to JSON
@@ -271,14 +273,14 @@ def upload(file: str, experiment_id: Optional[int], dry_run: bool,
     result = converter.convert(parsed)
 
     if result.errors:
-        click.secho("Conversion FAILED", fg='red', bold=True)
+        click.secho("Conversion FAILED", fg="red", bold=True)
         for error in result.errors:
-            click.secho(f"  {error}", fg='red')
+            click.secho(f"  {error}", fg="red")
         sys.exit(1)
 
     if result.warnings:
         for warning in result.warnings:
-            click.secho(f"  WARNING: {warning}", fg='yellow')
+            click.secho(f"  WARNING: {warning}", fg="yellow")
 
     click.echo()
     click.echo(f"Experiment: {result.experiment_name}")
@@ -287,13 +289,13 @@ def upload(file: str, experiment_id: Optional[int], dry_run: bool,
     click.echo()
 
     if dry_run:
-        click.secho("Dry run - not uploading", fg='cyan')
+        click.secho("Dry run - not uploading", fg="cyan")
         click.echo("Use 'pmspec generate' to save JSON file")
         sys.exit(0)
 
     # Check credentials
     if not all([api_url, email, password]):
-        click.secho("API credentials not configured", fg='red')
+        click.secho("API credentials not configured", fg="red")
         click.echo()
         click.echo("Set environment variables:")
         click.echo("  PM_API_BASE_URL=http://localhost:8090/api/v1")
@@ -312,46 +314,47 @@ def upload(file: str, experiment_id: Optional[int], dry_run: bool,
         auth_response = requests.post(
             f"{api_url}/login",
             json={"email": email, "password": password},
-            headers={"Accept": "application/json"}
+            headers={"Accept": "application/json"},
         )
         auth_response.raise_for_status()
         token = auth_response.json().get("access_token")
 
         if not token:
-            click.secho("Authentication failed: no token received", fg='red')
+            click.secho("Authentication failed: no token received", fg="red")
             sys.exit(1)
 
         # Step 1: If no experiment_id, create a new experiment first
         if not experiment_id:
             click.echo("Creating new experiment...")
             from datetime import datetime
-            exp_name = result.experiment_name or f"Experiment {datetime.now().strftime('%Y%m%d_%H%M%S')}"
+
+            exp_name = (
+                result.experiment_name or f"Experiment {datetime.now().strftime('%Y%m%d_%H%M%S')}"
+            )
 
             create_response = requests.post(
                 f"{api_url}/experiments",
                 json={
                     "name": exp_name,
-                    "description": result.experiment_description or "Created via experiment designer CLI",
+                    "description": result.experiment_description
+                    or "Created via experiment designer CLI",
                     "contact": "Experiment Designer CLI",
-                    "active": 1
+                    "active": 1,
                 },
                 headers={
                     "Authorization": f"Bearer {token}",
                     "Accept": "application/json",
-                    "Content-Type": "application/json"
-                }
+                    "Content-Type": "application/json",
+                },
             )
             create_response.raise_for_status()
             create_result = create_response.json()
 
             # Extract experiment ID from response (may be nested in 'data')
-            experiment_id = (
-                create_result.get("data", {}).get("id") or
-                create_result.get("id")
-            )
+            experiment_id = create_result.get("data", {}).get("id") or create_result.get("id")
 
             if not experiment_id:
-                click.secho("Failed to create experiment: no ID returned", fg='red')
+                click.secho("Failed to create experiment: no ID returned", fg="red")
                 click.echo(f"Response: {json.dumps(create_result, indent=2)}")
                 sys.exit(1)
 
@@ -367,26 +370,20 @@ def upload(file: str, experiment_id: Optional[int], dry_run: bool,
 
         upload_response = requests.post(
             f"{api_url}/experiments/{experiment_id}/upload",
-            files={
-                "json": ("crawlers.json", json_content, "application/json")
-            },
-            headers={
-                "Authorization": f"Bearer {token}",
-                "Accept": "application/json"
-            }
+            files={"json": ("crawlers.json", json_content, "application/json")},
+            headers={"Authorization": f"Bearer {token}", "Accept": "application/json"},
         )
         upload_response.raise_for_status()
-        upload_result = upload_response.json()
 
         click.echo()
-        click.secho("Upload SUCCESS", fg='green', bold=True)
+        click.secho("Upload SUCCESS", fg="green", bold=True)
         click.echo(f"Experiment ID: {experiment_id}")
         click.echo(f"Crawlers created: {result.crawler_count}")
 
     except requests.exceptions.HTTPError as e:
-        click.secho(f"Upload failed: {e}", fg='red')
+        click.secho(f"Upload failed: {e}", fg="red")
         # Show response body for debugging
-        if hasattr(e, 'response') and e.response is not None:
+        if hasattr(e, "response") and e.response is not None:
             try:
                 error_detail = e.response.json()
                 click.echo(f"API Error: {json.dumps(error_detail, indent=2)}")
@@ -394,17 +391,17 @@ def upload(file: str, experiment_id: Optional[int], dry_run: bool,
                 click.echo(f"Response: {e.response.text[:1000]}")
         sys.exit(1)
     except requests.exceptions.RequestException as e:
-        click.secho(f"Request failed: {e}", fg='red')
+        click.secho(f"Request failed: {e}", fg="red")
         sys.exit(1)
     except Exception as e:
-        click.secho(f"Error: {e}", fg='red')
+        click.secho(f"Error: {e}", fg="red")
         sys.exit(1)
 
 
 @cli.command()
-@click.argument('file', type=click.Path(exists=True))
-@click.option('--seed', '-s', type=int, help='Random seed for reproducible randomization')
-def preview(file: str, seed: Optional[int]):
+@click.argument("file", type=click.Path(exists=True))
+@click.option("--seed", "-s", type=int, help="Random seed for reproducible randomization")
+def preview(file: str, seed: int | None):
     """Preview design expansion without generating JSON.
 
     Shows how many crawlers will be created and the factor combinations.
@@ -414,16 +411,16 @@ def preview(file: str, seed: Optional[int]):
     file_path = Path(file)
     base_dir = file_path.parent
 
-    with open(file, 'r') as f:
+    with open(file) as f:
         content = f.read()
 
     parser = SpecParser(base_dir=base_dir, seed=seed)
     parsed = parser.parse(content)
 
     if parsed.errors:
-        click.secho("Parse errors:", fg='red')
+        click.secho("Parse errors:", fg="red")
         for error in parsed.errors:
-            click.secho(f"  {error}", fg='red')
+            click.secho(f"  {error}", fg="red")
         sys.exit(1)
 
     click.secho(f"Experiment: {parsed.experiment.get('name', 'N/A')}", bold=True)
@@ -444,33 +441,47 @@ def preview(file: str, seed: Optional[int]):
     click.echo()
 
     click.secho("Factors:", bold=True)
-    for factor in preview_info.get('factors', []):
+    for factor in preview_info.get("factors", []):
         click.echo(f"  {factor['name']}: {factor['levels']}")
-        if factor.get('maps_to'):
+        if factor.get("maps_to"):
             click.echo(f"    -> maps to: {', '.join(factor['maps_to'])}")
 
     click.echo()
     click.echo(f"Replications: {preview_info.get('replications', 1)}")
     click.echo()
 
-    click.secho(preview_info.get('formula', ''), fg='cyan', bold=True)
+    click.secho(preview_info.get("formula", ""), fg="cyan", bold=True)
 
 
 @cli.command()
-@click.argument('files', nargs=-1, type=click.Path(exists=True))
-@click.option('--experiment-id', '-e', type=int, help='API experiment ID to summarize')
-@click.option('--json-spec', is_flag=True, help='Treat input as JSON spec instead of YAML')
-@click.option('--compare', is_flag=True, help='Compare two experiments')
-@click.option('--output', '-o', type=click.Path(), help='Output file path')
-@click.option('--format', '-f', type=click.Choice(['text', 'json', 'html', 'both']),
-              default='text', help='Output format')
-@click.option('--seed', '-s', type=int, help='Random seed for reproducible sampling')
-@click.option('--api-url', envvar='PM_API_BASE_URL', help='API base URL')
-@click.option('--email', envvar='PM_API_USERNAME', help='API username/email')
-@click.option('--password', envvar='PM_API_PASSWORD', help='API password')
-def summary(files, experiment_id: Optional[int], json_spec: bool, compare: bool,
-            output: Optional[str], format: str, seed: Optional[int],
-            api_url: Optional[str], email: Optional[str], password: Optional[str]):
+@click.argument("files", nargs=-1, type=click.Path(exists=True))
+@click.option("--experiment-id", "-e", type=int, help="API experiment ID to summarize")
+@click.option("--json-spec", is_flag=True, help="Treat input as JSON spec instead of YAML")
+@click.option("--compare", is_flag=True, help="Compare two experiments")
+@click.option("--output", "-o", type=click.Path(), help="Output file path")
+@click.option(
+    "--format",
+    "-f",
+    type=click.Choice(["text", "json", "html", "both"]),
+    default="text",
+    help="Output format",
+)
+@click.option("--seed", "-s", type=int, help="Random seed for reproducible sampling")
+@click.option("--api-url", envvar="PM_API_BASE_URL", help="API base URL")
+@click.option("--email", envvar="PM_API_USERNAME", help="API username/email")
+@click.option("--password", envvar="PM_API_PASSWORD", help="API password")
+def summary(
+    files,
+    experiment_id: int | None,
+    json_spec: bool,
+    compare: bool,
+    output: str | None,
+    format: str,
+    seed: int | None,
+    api_url: str | None,
+    email: str | None,
+    password: str | None,
+):
     """Generate experiment summary with visualizations.
 
     Creates a summary report showing experiment structure, parameter distributions,
@@ -490,13 +501,13 @@ def summary(files, experiment_id: Optional[int], json_spec: bool, compare: bool,
 
     # Fallback for email: try PM_API_EMAIL if PM_API_USERNAME not set
     if not email:
-        email = os.getenv('PM_API_EMAIL')
+        email = os.getenv("PM_API_EMAIL")
 
     from .summary import (
-        SummaryGenerator,
+        ComparisonHTMLGenerator,
         ExperimentVisualizer,
         HTMLGenerator,
-        ComparisonHTMLGenerator,
+        SummaryGenerator,
         compare_summaries,
     )
 
@@ -506,7 +517,7 @@ def summary(files, experiment_id: Optional[int], json_spec: bool, compare: bool,
     if experiment_id:
         # Summarize API experiment
         if not all([api_url, email, password]):
-            click.secho("API credentials required for --experiment-id", fg='red')
+            click.secho("API credentials required for --experiment-id", fg="red")
             click.echo()
             click.echo("Set environment variables:")
             click.echo("  PM_API_BASE_URL=http://localhost:8090/api/v1")
@@ -517,7 +528,7 @@ def summary(files, experiment_id: Optional[int], json_spec: bool, compare: bool,
         try:
             summary_data = generator.from_api(experiment_id, api_url, email, password)
         except Exception as e:
-            click.secho(f"Failed to fetch experiment: {e}", fg='red')
+            click.secho(f"Failed to fetch experiment: {e}", fg="red")
             sys.exit(1)
 
     elif json_spec and files:
@@ -525,7 +536,7 @@ def summary(files, experiment_id: Optional[int], json_spec: bool, compare: bool,
         try:
             summary_data = generator.from_json_file(files[0])
         except Exception as e:
-            click.secho(f"Failed to parse JSON: {e}", fg='red')
+            click.secho(f"Failed to parse JSON: {e}", fg="red")
             sys.exit(1)
 
     elif files:
@@ -533,17 +544,17 @@ def summary(files, experiment_id: Optional[int], json_spec: bool, compare: bool,
         try:
             summary_data = generator.from_yaml_file(files[0], seed=seed)
         except Exception as e:
-            click.secho(f"Failed to parse YAML: {e}", fg='red')
+            click.secho(f"Failed to parse YAML: {e}", fg="red")
             sys.exit(1)
 
     else:
-        click.secho("Provide a file or --experiment-id", fg='red')
+        click.secho("Provide a file or --experiment-id", fg="red")
         sys.exit(1)
 
     # Handle comparison mode
     if compare:
         if len(files) < 2 and not experiment_id:
-            click.secho("Comparison requires two sources (files or --experiment-id)", fg='red')
+            click.secho("Comparison requires two sources (files or --experiment-id)", fg="red")
             sys.exit(1)
 
         # Get second summary
@@ -553,91 +564,98 @@ def summary(files, experiment_id: Optional[int], json_spec: bool, compare: bool,
             summary_b = generator.from_yaml_file(files[0], seed=seed)
             summary_data, summary_b = summary_b, summary_data  # Swap so API is B
         else:
-            click.secho("Need two sources for comparison", fg='red')
+            click.secho("Need two sources for comparison", fg="red")
             sys.exit(1)
 
         comparison = compare_summaries(summary_data, summary_b)
 
-        if format == 'text':
+        if format == "text":
             click.echo(comparison.to_text())
-        elif format == 'json':
+        elif format == "json":
             if output:
-                with open(output, 'w') as f:
+                with open(output, "w") as f:
                     f.write(comparison.to_json())
-                click.secho(f"Written: {output}", fg='green')
+                click.secho(f"Written: {output}", fg="green")
             else:
                 click.echo(comparison.to_json())
-        elif format in ('html', 'both'):
+        elif format in ("html", "both"):
             # Generate comparison charts
             try:
                 from .summary.visualizer import create_comparison_charts
+
                 charts = create_comparison_charts(summary_data, summary_b)
             except ImportError:
                 charts = {}
-                click.secho("Warning: matplotlib not available, skipping charts", fg='yellow')
+                click.secho("Warning: matplotlib not available, skipping charts", fg="yellow")
 
             html_gen = ComparisonHTMLGenerator(comparison, charts)
             html = html_gen.generate()
 
             if output:
-                html_path = output if output.endswith('.html') else f"{output}.html"
-                with open(html_path, 'w') as f:
+                html_path = output if output.endswith(".html") else f"{output}.html"
+                with open(html_path, "w") as f:
                     f.write(html)
-                click.secho(f"Report: {html_path}", fg='green')
+                click.secho(f"Report: {html_path}", fg="green")
             else:
                 click.echo(html)
 
-            if format == 'both' and output:
-                json_path = output.replace('.html', '.json') if output.endswith('.html') else f"{output}.json"
-                with open(json_path, 'w') as f:
+            if format == "both" and output:
+                json_path = (
+                    output.replace(".html", ".json")
+                    if output.endswith(".html")
+                    else f"{output}.json"
+                )
+                with open(json_path, "w") as f:
                     f.write(comparison.to_json())
-                click.secho(f"JSON: {json_path}", fg='green')
+                click.secho(f"JSON: {json_path}", fg="green")
         return
 
     # Output based on format
-    if format == 'text':
+    if format == "text":
         click.echo(summary_data.to_text())
 
-    elif format == 'json':
+    elif format == "json":
         json_output = summary_data.to_json()
         if output:
-            with open(output, 'w') as f:
+            with open(output, "w") as f:
                 f.write(json_output)
-            click.secho(f"Written: {output}", fg='green')
+            click.secho(f"Written: {output}", fg="green")
         else:
             click.echo(json_output)
 
-    elif format in ('html', 'both'):
+    elif format in ("html", "both"):
         # Generate visualizations
         try:
             visualizer = ExperimentVisualizer(summary_data)
             charts = visualizer.generate_all()
         except ImportError:
             charts = {}
-            click.secho("Warning: matplotlib not available, skipping charts", fg='yellow')
+            click.secho("Warning: matplotlib not available, skipping charts", fg="yellow")
         except Exception as e:
             charts = {}
-            click.secho(f"Warning: chart generation failed: {e}", fg='yellow')
+            click.secho(f"Warning: chart generation failed: {e}", fg="yellow")
 
         html_gen = HTMLGenerator(summary_data, charts)
         html = html_gen.generate()
 
         if output:
-            html_path = output if output.endswith('.html') else f"{output}.html"
-            with open(html_path, 'w') as f:
+            html_path = output if output.endswith(".html") else f"{output}.html"
+            with open(html_path, "w") as f:
                 f.write(html)
-            click.secho(f"Report: {html_path}", fg='green')
+            click.secho(f"Report: {html_path}", fg="green")
             click.echo(f"  Crawlers: {summary_data.crawler_count}")
             click.echo(f"  Jobs: {summary_data.total_jobs}")
             click.echo(f"  Charts: {len(charts)}")
         else:
             click.echo(html)
 
-        if format == 'both' and output:
-            json_path = output.replace('.html', '.json') if output.endswith('.html') else f"{output}.json"
-            with open(json_path, 'w') as f:
+        if format == "both" and output:
+            json_path = (
+                output.replace(".html", ".json") if output.endswith(".html") else f"{output}.json"
+            )
+            with open(json_path, "w") as f:
                 f.write(summary_data.to_json())
-            click.secho(f"JSON: {json_path}", fg='green')
+            click.secho(f"JSON: {json_path}", fg="green")
 
 
 @cli.group()
@@ -646,14 +664,14 @@ def schema():
     pass
 
 
-@schema.command('jobs')
+@schema.command("jobs")
 def schema_jobs():
     """List all available job types."""
     click.secho("Available Job Types", bold=True, underline=True)
     click.echo()
 
     for job in JobRegistry.list_all():
-        click.secho(f"{job.yaml_name}", fg='green', bold=True)
+        click.secho(f"{job.yaml_name}", fg="green", bold=True)
         click.echo(f"  API type: {job.api_type}")
         click.echo(f"  {job.description}")
 
@@ -667,21 +685,21 @@ def schema_jobs():
         click.echo()
 
 
-@schema.command('job')
-@click.argument('job_type')
+@schema.command("job")
+@click.argument("job_type")
 def schema_job(job_type: str):
     """Show detailed schema for a specific job type."""
     schema = JobRegistry.get_schema(job_type)
 
     if not schema:
-        click.secho(f"Unknown job type: {job_type}", fg='red')
+        click.secho(f"Unknown job type: {job_type}", fg="red")
         click.echo()
         click.echo("Available types:")
         for job in JobRegistry.list_all():
             click.echo(f"  {job.yaml_name}")
         sys.exit(1)
 
-    click.secho(f"Job Type: {schema.yaml_name}", bold=True, fg='green')
+    click.secho(f"Job Type: {schema.yaml_name}", bold=True, fg="green")
     click.echo(f"API Type: {schema.api_type}")
     click.echo(f"Display Name: {schema.display_name}")
     click.echo()
@@ -771,29 +789,34 @@ def _get_job_examples(job_type: str) -> list:
 
 
 @cli.command()
-@click.option('--template', '-t', type=click.Choice(['default', 'youtube', 'google']),
-              default='default', help='Template to use')
-@click.option('--output', '-o', type=click.Path(), help='Output file')
-def init(template: str, output: Optional[str]):
+@click.option(
+    "--template",
+    "-t",
+    type=click.Choice(["default", "youtube", "google"]),
+    default="default",
+    help="Template to use",
+)
+@click.option("--output", "-o", type=click.Path(), help="Output file")
+def init(template: str, output: str | None):
     """Create a new experiment spec from template."""
     templates = {
-        'default': _get_default_template(),
-        'youtube': _get_youtube_template(),
-        'google': _get_google_template(),
+        "default": _get_default_template(),
+        "youtube": _get_youtube_template(),
+        "google": _get_google_template(),
     }
 
-    spec = templates.get(template, templates['default'])
+    spec = templates.get(template, templates["default"])
 
     if output:
-        with open(output, 'w') as f:
+        with open(output, "w") as f:
             f.write(spec)
-        click.secho(f"Created: {output}", fg='green')
+        click.secho(f"Created: {output}", fg="green")
     else:
         click.echo(spec)
 
 
 def _get_default_template() -> str:
-    return '''# Experiment Specification
+    return """# Experiment Specification
 version: "1.0"
 
 experiment:
@@ -840,11 +863,11 @@ crawlers:
       workflow:
         - visit: https://example.com
         - wait: 5s
-'''
+"""
 
 
 def _get_youtube_template() -> str:
-    return '''# YouTube Research Experiment
+    return """# YouTube Research Experiment
 version: "1.0"
 
 experiment:
@@ -926,11 +949,11 @@ crawlers:
         - wait: 5s
         - repeat: 10
             template: watch_and_recommend
-'''
+"""
 
 
 def _get_google_template() -> str:
-    return '''# Google Search Experiment
+    return """# Google Search Experiment
 version: "1.0"
 
 experiment:
@@ -980,7 +1003,7 @@ crawlers:
             query: "climate change"
         - scroll: 30s
         - wait: 5s
-'''
+"""
 
 
 def main():
@@ -988,5 +1011,5 @@ def main():
     cli()
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     main()

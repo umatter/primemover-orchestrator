@@ -11,32 +11,33 @@ Handles:
 - Data pools with selection strategies
 """
 
-import re
 import copy
-from pathlib import Path
-from typing import Any, Dict, List, Optional, Union
+import re
 from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Any
 
 import yaml
 
-from .job_registry import JobRegistry
-from .file_loader import FileLoader, FileReference, create_file_tag_loader, resolve_file_references
 from .data_pools import DataPoolManager, resolve_pool_references
+from .file_loader import FileLoader, create_file_tag_loader, resolve_file_references
+from .job_registry import JobRegistry
 
 
 @dataclass
 class ParsedSpec:
     """Parsed and expanded experiment specification."""
+
     version: str
-    experiment: Dict[str, Any]
-    defaults: Dict[str, Any]
-    templates: Dict[str, Any]
-    design: Optional[Dict[str, Any]]
-    data_pools: Dict[str, Any]  # Data pool definitions
-    crawlers: List[Dict[str, Any]]
-    raw: Dict[str, Any]  # Original parsed YAML
-    errors: List[str] = field(default_factory=list)
-    warnings: List[str] = field(default_factory=list)
+    experiment: dict[str, Any]
+    defaults: dict[str, Any]
+    templates: dict[str, Any]
+    design: dict[str, Any] | None
+    data_pools: dict[str, Any]  # Data pool definitions
+    crawlers: list[dict[str, Any]]
+    raw: dict[str, Any]  # Original parsed YAML
+    errors: list[str] = field(default_factory=list)
+    warnings: list[str] = field(default_factory=list)
 
 
 # System-level defaults (can be overridden by experiment defaults)
@@ -71,11 +72,7 @@ class SpecParser:
         # Files referenced via !file tag are resolved relative to base_dir
     """
 
-    def __init__(
-        self,
-        base_dir: Optional[Path] = None,
-        seed: Optional[int] = None
-    ):
+    def __init__(self, base_dir: Path | None = None, seed: int | None = None):
         """
         Initialize the spec parser.
 
@@ -85,10 +82,10 @@ class SpecParser:
         """
         self.base_dir = base_dir or Path.cwd()
         self.seed = seed
-        self.errors: List[str] = []
-        self.warnings: List[str] = []
-        self.file_loader: Optional[FileLoader] = None
-        self.pool_manager: Optional[DataPoolManager] = None
+        self.errors: list[str] = []
+        self.warnings: list[str] = []
+        self.file_loader: FileLoader | None = None
+        self.pool_manager: DataPoolManager | None = None
 
     def parse(self, yaml_content: str) -> ParsedSpec:
         """
@@ -105,8 +102,7 @@ class SpecParser:
 
         # Create custom YAML loader with !file tag support
         FileTagLoader, self.file_loader = create_file_tag_loader(
-            base_dir=self.base_dir,
-            seed=self.seed
+            base_dir=self.base_dir, seed=self.seed
         )
 
         try:
@@ -121,7 +117,7 @@ class SpecParser:
                 data_pools={},
                 crawlers=[],
                 raw={},
-                errors=[f"YAML parsing error: {e}"]
+                errors=[f"YAML parsing error: {e}"],
             )
 
         if not isinstance(raw, dict):
@@ -134,7 +130,7 @@ class SpecParser:
                 data_pools={},
                 crawlers=[],
                 raw={},
-                errors=["YAML root must be an object"]
+                errors=["YAML root must be an object"],
             )
 
         # Resolve !file references in the raw YAML data
@@ -185,24 +181,22 @@ class SpecParser:
             crawlers=crawlers,
             raw=raw,
             errors=self.errors,
-            warnings=self.warnings
+            warnings=self.warnings,
         )
 
-    def _merge_defaults(self, experiment_defaults: Dict[str, Any]) -> Dict[str, Any]:
+    def _merge_defaults(self, experiment_defaults: dict[str, Any]) -> dict[str, Any]:
         """Merge system defaults with experiment defaults."""
         merged = copy.deepcopy(SYSTEM_DEFAULTS)
         merged.update(experiment_defaults)
         return merged
 
-    def get_pool_manager(self) -> Optional[DataPoolManager]:
+    def get_pool_manager(self) -> DataPoolManager | None:
         """Get the data pool manager (available after parse() is called)."""
         return self.pool_manager
 
     def resolve_pool_references_in_crawler(
-        self,
-        crawler: Dict[str, Any],
-        crawler_context: Optional[Dict[str, Any]] = None
-    ) -> Dict[str, Any]:
+        self, crawler: dict[str, Any], crawler_context: dict[str, Any] | None = None
+    ) -> dict[str, Any]:
         """
         Resolve data pool references in a crawler configuration.
 
@@ -249,11 +243,11 @@ class SpecParser:
 
     def _expand_crawler(
         self,
-        crawler: Dict[str, Any],
-        defaults: Dict[str, Any],
-        templates: Dict[str, Any],
-        index: int
-    ) -> Dict[str, Any]:
+        crawler: dict[str, Any],
+        defaults: dict[str, Any],
+        templates: dict[str, Any],
+        index: int,
+    ) -> dict[str, Any]:
         """
         Expand a crawler definition with defaults and templates.
 
@@ -281,12 +275,14 @@ class SpecParser:
         # Apply location default to preferences if not set
         prefs = expanded["configuration"]["preferences"]
         if not any(p.get("name") == "location" for p in prefs):
-            prefs.append({
-                "name": "location",
-                "value": defaults.get("location", SYSTEM_DEFAULTS["location"]),
-                "description": "location",
-                "active": True
-            })
+            prefs.append(
+                {
+                    "name": "location",
+                    "value": defaults.get("location", SYSTEM_DEFAULTS["location"]),
+                    "description": "location",
+                    "active": True,
+                }
+            )
 
         # Apply browser default to agent if not specified
         if "agent" not in expanded:
@@ -301,8 +297,7 @@ class SpecParser:
             expanded["queues"] = [self._expand_session(session, defaults, templates)]
         elif "queues" in expanded:
             expanded["queues"] = [
-                self._expand_session(q, defaults, templates)
-                for q in expanded["queues"]
+                self._expand_session(q, defaults, templates) for q in expanded["queues"]
             ]
         else:
             expanded["queues"] = []
@@ -310,11 +305,8 @@ class SpecParser:
         return expanded
 
     def _expand_session(
-        self,
-        session: Dict[str, Any],
-        defaults: Dict[str, Any],
-        templates: Dict[str, Any]
-    ) -> Dict[str, Any]:
+        self, session: dict[str, Any], defaults: dict[str, Any], templates: dict[str, Any]
+    ) -> dict[str, Any]:
         """
         Expand a session/queue definition.
 
@@ -356,11 +348,8 @@ class SpecParser:
         return expanded
 
     def _expand_workflow(
-        self,
-        workflow: List[Any],
-        defaults: Dict[str, Any],
-        templates: Dict[str, Any]
-    ) -> List[Dict[str, Any]]:
+        self, workflow: list[Any], defaults: dict[str, Any], templates: dict[str, Any]
+    ) -> list[dict[str, Any]]:
         """
         Expand workflow items into job definitions.
 
@@ -387,11 +376,8 @@ class SpecParser:
         return jobs
 
     def _expand_workflow_item(
-        self,
-        item: Any,
-        defaults: Dict[str, Any],
-        templates: Dict[str, Any]
-    ) -> List[Dict[str, Any]]:
+        self, item: Any, defaults: dict[str, Any], templates: dict[str, Any]
+    ) -> list[dict[str, Any]]:
         """
         Expand a single workflow item into job(s).
 
@@ -416,10 +402,23 @@ class SpecParser:
             return self._expand_template_ref(item, defaults, templates)
 
         # Check for shorthand syntax (single key like 'visit', 'wait', etc.)
-        shorthand_keys = ["visit", "wait", "click", "try_click", "type", "try_type",
-                         "scroll", "scroll_length", "lambda_select", "single_select",
-                         "single_select_url", "switch", "try_switch",
-                         "handle_alert", "try_handle_alert"]
+        shorthand_keys = [
+            "visit",
+            "wait",
+            "click",
+            "try_click",
+            "type",
+            "try_type",
+            "scroll",
+            "scroll_length",
+            "lambda_select",
+            "single_select",
+            "single_select_url",
+            "switch",
+            "try_switch",
+            "handle_alert",
+            "try_handle_alert",
+        ]
 
         for key in shorthand_keys:
             if key in item:
@@ -434,11 +433,8 @@ class SpecParser:
         return []
 
     def _expand_shorthand(
-        self,
-        job_type: str,
-        item: Dict[str, Any],
-        defaults: Dict[str, Any]
-    ) -> Dict[str, Any]:
+        self, job_type: str, item: dict[str, Any], defaults: dict[str, Any]
+    ) -> dict[str, Any]:
         """
         Expand shorthand job syntax to full job definition.
 
@@ -471,34 +467,36 @@ class SpecParser:
             "type": api_type,
             "description": f"Auto-generated {job_type} job",
             "active": True,
-            "behaviors": []
+            "behaviors": [],
         }
 
         # Handle different shorthand formats
         if job_type == "visit":
-            job["behaviors"] = self._make_behaviors({
-                "url": value,
-                "captchaMode": defaults.get("captcha_mode", "never")
-            })
+            job["behaviors"] = self._make_behaviors(
+                {"url": value, "captchaMode": defaults.get("captcha_mode", "never")}
+            )
 
         elif job_type == "wait":
             seconds = self._parse_duration(value)
-            job["behaviors"] = self._make_behaviors({
-                "seconds": seconds,
-                "captchaMode": defaults.get("captcha_mode", "never")
-            })
+            job["behaviors"] = self._make_behaviors(
+                {"seconds": seconds, "captchaMode": defaults.get("captcha_mode", "never")}
+            )
 
         elif job_type in ["click", "try_click"]:
             if isinstance(value, str):
-                job["behaviors"] = self._make_behaviors({
-                    "selector": value,
-                    "selectionType": defaults.get("selection_type", "XPATH"),
-                    "captchaMode": defaults.get("captcha_mode", "never")
-                })
+                job["behaviors"] = self._make_behaviors(
+                    {
+                        "selector": value,
+                        "selectionType": defaults.get("selection_type", "XPATH"),
+                        "captchaMode": defaults.get("captcha_mode", "never"),
+                    }
+                )
             elif isinstance(value, dict):
                 behaviors = {
                     "selector": value.get("selector"),
-                    "selectionType": value.get("selection_type", defaults.get("selection_type", "XPATH")),
+                    "selectionType": value.get(
+                        "selection_type", defaults.get("selection_type", "XPATH")
+                    ),
                     "captchaMode": value.get("captcha_mode", defaults.get("captcha_mode", "never")),
                 }
                 if "task" in value:
@@ -512,78 +510,100 @@ class SpecParser:
                 behaviors = {
                     "text": value.get("text", ""),
                     "selector": value.get("selector", ""),
-                    "selectionType": value.get("selection_type", defaults.get("selection_type", "XPATH")),
-                    "typingMode": value.get("typing_mode", defaults.get("typing_mode", "SIMULATED_FIXINGTYPOS")),
+                    "selectionType": value.get(
+                        "selection_type", defaults.get("selection_type", "XPATH")
+                    ),
+                    "typingMode": value.get(
+                        "typing_mode", defaults.get("typing_mode", "SIMULATED_FIXINGTYPOS")
+                    ),
                     "appendReturn": str(value.get("submit", False)).upper(),
                     "captchaMode": value.get("captcha_mode", defaults.get("captcha_mode", "never")),
                 }
                 job["behaviors"] = self._make_behaviors(behaviors)
             else:
-                self.errors.append(f"'type' job requires dict with 'text' and 'selector'")
+                self.errors.append("'type' job requires dict with 'text' and 'selector'")
 
         elif job_type == "scroll":
-            duration = self._parse_duration(value) if isinstance(value, (str, int)) else value.get("duration", 10)
+            duration = (
+                self._parse_duration(value)
+                if isinstance(value, (str, int))
+                else value.get("duration", 10)
+            )
             direction = "DOWN" if not isinstance(value, dict) else value.get("direction", "DOWN")
-            job["behaviors"] = self._make_behaviors({
-                "duration": duration,
-                "scrollDirection": direction.upper(),
-                "captchaMode": defaults.get("captcha_mode", "never")
-            })
+            job["behaviors"] = self._make_behaviors(
+                {
+                    "duration": duration,
+                    "scrollDirection": direction.upper(),
+                    "captchaMode": defaults.get("captcha_mode", "never"),
+                }
+            )
 
         elif job_type == "scroll_length":
             if isinstance(value, dict):
-                job["behaviors"] = self._make_behaviors({
-                    "length": value.get("pixels", value.get("length", 500)),
-                    "scrollDirection": value.get("direction", "DOWN").upper(),
-                    "captchaMode": defaults.get("captcha_mode", "never")
-                })
+                job["behaviors"] = self._make_behaviors(
+                    {
+                        "length": value.get("pixels", value.get("length", 500)),
+                        "scrollDirection": value.get("direction", "DOWN").upper(),
+                        "captchaMode": defaults.get("captcha_mode", "never"),
+                    }
+                )
             else:
-                job["behaviors"] = self._make_behaviors({
-                    "length": int(value),
-                    "scrollDirection": "DOWN",
-                    "captchaMode": defaults.get("captcha_mode", "never")
-                })
+                job["behaviors"] = self._make_behaviors(
+                    {
+                        "length": int(value),
+                        "scrollDirection": "DOWN",
+                        "captchaMode": defaults.get("captcha_mode", "never"),
+                    }
+                )
 
         elif job_type == "lambda_select":
             if isinstance(value, dict):
-                job["behaviors"] = self._make_behaviors({
-                    "task": value.get("task", ""),
-                    "linkType": value.get("link_type", "FUNCTION_NAME"),
-                    "linkValue": value.get("function", value.get("link_value", "")),
-                    "captchaMode": value.get("captcha_mode", defaults.get("captcha_mode", "never"))
-                })
+                job["behaviors"] = self._make_behaviors(
+                    {
+                        "task": value.get("task", ""),
+                        "linkType": value.get("link_type", "FUNCTION_NAME"),
+                        "linkValue": value.get("function", value.get("link_value", "")),
+                        "captchaMode": value.get(
+                            "captcha_mode", defaults.get("captcha_mode", "never")
+                        ),
+                    }
+                )
             else:
-                self.errors.append(f"'lambda_select' requires dict with 'task' and 'function'")
+                self.errors.append("'lambda_select' requires dict with 'task' and 'function'")
 
         elif job_type in ["handle_alert", "try_handle_alert"]:
             action = value if isinstance(value, str) else value.get("action", "accept")
-            job["behaviors"] = self._make_behaviors({
-                "action": action,
-                "captchaMode": defaults.get("captcha_mode", "never")
-            })
+            job["behaviors"] = self._make_behaviors(
+                {"action": action, "captchaMode": defaults.get("captcha_mode", "never")}
+            )
 
         elif job_type in ["switch", "try_switch", "single_select", "single_select_url"]:
             if isinstance(value, str):
-                job["behaviors"] = self._make_behaviors({
-                    "selector": value,
-                    "selectionType": defaults.get("selection_type", "XPATH"),
-                    "captchaMode": defaults.get("captcha_mode", "never")
-                })
+                job["behaviors"] = self._make_behaviors(
+                    {
+                        "selector": value,
+                        "selectionType": defaults.get("selection_type", "XPATH"),
+                        "captchaMode": defaults.get("captcha_mode", "never"),
+                    }
+                )
             elif isinstance(value, dict):
-                job["behaviors"] = self._make_behaviors({
-                    "selector": value.get("selector", value.get("target", "")),
-                    "selectionType": value.get("selection_type", defaults.get("selection_type", "XPATH")),
-                    "captchaMode": value.get("captcha_mode", defaults.get("captcha_mode", "never"))
-                })
+                job["behaviors"] = self._make_behaviors(
+                    {
+                        "selector": value.get("selector", value.get("target", "")),
+                        "selectionType": value.get(
+                            "selection_type", defaults.get("selection_type", "XPATH")
+                        ),
+                        "captchaMode": value.get(
+                            "captcha_mode", defaults.get("captcha_mode", "never")
+                        ),
+                    }
+                )
 
         return job
 
     def _expand_repeat(
-        self,
-        item: Dict[str, Any],
-        defaults: Dict[str, Any],
-        templates: Dict[str, Any]
-    ) -> List[Dict[str, Any]]:
+        self, item: dict[str, Any], defaults: dict[str, Any], templates: dict[str, Any]
+    ) -> list[dict[str, Any]]:
         """
         Expand a repeat block.
 
@@ -617,11 +637,8 @@ class SpecParser:
         return jobs
 
     def _expand_template_ref(
-        self,
-        item: Dict[str, Any],
-        defaults: Dict[str, Any],
-        templates: Dict[str, Any]
-    ) -> List[Dict[str, Any]]:
+        self, item: dict[str, Any], defaults: dict[str, Any], templates: dict[str, Any]
+    ) -> list[dict[str, Any]]:
         """
         Expand a template reference.
 
@@ -650,11 +667,8 @@ class SpecParser:
         return template_jobs
 
     def _get_template_jobs(
-        self,
-        template_name: str,
-        templates: Dict[str, Any],
-        defaults: Dict[str, Any]
-    ) -> List[Dict[str, Any]]:
+        self, template_name: str, templates: dict[str, Any], defaults: dict[str, Any]
+    ) -> list[dict[str, Any]]:
         """Get expanded jobs from a template."""
         if template_name not in templates:
             self.errors.append(f"Template not found: {template_name}")
@@ -670,10 +684,8 @@ class SpecParser:
             return []
 
     def _apply_variables(
-        self,
-        jobs: List[Dict[str, Any]],
-        variables: Dict[str, Any]
-    ) -> List[Dict[str, Any]]:
+        self, jobs: list[dict[str, Any]], variables: dict[str, Any]
+    ) -> list[dict[str, Any]]:
         """
         Apply variable substitution to jobs.
 
@@ -682,11 +694,7 @@ class SpecParser:
         """
         return self._substitute_in_structure(jobs, variables)
 
-    def _substitute_in_structure(
-        self,
-        obj: Any,
-        variables: Dict[str, Any]
-    ) -> Any:
+    def _substitute_in_structure(self, obj: Any, variables: dict[str, Any]) -> Any:
         """Recursively substitute variables in any data structure."""
         if isinstance(obj, str):
             result = obj
@@ -701,11 +709,7 @@ class SpecParser:
         else:
             return obj
 
-    def _normalize_job(
-        self,
-        job: Dict[str, Any],
-        defaults: Dict[str, Any]
-    ) -> Dict[str, Any]:
+    def _normalize_job(self, job: dict[str, Any], defaults: dict[str, Any]) -> dict[str, Any]:
         """Normalize a full job definition."""
         normalized = copy.deepcopy(job)
 
@@ -722,17 +726,12 @@ class SpecParser:
 
         return normalized
 
-    def _make_behaviors(self, behavior_dict: Dict[str, Any]) -> List[Dict[str, Any]]:
+    def _make_behaviors(self, behavior_dict: dict[str, Any]) -> list[dict[str, Any]]:
         """Convert behavior dict to API format list."""
         behaviors = []
         for name, value in behavior_dict.items():
             if value is not None:
-                behaviors.append({
-                    "name": name,
-                    "value": value,
-                    "description": "",
-                    "active": True
-                })
+                behaviors.append({"name": name, "value": value, "description": "", "active": True})
         return behaviors
 
     def _generate_job_name(self, job_type: str) -> str:
@@ -761,7 +760,7 @@ class SpecParser:
         }
         return name_map.get(job_type, job_type.replace("job", "").replace("_", " ").title())
 
-    def _parse_duration(self, value: Union[str, int, float]) -> int:
+    def _parse_duration(self, value: str | int | float) -> int:
         """
         Parse duration string to seconds.
 
@@ -778,14 +777,16 @@ class SpecParser:
             value = value.strip().lower()
 
             # Try to match duration pattern
-            match = re.match(r'^(\d+(?:\.\d+)?)\s*(s|sec|seconds?|m|min|minutes?|h|hr|hours?)?$', value)
+            match = re.match(
+                r"^(\d+(?:\.\d+)?)\s*(s|sec|seconds?|m|min|minutes?|h|hr|hours?)?$", value
+            )
             if match:
                 num = float(match.group(1))
-                unit = match.group(2) or 's'
+                unit = match.group(2) or "s"
 
-                if unit.startswith('h'):
+                if unit.startswith("h"):
                     return int(num * 3600)
-                elif unit.startswith('m'):
+                elif unit.startswith("m"):
                     return int(num * 60)
                 else:
                     return int(num)

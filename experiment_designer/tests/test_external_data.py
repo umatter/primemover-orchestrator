@@ -13,30 +13,29 @@ Or: python experiment_designer/tests/test_external_data.py
 """
 
 import json
-import math
+import sys
 import tempfile
 import unittest
 from pathlib import Path
-import sys
 
 # Add parent directory to path
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
-from experiment_designer.spec.file_loader import (
-    FileLoader, FileReference, create_file_tag_loader, resolve_file_references
-)
-from experiment_designer.spec.distributions import (
-    Distribution, DistributionFactory, ParameterSampler,
-    UniformDistribution, DiscreteDistribution, NormalDistribution,
-    GumbelDistribution, TruncatedNormalDistribution, BetaDistribution, FixedValue
-)
-from experiment_designer.spec.expression import (
-    SafeExpressionEvaluator, ExpressionError, evaluate_expression
-)
-from experiment_designer.spec.data_pools import (
-    DataPoolManager, PoolReference, resolve_pool_references
-)
+from experiment_designer.spec.data_pools import DataPoolManager
 from experiment_designer.spec.design_expander import DesignExpander
+from experiment_designer.spec.distributions import (
+    BetaDistribution,
+    DiscreteDistribution,
+    DistributionFactory,
+    FixedValue,
+    GumbelDistribution,
+    NormalDistribution,
+    ParameterSampler,
+    TruncatedNormalDistribution,
+    UniformDistribution,
+)
+from experiment_designer.spec.expression import ExpressionError, SafeExpressionEvaluator
+from experiment_designer.spec.file_loader import FileLoader, FileReference
 from experiment_designer.spec.parser import SpecParser
 
 
@@ -63,10 +62,9 @@ class TestFileLoader(unittest.TestCase):
     def test_load_json_file(self):
         """Test loading a JSON file."""
         json_path = Path(self.temp_dir) / "test.json"
-        json_path.write_text(json.dumps([
-            {"name": "item1", "value": 100},
-            {"name": "item2", "value": 200}
-        ]))
+        json_path.write_text(
+            json.dumps([{"name": "item1", "value": 100}, {"name": "item2", "value": 200}])
+        )
 
         ref = FileReference(path="test.json")
         data = self.loader.load(ref)
@@ -128,10 +126,7 @@ class TestFileLoader(unittest.TestCase):
         csv_path = Path(self.temp_dir) / "test.csv"
         csv_path.write_text("old_name,old_value\nitem1,100\n")
 
-        ref = FileReference(
-            path="test.csv",
-            columns={"old_name": "name", "old_value": "value"}
-        )
+        ref = FileReference(path="test.csv", columns={"old_name": "name", "old_value": "value"})
         data = self.loader.load(ref)
 
         self.assertEqual(data[0]["name"], "item1")
@@ -145,6 +140,7 @@ class TestDistributions(unittest.TestCase):
         """Test uniform distribution sampling."""
         dist = UniformDistribution(min=-1, max=1)
         import random
+
         rng = random.Random(42)
 
         samples = [dist.sample(rng) for _ in range(1000)]
@@ -158,6 +154,7 @@ class TestDistributions(unittest.TestCase):
         """Test discrete distribution sampling."""
         dist = DiscreteDistribution(values={0: 0.25, 1: 0.25, 2: 0.50})
         import random
+
         rng = random.Random(42)
 
         samples = [dist.sample(rng) for _ in range(1000)]
@@ -174,6 +171,7 @@ class TestDistributions(unittest.TestCase):
         """Test normal distribution sampling."""
         dist = NormalDistribution(mean=0.35, std=0.1)
         import random
+
         rng = random.Random(42)
 
         samples = [dist.sample(rng) for _ in range(1000)]
@@ -185,6 +183,7 @@ class TestDistributions(unittest.TestCase):
         """Test Gumbel distribution sampling."""
         dist = GumbelDistribution(mu=0, beta=1)
         import random
+
         rng = random.Random(42)
 
         samples = [dist.sample(rng) for _ in range(1000)]
@@ -199,6 +198,7 @@ class TestDistributions(unittest.TestCase):
         """Test truncated normal distribution sampling."""
         dist = TruncatedNormalDistribution(mean=0.5, std=0.5, min=0, max=1)
         import random
+
         rng = random.Random(42)
 
         samples = [dist.sample(rng) for _ in range(1000)]
@@ -210,18 +210,20 @@ class TestDistributions(unittest.TestCase):
         """Test beta distribution sampling."""
         dist = BetaDistribution(alpha=2, beta=5)
         import random
+
         rng = random.Random(42)
 
         samples = [dist.sample(rng) for _ in range(1000)]
 
         # Beta(2,5) has mean = alpha/(alpha+beta) = 2/7 ≈ 0.286
         mean = sum(samples) / len(samples)
-        self.assertAlmostEqual(mean, 2/7, delta=0.05)
+        self.assertAlmostEqual(mean, 2 / 7, delta=0.05)
 
     def test_fixed_value(self):
         """Test fixed value distribution."""
         dist = FixedValue(value=42)
         import random
+
         rng = random.Random(42)
 
         samples = [dist.sample(rng) for _ in range(10)]
@@ -231,18 +233,13 @@ class TestDistributions(unittest.TestCase):
     def test_distribution_factory(self):
         """Test creating distributions from config dicts."""
         # Uniform
-        dist = DistributionFactory.create({
-            "distribution": "uniform",
-            "min": -1,
-            "max": 1
-        })
+        dist = DistributionFactory.create({"distribution": "uniform", "min": -1, "max": 1})
         self.assertIsInstance(dist, UniformDistribution)
 
         # Discrete
-        dist = DistributionFactory.create({
-            "distribution": "discrete",
-            "values": {"0": 0.5, "1": 0.5}
-        })
+        dist = DistributionFactory.create(
+            {"distribution": "discrete", "values": {"0": 0.5, "1": 0.5}}
+        )
         self.assertIsInstance(dist, DiscreteDistribution)
 
         # Simple value
@@ -252,11 +249,13 @@ class TestDistributions(unittest.TestCase):
     def test_parameter_sampler(self):
         """Test sampling multiple parameters at once."""
         sampler = ParameterSampler(seed=42)
-        sampler.add_parameters({
-            "pi": {"distribution": "uniform", "min": -1, "max": 1},
-            "kappa": {"distribution": "discrete", "values": {0: 0.5, 1: 0.5}},
-            "tau": 1.0  # Fixed value
-        })
+        sampler.add_parameters(
+            {
+                "pi": {"distribution": "uniform", "min": -1, "max": 1},
+                "kappa": {"distribution": "discrete", "values": {0: 0.5, 1: 0.5}},
+                "tau": 1.0,  # Fixed value
+            }
+        )
 
         values = sampler.sample()
 
@@ -295,17 +294,13 @@ class TestExpressionEvaluator(unittest.TestCase):
 
     def test_variable_substitution(self):
         """Test variable substitution."""
-        result = self.evaluator.evaluate(
-            "{alpha} - {tau}",
-            {"alpha": 0.35, "tau": 1}
-        )
+        result = self.evaluator.evaluate("{alpha} - {tau}", {"alpha": 0.35, "tau": 1})
         self.assertAlmostEqual(result, -0.65)
 
     def test_nested_variable_access(self):
         """Test accessing nested dict values."""
         result = self.evaluator.evaluate(
-            "{crawler.pi} + {item.pi}",
-            {"crawler": {"pi": -0.5}, "item": {"pi": 0.3}}
+            "{crawler.pi} + {item.pi}", {"crawler": {"pi": -0.5}, "item": {"pi": 0.3}}
         )
         self.assertAlmostEqual(result, -0.2)
 
@@ -320,12 +315,7 @@ class TestExpressionEvaluator(unittest.TestCase):
     def test_scoring_expression(self):
         """Test a realistic scoring expression."""
         expr = "{alpha} - {tau} * pow(abs({crawler.pi} - {item.pi}), 2)"
-        context = {
-            "alpha": 0.35,
-            "tau": 1,
-            "crawler": {"pi": -0.5},
-            "item": {"pi": 0.2}
-        }
+        context = {"alpha": 0.35, "tau": 1, "crawler": {"pi": -0.5}, "item": {"pi": 0.2}}
         result = self.evaluator.evaluate(expr, context)
 
         # Expected: 0.35 - 1 * pow(abs(-0.5 - 0.2), 2) = 0.35 - 0.49 = -0.14
@@ -411,7 +401,7 @@ class TestDataPoolManager(unittest.TestCase):
             "from_pool": "outlets",
             "select": "top",
             "count": 2,
-            "score": "{alpha} - {tau} * pow(abs({crawler.pi} - {item.pi}), 2)"
+            "score": "{alpha} - {tau} * pow(abs({crawler.pi} - {item.pi}), 2)",
         }
         context = {"alpha": 0.35, "tau": 1, "crawler": {"pi": -0.5}}
         data = self.manager.resolve(ref, context)
@@ -435,10 +425,7 @@ class TestDataPoolManager(unittest.TestCase):
 
         self.manager.load_pool("outlets_region", {"source": "outlets_region.csv"})
 
-        ref = {
-            "from_pool": "outlets_region",
-            "filter": {"region": "US"}
-        }
+        ref = {"from_pool": "outlets_region", "filter": {"region": "US"}}
         data = self.manager.resolve(ref, {})
 
         self.assertEqual(len(data), 2)
@@ -463,14 +450,10 @@ class TestDesignExpanderWithDistributions(unittest.TestCase):
             "parameters": {
                 "pi": {"distribution": "uniform", "min": -1, "max": 1},
                 "kappa": {"distribution": "discrete", "values": {0: 0.5, 1: 0.5}},
-                "tau": 1.0
+                "tau": 1.0,
             },
-            "factors": {
-                "condition": {
-                    "levels": ["control", "treatment"]
-                }
-            },
-            "replications": 3
+            "factors": {"condition": {"levels": ["control", "treatment"]}},
+            "replications": 3,
         }
 
         template = {"name": "Bot {condition} {replica}"}
@@ -496,11 +479,11 @@ class TestDesignExpanderWithDistributions(unittest.TestCase):
                     "levels": [
                         {"id": "only_visits", "proportion": 0.25},
                         {"id": "only_searches", "proportion": 0.25},
-                        {"id": "searches_and_visits", "proportion": 0.50}
+                        {"id": "searches_and_visits", "proportion": 0.50},
                     ]
                 }
             },
-            "total_crawlers": 100
+            "total_crawlers": 100,
         }
 
         template = {"name": "Bot {usage_type}"}
@@ -526,13 +509,9 @@ class TestDesignExpanderWithDistributions(unittest.TestCase):
         design = {
             "type": "factorial",
             "seed": 42,
-            "parameters": {
-                "pi": {"distribution": "uniform", "min": -1, "max": 1}
-            },
-            "factors": {
-                "condition": {"levels": ["a", "b"]}
-            },
-            "replications": 3
+            "parameters": {"pi": {"distribution": "uniform", "min": -1, "max": 1}},
+            "factors": {"condition": {"levels": ["a", "b"]}},
+            "replications": 3,
         }
 
         template = {"name": "Bot"}
@@ -627,11 +606,7 @@ class TestIntegration(unittest.TestCase):
         )
 
         terms_path = Path(temp_dir) / "terms.csv"
-        terms_path.write_text(
-            "term,pi\n"
-            "climate change,-0.2\n"
-            "immigration,0.3\n"
-        )
+        terms_path.write_text("term,pi\n" "climate change,-0.2\n" "immigration,0.3\n")
 
         yaml_content = f"""
 experiment:
@@ -686,6 +661,7 @@ crawlers:
 
         # Convert to verify full pipeline
         from experiment_designer.spec.converter import SpecConverter
+
         converter = SpecConverter()
         result = converter.convert(parsed)
 

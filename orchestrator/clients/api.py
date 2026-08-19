@@ -7,7 +7,7 @@ Provides authenticated access to the PrimeMover API for experiment management.
 from __future__ import annotations
 
 import json
-from typing import Any, Optional
+from typing import Any
 
 import httpx
 
@@ -119,7 +119,7 @@ class APIClient:
         """Close the client."""
         self._client.close()
 
-    def __enter__(self) -> "APIClient":
+    def __enter__(self) -> APIClient:
         return self
 
     def __exit__(self, *args) -> None:

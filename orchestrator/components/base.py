@@ -9,7 +9,6 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
-from typing import Optional
 
 
 class ComponentStatus(Enum):
@@ -30,7 +29,7 @@ class ComponentHealth:
     status: ComponentStatus
     message: str = ""
     details: dict = field(default_factory=dict)
-    url: Optional[str] = None
+    url: str | None = None
 
     @property
     def is_healthy(self) -> bool:
@@ -55,7 +54,7 @@ class BaseComponent(ABC):
     class to provide specific lifecycle management.
     """
 
-    def __init__(self, name: str, path: Optional[Path] = None):
+    def __init__(self, name: str, path: Path | None = None):
         """
         Initialize component.
 

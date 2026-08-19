@@ -5,22 +5,22 @@ Provides unified summary generation for YAML specs, JSON specs, and API experime
 Includes visualization with matplotlib and HTML report generation.
 """
 
+from .analyzer import ExperimentAnalyzer
+from .comparator import compare_summaries
+from .generator import SummaryGenerator
+from .html_generator import ComparisonHTMLGenerator, HTMLGenerator
 from .models import (
-    DataSource,
-    ExperimentSummary,
     CrawlerSummary,
-    StatisticalSummary,
-    NumericStats,
-    FactorSummary,
-    ParameterSummary,
+    DataSource,
     ExecutionStats,
     ExperimentComparison,
+    ExperimentSummary,
+    FactorSummary,
+    NumericStats,
+    ParameterSummary,
+    StatisticalSummary,
 )
-from .generator import SummaryGenerator
-from .analyzer import ExperimentAnalyzer
 from .visualizer import ExperimentVisualizer
-from .html_generator import HTMLGenerator, ComparisonHTMLGenerator
-from .comparator import compare_summaries
 
 __all__ = [
     # Models

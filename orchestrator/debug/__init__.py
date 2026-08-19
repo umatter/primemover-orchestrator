@@ -9,7 +9,7 @@ Provides tools for debugging failed jobs by combining data from multiple sources
 - CloudWatch Lambda execution logs
 """
 
-from .har_parser import HARParser, HARSummary, HARRequest
+from .har_parser import HARParser, HARRequest, HARSummary
 from .job_debugger import JobDebugger, JobDebugReport
 
 __all__ = [

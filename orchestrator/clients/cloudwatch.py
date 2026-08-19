@@ -6,9 +6,9 @@ Provides access to Lambda logs from the /aws/lambda/bot-decision-yt log group.
 
 import logging
 import re
+from collections.abc import Iterator
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
-from typing import Iterator, Optional
 
 from orchestrator.config import get_settings
 
@@ -24,24 +24,24 @@ class LambdaLogEntry:
     log_stream: str
 
     # Parsed fields
-    request_id: Optional[str] = None
+    request_id: str | None = None
     level: str = "info"
 
     # Execution metrics (from REPORT line)
-    duration_ms: Optional[float] = None
-    billed_duration_ms: Optional[float] = None
-    memory_used_mb: Optional[float] = None
-    memory_size_mb: Optional[float] = None
-    init_duration_ms: Optional[float] = None
+    duration_ms: float | None = None
+    billed_duration_ms: float | None = None
+    memory_used_mb: float | None = None
+    memory_size_mb: float | None = None
+    init_duration_ms: float | None = None
 
     # Error info
-    error_type: Optional[str] = None
-    error_message: Optional[str] = None
+    error_type: str | None = None
+    error_message: str | None = None
 
     # Correlation
-    job_id: Optional[int] = None
-    crawler_id: Optional[int] = None
-    experiment_id: Optional[int] = None
+    job_id: int | None = None
+    crawler_id: int | None = None
+    experiment_id: int | None = None
 
     def to_dict(self) -> dict:
         """Convert to dictionary."""
@@ -69,25 +69,25 @@ class LambdaInvocation:
     """A complete Lambda invocation with all associated logs."""
 
     request_id: str
-    start_time: Optional[datetime] = None
-    end_time: Optional[datetime] = None
+    start_time: datetime | None = None
+    end_time: datetime | None = None
 
     # Metrics
-    duration_ms: Optional[float] = None
-    billed_duration_ms: Optional[float] = None
-    memory_used_mb: Optional[float] = None
-    memory_size_mb: Optional[float] = None
-    init_duration_ms: Optional[float] = None
+    duration_ms: float | None = None
+    billed_duration_ms: float | None = None
+    memory_used_mb: float | None = None
+    memory_size_mb: float | None = None
+    init_duration_ms: float | None = None
 
     # Status
     status: str = "unknown"  # success, error, timeout
-    error_type: Optional[str] = None
-    error_message: Optional[str] = None
+    error_type: str | None = None
+    error_message: str | None = None
 
     # Correlation
-    job_id: Optional[int] = None
-    crawler_id: Optional[int] = None
-    experiment_id: Optional[int] = None
+    job_id: int | None = None
+    crawler_id: int | None = None
+    experiment_id: int | None = None
 
     # All log entries
     logs: list[LambdaLogEntry] = field(default_factory=list)
@@ -107,7 +107,7 @@ class LambdaInvocation:
         return self.init_duration_ms is not None
 
     @property
-    def error(self) -> Optional[str]:
+    def error(self) -> str | None:
         """Human-readable error description, or None when the invocation is fine."""
         if not self.is_error:
             return None
@@ -179,8 +179,8 @@ class CloudWatchClient:
 
     def __init__(
         self,
-        log_group: Optional[str] = None,
-        region: Optional[str] = None,
+        log_group: str | None = None,
+        region: str | None = None,
     ):
         """
         Initialize CloudWatch client.
@@ -219,8 +219,8 @@ class CloudWatchClient:
                     region_name=self.region,
                     config=retry_config,
                 )
-            except ImportError:
-                raise ImportError("boto3 is required for CloudWatch integration")
+            except ImportError as e:
+                raise ImportError("boto3 is required for CloudWatch integration") from e
 
         return self._client
 
@@ -243,11 +243,11 @@ class CloudWatchClient:
     def query_logs(
         self,
         time_range: str = "1h",
-        start_time: Optional[datetime] = None,
-        end_time: Optional[datetime] = None,
-        filter_pattern: Optional[str] = None,
-        request_id: Optional[str] = None,
-        job_id: Optional[int] = None,
+        start_time: datetime | None = None,
+        end_time: datetime | None = None,
+        filter_pattern: str | None = None,
+        request_id: str | None = None,
+        job_id: int | None = None,
         limit: int = 100,
     ) -> CloudWatchQueryResult:
         """
@@ -292,13 +292,15 @@ class CloudWatchClient:
 
         # Query CloudWatch
         try:
-            entries = list(self._fetch_logs(
-                start_ms=start_ms,
-                end_ms=end_ms,
-                filter_pattern=combined_pattern,
-                limit=limit,
-            ))
-        except Exception as e:
+            entries = list(
+                self._fetch_logs(
+                    start_ms=start_ms,
+                    end_ms=end_ms,
+                    filter_pattern=combined_pattern,
+                    limit=limit,
+                )
+            )
+        except Exception:
             # Return empty result on error
             return CloudWatchQueryResult(
                 entries=[],
@@ -317,7 +319,7 @@ class CloudWatchClient:
             query_time_ms=(time.time() - query_start) * 1000,
         )
 
-    def get_invocation(self, request_id: str) -> Optional[LambdaInvocation]:
+    def get_invocation(self, request_id: str) -> LambdaInvocation | None:
         """
         Get a specific Lambda invocation by request ID.
 
@@ -356,15 +358,12 @@ class CloudWatchClient:
         """
         result = self.query_logs(
             time_range=time_range,
-            filter_pattern="?ERROR ?Exception ?Traceback ?\"Task timed out\"",
+            filter_pattern='?ERROR ?Exception ?Traceback ?"Task timed out"',
             limit=limit * 10,  # Fetch more to find related logs
         )
 
         # Filter to error invocations
-        errors = [
-            inv for inv in result.invocations
-            if inv.status in ("error", "timeout")
-        ]
+        errors = [inv for inv in result.invocations if inv.status in ("error", "timeout")]
 
         return errors[:limit]
 
@@ -395,13 +394,9 @@ class CloudWatchClient:
                 "timeouts": 0,
             }
 
-        durations = [
-            inv.duration_ms for inv in result.invocations
-            if inv.duration_ms is not None
-        ]
+        durations = [inv.duration_ms for inv in result.invocations if inv.duration_ms is not None]
         memory_used = [
-            inv.memory_used_mb for inv in result.invocations
-            if inv.memory_used_mb is not None
+            inv.memory_used_mb for inv in result.invocations if inv.memory_used_mb is not None
         ]
 
         successful = sum(1 for inv in result.invocations if inv.status == "success")
@@ -425,7 +420,7 @@ class CloudWatchClient:
         self,
         start_ms: int,
         end_ms: int,
-        filter_pattern: Optional[str] = None,
+        filter_pattern: str | None = None,
         limit: int = 100,
     ) -> Iterator[LambdaLogEntry]:
         """Fetch logs from CloudWatch with pagination."""

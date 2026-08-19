@@ -17,11 +17,11 @@ import ast
 import math
 import operator
 import re
-from typing import Any, Callable, Dict, List, Optional, Union
-
+from collections.abc import Callable
+from typing import Any
 
 # Allowed binary operators
-BINARY_OPS: Dict[type, Callable[[Any, Any], Any]] = {
+BINARY_OPS: dict[type, Callable[[Any, Any], Any]] = {
     ast.Add: operator.add,
     ast.Sub: operator.sub,
     ast.Mult: operator.mul,
@@ -32,13 +32,13 @@ BINARY_OPS: Dict[type, Callable[[Any, Any], Any]] = {
 }
 
 # Allowed unary operators
-UNARY_OPS: Dict[type, Callable[[Any], Any]] = {
+UNARY_OPS: dict[type, Callable[[Any], Any]] = {
     ast.UAdd: operator.pos,
     ast.USub: operator.neg,
 }
 
 # Allowed comparison operators
-COMPARE_OPS: Dict[type, Callable[[Any, Any], bool]] = {
+COMPARE_OPS: dict[type, Callable[[Any, Any], bool]] = {
     ast.Eq: operator.eq,
     ast.NotEq: operator.ne,
     ast.Lt: operator.lt,
@@ -48,25 +48,26 @@ COMPARE_OPS: Dict[type, Callable[[Any, Any], bool]] = {
 }
 
 # Safe math functions
-SAFE_FUNCTIONS: Dict[str, Callable] = {
-    'abs': abs,
-    'pow': pow,
-    'sqrt': math.sqrt,
-    'min': min,
-    'max': max,
-    'log': math.log,
-    'log10': math.log10,
-    'exp': math.exp,
-    'ceil': math.ceil,
-    'floor': math.floor,
-    'round': round,
-    'int': int,
-    'float': float,
+SAFE_FUNCTIONS: dict[str, Callable] = {
+    "abs": abs,
+    "pow": pow,
+    "sqrt": math.sqrt,
+    "min": min,
+    "max": max,
+    "log": math.log,
+    "log10": math.log10,
+    "exp": math.exp,
+    "ceil": math.ceil,
+    "floor": math.floor,
+    "round": round,
+    "int": int,
+    "float": float,
 }
 
 
 class ExpressionError(Exception):
     """Raised when expression evaluation fails."""
+
     pass
 
 
@@ -88,9 +89,9 @@ class SafeExpressionEvaluator:
     """
 
     # Pattern to match variable references like {var} or {obj.attr}
-    VAR_PATTERN = re.compile(r'\{([a-zA-Z_][a-zA-Z0-9_]*(?:\.[a-zA-Z_][a-zA-Z0-9_]*)*)\}')
+    VAR_PATTERN = re.compile(r"\{([a-zA-Z_][a-zA-Z0-9_]*(?:\.[a-zA-Z_][a-zA-Z0-9_]*)*)\}")
 
-    def __init__(self, functions: Optional[Dict[str, Callable]] = None):
+    def __init__(self, functions: dict[str, Callable] | None = None):
         """
         Initialize evaluator.
 
@@ -102,10 +103,8 @@ class SafeExpressionEvaluator:
             self.functions.update(functions)
 
     def evaluate(
-        self,
-        expression: str,
-        context: Optional[Dict[str, Any]] = None
-    ) -> Union[float, int, bool]:
+        self, expression: str, context: dict[str, Any] | None = None
+    ) -> float | int | bool:
         """
         Evaluate a mathematical expression.
 
@@ -126,17 +125,19 @@ class SafeExpressionEvaluator:
 
         try:
             # Parse expression as AST
-            tree = ast.parse(expr_with_values, mode='eval')
+            tree = ast.parse(expr_with_values, mode="eval")
 
             # Evaluate AST
             return self._eval_node(tree.body)
 
         except SyntaxError as e:
-            raise ExpressionError(f"Invalid expression syntax: {expression} -> {expr_with_values}") from e
+            raise ExpressionError(
+                f"Invalid expression syntax: {expression} -> {expr_with_values}"
+            ) from e
         except Exception as e:
             raise ExpressionError(f"Evaluation error: {e}") from e
 
-    def _substitute_variables(self, expression: str, context: Dict[str, Any]) -> str:
+    def _substitute_variables(self, expression: str, context: dict[str, Any]) -> str:
         """
         Substitute variable references with their values.
 
@@ -145,6 +146,7 @@ class SafeExpressionEvaluator:
         - Nested attributes: {crawler.pi} -> -0.5
         - Nested dicts: {crawler.configuration.params.pi}
         """
+
         def replace_var(match: re.Match) -> str:
             var_path = match.group(1)
             value = self._get_nested_value(context, var_path)
@@ -170,7 +172,7 @@ class SafeExpressionEvaluator:
         Returns:
             Value at path or None if not found
         """
-        parts = path.split('.')
+        parts = path.split(".")
         current = obj
 
         for part in parts:
@@ -228,7 +230,7 @@ class SafeExpressionEvaluator:
             left = self._eval_node(node.left)
             result = True
 
-            for op, comparator in zip(node.ops, node.comparators):
+            for op, comparator in zip(node.ops, node.comparators, strict=True):
                 right = self._eval_node(comparator)
                 op_type = type(op)
 
@@ -287,7 +289,7 @@ class SafeExpressionEvaluator:
 
         raise ExpressionError(f"Unsupported expression type: {type(node).__name__}")
 
-    def validate(self, expression: str) -> List[str]:
+    def validate(self, expression: str) -> list[str]:
         """
         Validate an expression without evaluating it.
 
@@ -299,21 +301,18 @@ class SafeExpressionEvaluator:
         """
         errors = []
 
-        # Extract variable names
-        var_matches = self.VAR_PATTERN.findall(expression)
-
         # Replace variables with dummy values for syntax checking
-        test_expr = self.VAR_PATTERN.sub('1.0', expression)
+        test_expr = self.VAR_PATTERN.sub("1.0", expression)
 
         try:
-            tree = ast.parse(test_expr, mode='eval')
+            tree = ast.parse(test_expr, mode="eval")
             self._validate_node(tree.body, errors)
         except SyntaxError as e:
             errors.append(f"Syntax error: {e}")
 
         return errors
 
-    def _validate_node(self, node: ast.AST, errors: List[str]) -> None:
+    def _validate_node(self, node: ast.AST, errors: list[str]) -> None:
         """Recursively validate an AST node."""
         if isinstance(node, ast.Constant):
             pass
@@ -336,7 +335,7 @@ class SafeExpressionEvaluator:
                 self._validate_node(arg, errors)
         elif isinstance(node, ast.Compare):
             self._validate_node(node.left, errors)
-            for op, comp in zip(node.ops, node.comparators):
+            for op, comp in zip(node.ops, node.comparators, strict=True):
                 if type(op) not in COMPARE_OPS:
                     errors.append(f"Unsupported comparison: {type(op).__name__}")
                 self._validate_node(comp, errors)
@@ -353,7 +352,7 @@ class SafeExpressionEvaluator:
         else:
             errors.append(f"Unsupported expression type: {type(node).__name__}")
 
-    def extract_variables(self, expression: str) -> List[str]:
+    def extract_variables(self, expression: str) -> list[str]:
         """
         Extract variable names from an expression.
 
@@ -368,9 +367,8 @@ class SafeExpressionEvaluator:
 
 # Convenience function for simple evaluation
 def evaluate_expression(
-    expression: str,
-    context: Optional[Dict[str, Any]] = None
-) -> Union[float, int, bool]:
+    expression: str, context: dict[str, Any] | None = None
+) -> float | int | bool:
     """
     Evaluate a mathematical expression.
 

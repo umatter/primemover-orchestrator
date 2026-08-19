@@ -4,14 +4,14 @@ Statistical analysis for experiment summaries.
 Computes aggregated statistics from crawler and job data.
 """
 
-from typing import Any, Dict, List, Optional
 import statistics
+from typing import Any
 
 from .models import (
-    ExperimentSummary,
     CrawlerSummary,
-    StatisticalSummary,
+    ExperimentSummary,
     NumericStats,
+    StatisticalSummary,
 )
 
 
@@ -63,8 +63,8 @@ class ExperimentAnalyzer:
         return stats
 
     def _compute_param_stats(
-        self, crawlers: List[CrawlerSummary], param_name: str
-    ) -> Optional[NumericStats]:
+        self, crawlers: list[CrawlerSummary], param_name: str
+    ) -> NumericStats | None:
         """Compute statistics for a numeric parameter."""
         values = []
 
@@ -94,10 +94,10 @@ class ExperimentAnalyzer:
         )
 
     def _compute_discrete_distribution(
-        self, crawlers: List[CrawlerSummary], param_name: str
-    ) -> Dict[Any, int]:
+        self, crawlers: list[CrawlerSummary], param_name: str
+    ) -> dict[Any, int]:
         """Compute distribution for a discrete parameter."""
-        distribution: Dict[Any, int] = {}
+        distribution: dict[Any, int] = {}
 
         for crawler in crawlers:
             value = crawler.sampled_parameters.get(param_name)
@@ -112,10 +112,10 @@ class ExperimentAnalyzer:
         return distribution
 
     def _compute_string_distribution(
-        self, crawlers: List[CrawlerSummary], getter
-    ) -> Dict[str, int]:
+        self, crawlers: list[CrawlerSummary], getter
+    ) -> dict[str, int]:
         """Compute distribution for a string field."""
-        distribution: Dict[str, int] = {}
+        distribution: dict[str, int] = {}
 
         for crawler in crawlers:
             value = getter(crawler)
@@ -125,25 +125,23 @@ class ExperimentAnalyzer:
         return distribution
 
     def _compute_factor_distributions(
-        self, crawlers: List[CrawlerSummary]
-    ) -> Dict[str, Dict[str, int]]:
+        self, crawlers: list[CrawlerSummary]
+    ) -> dict[str, dict[str, int]]:
         """Compute distributions for factor levels."""
-        distributions: Dict[str, Dict[str, int]] = {}
+        distributions: dict[str, dict[str, int]] = {}
 
         for crawler in crawlers:
             for factor_name, level in crawler.factor_values.items():
                 if factor_name not in distributions:
                     distributions[factor_name] = {}
-                distributions[factor_name][level] = (
-                    distributions[factor_name].get(level, 0) + 1
-                )
+                distributions[factor_name][level] = distributions[factor_name].get(level, 0) + 1
 
         return distributions
 
 
-def compute_job_type_distribution(jobs_data: List[Dict]) -> Dict[str, int]:
+def compute_job_type_distribution(jobs_data: list[dict]) -> dict[str, int]:
     """Compute job type distribution from job data."""
-    distribution: Dict[str, int] = {}
+    distribution: dict[str, int] = {}
 
     for job in jobs_data:
         job_type = job.get("type", "unknown")
@@ -152,7 +150,7 @@ def compute_job_type_distribution(jobs_data: List[Dict]) -> Dict[str, int]:
     return distribution
 
 
-def estimate_duration_from_jobs(jobs_data: List[Dict]) -> int:
+def estimate_duration_from_jobs(jobs_data: list[dict]) -> int:
     """Estimate total duration in seconds from jobs."""
     total_seconds = 0
 

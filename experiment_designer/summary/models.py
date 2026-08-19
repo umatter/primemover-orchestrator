@@ -5,15 +5,16 @@ These dataclasses provide a unified structure for summarizing experiments
 from any source: YAML specs, JSON specs, or API experiments.
 """
 
-from dataclasses import dataclass, field, asdict
-from typing import Any, Dict, List, Optional
-from enum import Enum
-from datetime import datetime
 import json
+from dataclasses import dataclass, field
+from datetime import datetime
+from enum import Enum
+from typing import Any
 
 
 class DataSource(Enum):
     """Origin of experiment data."""
+
     YAML_SPEC = "yaml_spec"
     JSON_SPEC = "json_spec"
     API_RESPONSE = "api_response"
@@ -22,15 +23,16 @@ class DataSource(Enum):
 @dataclass
 class NumericStats:
     """Statistics for a numeric field."""
+
     count: int = 0
     min_value: float = 0.0
     max_value: float = 0.0
     mean: float = 0.0
     std: float = 0.0
     median: float = 0.0
-    values: List[float] = field(default_factory=list)
+    values: list[float] = field(default_factory=list)
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         """Convert to dictionary, excluding raw values for JSON output."""
         return {
             "count": self.count,
@@ -45,14 +47,15 @@ class NumericStats:
 @dataclass
 class FactorSummary:
     """Summary of a design factor."""
+
     name: str
-    levels: List[str] = field(default_factory=list)
+    levels: list[str] = field(default_factory=list)
     level_count: int = 0
     has_proportions: bool = False
-    proportions: Dict[str, float] = field(default_factory=dict)
-    maps_to: List[str] = field(default_factory=list)
+    proportions: dict[str, float] = field(default_factory=dict)
+    maps_to: list[str] = field(default_factory=list)
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         return {
             "name": self.name,
             "levels": self.levels,
@@ -66,11 +69,12 @@ class FactorSummary:
 @dataclass
 class ParameterSummary:
     """Summary of a parameter distribution."""
+
     name: str
     distribution_type: str  # uniform, discrete, normal, gumbel, fixed
-    config: Dict[str, Any] = field(default_factory=dict)
+    config: dict[str, Any] = field(default_factory=dict)
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         return {
             "name": self.name,
             "distribution_type": self.distribution_type,
@@ -81,6 +85,7 @@ class ParameterSummary:
 @dataclass
 class ExecutionStats:
     """Runtime execution statistics (only available from API)."""
+
     total_queues: int = 0
     total_queues_processed: int = 0
     total_queues_pending: int = 0
@@ -88,7 +93,7 @@ class ExecutionStats:
     total_queues_reviewed: int = 0
     completion_rate: float = 0.0
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         return {
             "total_queues": self.total_queues,
             "processed": self.total_queues_processed,
@@ -102,28 +107,29 @@ class ExecutionStats:
 @dataclass
 class StatisticalSummary:
     """Aggregated statistics computed from experiment data."""
+
     crawler_count: int = 0
     active_crawler_count: int = 0
     testing_crawler_count: int = 0
 
     # Parameter distributions
-    pi_stats: Optional[NumericStats] = None
-    alpha_stats: Optional[NumericStats] = None
-    tau_stats: Optional[NumericStats] = None
-    kappa_distribution: Dict[Any, int] = field(default_factory=dict)
+    pi_stats: NumericStats | None = None
+    alpha_stats: NumericStats | None = None
+    tau_stats: NumericStats | None = None
+    kappa_distribution: dict[Any, int] = field(default_factory=dict)
 
     # Infrastructure distribution
-    location_distribution: Dict[str, int] = field(default_factory=dict)
-    browser_distribution: Dict[str, int] = field(default_factory=dict)
+    location_distribution: dict[str, int] = field(default_factory=dict)
+    browser_distribution: dict[str, int] = field(default_factory=dict)
 
     # Factor level distribution
-    factor_level_counts: Dict[str, Dict[str, int]] = field(default_factory=dict)
+    factor_level_counts: dict[str, dict[str, int]] = field(default_factory=dict)
 
     # Job statistics
     jobs_per_crawler_mean: float = 0.0
     queues_per_crawler_mean: float = 0.0
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         result = {
             "crawler_count": self.crawler_count,
             "active_crawler_count": self.active_crawler_count,
@@ -150,21 +156,22 @@ class StatisticalSummary:
 @dataclass
 class CrawlerSummary:
     """Summary of a single crawler."""
+
     name: str = ""
     description: str = ""
 
     # Runtime IDs (API only)
-    crawler_id: Optional[int] = None
+    crawler_id: int | None = None
 
     # Design context
     from_design: bool = False
-    cell_index: Optional[int] = None
-    replica: Optional[int] = None
-    factor_values: Dict[str, str] = field(default_factory=dict)
-    sampled_parameters: Dict[str, Any] = field(default_factory=dict)
+    cell_index: int | None = None
+    replica: int | None = None
+    factor_values: dict[str, str] = field(default_factory=dict)
+    sampled_parameters: dict[str, Any] = field(default_factory=dict)
 
     # Configuration
-    params: Dict[str, Any] = field(default_factory=dict)
+    params: dict[str, Any] = field(default_factory=dict)
     location: str = ""
     browser: str = ""
 
@@ -176,7 +183,7 @@ class CrawlerSummary:
     queue_count: int = 0
     total_jobs: int = 0
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         result = {
             "name": self.name,
             "description": self.description,
@@ -210,58 +217,58 @@ class ExperimentSummary:
 
     # Source info
     source: DataSource = DataSource.YAML_SPEC
-    source_file: Optional[str] = None
-    source_timestamp: Optional[datetime] = None
+    source_file: str | None = None
+    source_timestamp: datetime | None = None
 
     # Experiment identity (DESIGN_TIME)
     name: str = ""
     description: str = ""
-    version: Optional[str] = None
+    version: str | None = None
 
     # Runtime identity (API only)
-    experiment_id: Optional[int] = None
-    user_id: Optional[int] = None
-    created_at: Optional[datetime] = None
-    updated_at: Optional[datetime] = None
+    experiment_id: int | None = None
+    user_id: int | None = None
+    created_at: datetime | None = None
+    updated_at: datetime | None = None
 
     # Design info (DESIGN_TIME)
     has_design: bool = False
-    design_type: Optional[str] = None  # factorial, stratified
-    design_seed: Optional[int] = None
+    design_type: str | None = None  # factorial, stratified
+    design_seed: int | None = None
     design_replications: int = 1
-    design_factors: List[FactorSummary] = field(default_factory=list)
-    design_parameters: Dict[str, ParameterSummary] = field(default_factory=dict)
+    design_factors: list[FactorSummary] = field(default_factory=list)
+    design_parameters: dict[str, ParameterSummary] = field(default_factory=dict)
     design_formula: str = ""
 
     # Defaults
-    defaults: Dict[str, Any] = field(default_factory=dict)
+    defaults: dict[str, Any] = field(default_factory=dict)
 
     # Templates & Pools (DESIGN_TIME)
-    template_names: List[str] = field(default_factory=list)
-    data_pool_names: List[str] = field(default_factory=list)
+    template_names: list[str] = field(default_factory=list)
+    data_pool_names: list[str] = field(default_factory=list)
 
     # Crawler summary
     crawler_count: int = 0
-    crawlers: List[CrawlerSummary] = field(default_factory=list)
+    crawlers: list[CrawlerSummary] = field(default_factory=list)
 
     # Job statistics (COMPUTED)
     total_jobs: int = 0
     total_queues: int = 0
-    jobs_by_type: Dict[str, int] = field(default_factory=dict)
+    jobs_by_type: dict[str, int] = field(default_factory=dict)
     estimated_duration_seconds: int = 0
 
     # Statistical summary (COMPUTED)
-    statistics: Optional[StatisticalSummary] = None
+    statistics: StatisticalSummary | None = None
 
     # Execution stats (API only)
-    execution_stats: Optional[ExecutionStats] = None
+    execution_stats: ExecutionStats | None = None
 
     # Validation
-    errors: List[str] = field(default_factory=list)
-    warnings: List[str] = field(default_factory=list)
+    errors: list[str] = field(default_factory=list)
+    warnings: list[str] = field(default_factory=list)
     is_valid: bool = True
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         """Convert to dictionary for JSON serialization."""
         result = {
             "metadata": {
@@ -270,7 +277,9 @@ class ExperimentSummary:
                 "version": self.version,
                 "source_type": self.source.value,
                 "source_file": self.source_file,
-                "source_timestamp": self.source_timestamp.isoformat() if self.source_timestamp else None,
+                "source_timestamp": (
+                    self.source_timestamp.isoformat() if self.source_timestamp else None
+                ),
             },
             "design": {
                 "has_design": self.has_design,
@@ -305,8 +314,12 @@ class ExperimentSummary:
         if self.experiment_id is not None:
             result["metadata"]["experiment_id"] = self.experiment_id
             result["metadata"]["user_id"] = self.user_id
-            result["metadata"]["created_at"] = self.created_at.isoformat() if self.created_at else None
-            result["metadata"]["updated_at"] = self.updated_at.isoformat() if self.updated_at else None
+            result["metadata"]["created_at"] = (
+                self.created_at.isoformat() if self.created_at else None
+            )
+            result["metadata"]["updated_at"] = (
+                self.updated_at.isoformat() if self.updated_at else None
+            )
 
         # Add statistics if computed
         if self.statistics:
@@ -335,17 +348,20 @@ class ExperimentSummary:
             f"Experiment Summary: {self.name}",
             f"{'=' * 60}",
             f"Description: {self.description or '(none)'}",
-            f"Source: {self.source.value}" + (f" (ID: {self.experiment_id})" if self.experiment_id else ""),
+            f"Source: {self.source.value}"
+            + (f" (ID: {self.experiment_id})" if self.experiment_id else ""),
         ]
 
         if self.source_file:
             lines.append(f"File: {self.source_file}")
 
-        lines.extend([
-            "",
-            "DESIGN OVERVIEW",
-            "-" * 40,
-        ])
+        lines.extend(
+            [
+                "",
+                "DESIGN OVERVIEW",
+                "-" * 40,
+            ]
+        )
 
         if self.has_design:
             lines.append(f"  Type: {self.design_type}")
@@ -373,62 +389,82 @@ class ExperimentSummary:
                     if param.distribution_type == "fixed":
                         lines.append(f"    - {name}: {param.config.get('value', 'N/A')} (fixed)")
                     elif param.distribution_type == "uniform":
-                        lines.append(f"    - {name}: uniform({param.config.get('min')}, {param.config.get('max')})")
+                        lines.append(
+                            f"    - {name}: uniform({param.config.get('min')}, {param.config.get('max')})"
+                        )
                     elif param.distribution_type == "discrete":
-                        vals = ", ".join(f"{k}={v:.0%}" for k, v in param.config.get("values", {}).items())
+                        vals = ", ".join(
+                            f"{k}={v:.0%}" for k, v in param.config.get("values", {}).items()
+                        )
                         lines.append(f"    - {name}: discrete({vals})")
                     elif param.distribution_type == "normal":
-                        lines.append(f"    - {name}: normal(μ={param.config.get('mean')}, σ={param.config.get('std')})")
+                        lines.append(
+                            f"    - {name}: normal(μ={param.config.get('mean')}, σ={param.config.get('std')})"
+                        )
                     elif param.distribution_type == "gumbel":
-                        lines.append(f"    - {name}: gumbel(μ={param.config.get('mu')}, β={param.config.get('beta')})")
+                        lines.append(
+                            f"    - {name}: gumbel(μ={param.config.get('mu')}, β={param.config.get('beta')})"
+                        )
                     else:
                         lines.append(f"    - {name}: {param.distribution_type}")
         else:
             lines.append(f"  No factorial design (static crawlers: {self.crawler_count})")
 
-        lines.extend([
-            "",
-            "WORKFLOW SUMMARY",
-            "-" * 40,
-            f"  Total Jobs: {self.total_jobs}",
-            f"  Total Queues: {self.total_queues}",
-            f"  Estimated Duration: {self._format_duration(self.estimated_duration_seconds)}",
-            "",
-            "  Job Types:",
-        ])
+        lines.extend(
+            [
+                "",
+                "WORKFLOW SUMMARY",
+                "-" * 40,
+                f"  Total Jobs: {self.total_jobs}",
+                f"  Total Queues: {self.total_queues}",
+                f"  Estimated Duration: {self._format_duration(self.estimated_duration_seconds)}",
+                "",
+                "  Job Types:",
+            ]
+        )
 
         for job_type, count in sorted(self.jobs_by_type.items(), key=lambda x: -x[1]):
             pct = (count / self.total_jobs * 100) if self.total_jobs > 0 else 0
             lines.append(f"    {job_type}: {count} ({pct:.1f}%)")
 
         if self.template_names:
-            lines.extend([
-                "",
-                f"  Templates Used: {', '.join(self.template_names)}",
-            ])
+            lines.extend(
+                [
+                    "",
+                    f"  Templates Used: {', '.join(self.template_names)}",
+                ]
+            )
 
         if self.data_pool_names:
             lines.append(f"  Data Pools: {', '.join(self.data_pool_names)}")
 
         # Statistics
         if self.statistics:
-            lines.extend([
-                "",
-                "STATISTICS",
-                "-" * 40,
-                f"  Crawlers: {self.statistics.crawler_count} total, {self.statistics.active_crawler_count} active, {self.statistics.testing_crawler_count} testing",
-            ])
+            lines.extend(
+                [
+                    "",
+                    "STATISTICS",
+                    "-" * 40,
+                    f"  Crawlers: {self.statistics.crawler_count} total, {self.statistics.active_crawler_count} active, {self.statistics.testing_crawler_count} testing",
+                ]
+            )
 
             if self.statistics.pi_stats and self.statistics.pi_stats.count > 0:
                 pi = self.statistics.pi_stats
-                lines.append(f"  Pi (π): mean={pi.mean:.3f}, std={pi.std:.3f}, range=[{pi.min_value:.3f}, {pi.max_value:.3f}]")
+                lines.append(
+                    f"  Pi (π): mean={pi.mean:.3f}, std={pi.std:.3f}, range=[{pi.min_value:.3f}, {pi.max_value:.3f}]"
+                )
 
             if self.statistics.alpha_stats and self.statistics.alpha_stats.count > 0:
                 alpha = self.statistics.alpha_stats
-                lines.append(f"  Alpha (α): mean={alpha.mean:.3f}, std={alpha.std:.3f}, range=[{alpha.min_value:.3f}, {alpha.max_value:.3f}]")
+                lines.append(
+                    f"  Alpha (α): mean={alpha.mean:.3f}, std={alpha.std:.3f}, range=[{alpha.min_value:.3f}, {alpha.max_value:.3f}]"
+                )
 
             if self.statistics.browser_distribution:
-                browsers = ", ".join(f"{k}={v}" for k, v in self.statistics.browser_distribution.items())
+                browsers = ", ".join(
+                    f"{k}={v}" for k, v in self.statistics.browser_distribution.items()
+                )
                 lines.append(f"  Browsers: {browsers}")
 
             if self.statistics.location_distribution:
@@ -441,21 +477,25 @@ class ExperimentSummary:
 
         # Execution stats (API only)
         if self.execution_stats:
-            lines.extend([
-                "",
-                "EXECUTION STATUS",
-                "-" * 40,
-                f"  Queues: {self.execution_stats.total_queues_processed}/{self.execution_stats.total_queues} processed ({self.execution_stats.completion_rate:.1%})",
-                f"  Pending: {self.execution_stats.total_queues_pending}, Processing: {self.execution_stats.total_queues_processing}",
-            ])
+            lines.extend(
+                [
+                    "",
+                    "EXECUTION STATUS",
+                    "-" * 40,
+                    f"  Queues: {self.execution_stats.total_queues_processed}/{self.execution_stats.total_queues} processed ({self.execution_stats.completion_rate:.1%})",
+                    f"  Pending: {self.execution_stats.total_queues_pending}, Processing: {self.execution_stats.total_queues_processing}",
+                ]
+            )
 
         # Validation
         if not self.is_valid or self.errors or self.warnings:
-            lines.extend([
-                "",
-                "VALIDATION",
-                "-" * 40,
-            ])
+            lines.extend(
+                [
+                    "",
+                    "VALIDATION",
+                    "-" * 40,
+                ]
+            )
             if self.errors:
                 for error in self.errors:
                     lines.append(f"  ERROR: {error}")
@@ -484,6 +524,7 @@ class ExperimentSummary:
 @dataclass
 class ExperimentComparison:
     """Result of comparing two experiments."""
+
     summary_a: ExperimentSummary
     summary_b: ExperimentSummary
 
@@ -493,18 +534,18 @@ class ExperimentComparison:
     queue_count_diff: int = 0
 
     # Detailed differences
-    differences: List[Dict[str, Any]] = field(default_factory=list)
+    differences: list[dict[str, Any]] = field(default_factory=list)
 
     # Crawlers only in one or the other
-    crawlers_only_in_a: List[str] = field(default_factory=list)
-    crawlers_only_in_b: List[str] = field(default_factory=list)
-    crawlers_in_both: List[str] = field(default_factory=list)
+    crawlers_only_in_a: list[str] = field(default_factory=list)
+    crawlers_only_in_b: list[str] = field(default_factory=list)
+    crawlers_in_both: list[str] = field(default_factory=list)
 
     def is_identical(self) -> bool:
         """Check if experiments are identical."""
         return len(self.differences) == 0
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         return {
             "identical": self.is_identical(),
             "summary": {
@@ -553,11 +594,13 @@ class ExperimentComparison:
                 lines.append(f"  Crawlers only in B: {len(self.crawlers_only_in_b)}")
 
         if self.differences:
-            lines.extend([
-                "",
-                "DIFFERENCES",
-                "-" * 40,
-            ])
+            lines.extend(
+                [
+                    "",
+                    "DIFFERENCES",
+                    "-" * 40,
+                ]
+            )
             for diff in self.differences[:20]:  # Limit to first 20
                 lines.append(f"  [{diff.get('category', 'unknown')}] {diff.get('field', '')}")
                 lines.append(f"    A: {diff.get('value_a', 'N/A')}")

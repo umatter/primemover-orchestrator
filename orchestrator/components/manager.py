@@ -307,7 +307,9 @@ class ComponentManager:
             SystemStatus with results
         """
         self.stop(api=api, runner=runner, monitoring=monitoring, lambda_server=lambda_server)
-        return self.start(api=api, runner=runner, monitoring=monitoring, lambda_server=lambda_server)
+        return self.start(
+            api=api, runner=runner, monitoring=monitoring, lambda_server=lambda_server
+        )
 
     def status(self) -> SystemStatus:
         """
@@ -416,7 +418,9 @@ class ComponentManager:
         # Print quick links if anything is running
         self._print_quick_links(system_status)
 
-    def _print_compact_status(self, system_status: SystemStatus, status_styles: dict, status_icon) -> None:
+    def _print_compact_status(
+        self, system_status: SystemStatus, status_styles: dict, status_icon
+    ) -> None:
         """Print compact status table."""
         table = Table(title="PrimeMover System Status", show_header=True)
         table.add_column("Component", style="bold")
@@ -462,14 +466,20 @@ class ComponentManager:
         mon_style = status_styles.get(monitoring.status, "white")
         mon_details = []
         if monitoring.details.get("containers"):
-            running = sum(1 for c in monitoring.details["containers"].values() if c.get("running", False))
+            running = sum(
+                1 for c in monitoring.details["containers"].values() if c.get("running", False)
+            )
             total = len(monitoring.details["containers"])
             mon_details.append(f"{running}/{total} containers")
         table.add_row(
             "Monitoring",
             f"[{mon_style}]{monitoring.status.value.upper()}[/{mon_style}]",
             status_icon(monitoring.status),
-            str(self._monitoring.grafana_port) if self._monitoring and monitoring.is_healthy else "-",
+            (
+                str(self._monitoring.grafana_port)
+                if self._monitoring and monitoring.is_healthy
+                else "-"
+            ),
             ", ".join(mon_details) if mon_details else monitoring.message,
         )
 
@@ -490,7 +500,9 @@ class ComponentManager:
 
         self.console.print(table)
 
-    def _print_verbose_status(self, system_status: SystemStatus, status_styles: dict, status_icon) -> None:
+    def _print_verbose_status(
+        self, system_status: SystemStatus, status_styles: dict, status_icon
+    ) -> None:
         """Print detailed status with sub-components."""
         from rich.tree import Tree
 
@@ -528,10 +540,14 @@ class ComponentManager:
                 health_info = ""
                 if service == "mysql" and "mysql" in health_checks:
                     health_ok = health_checks["mysql"]
-                    health_info = " [green](healthy)[/green]" if health_ok else " [red](unhealthy)[/red]"
+                    health_info = (
+                        " [green](healthy)[/green]" if health_ok else " [red](unhealthy)[/red]"
+                    )
                 elif service == "redis" and "redis" in health_checks:
                     health_ok = health_checks["redis"]
-                    health_info = " [green](healthy)[/green]" if health_ok else " [red](unhealthy)[/red]"
+                    health_info = (
+                        " [green](healthy)[/green]" if health_ok else " [red](unhealthy)[/red]"
+                    )
 
                 api_branch.add(
                     f"{svc_icon} {service.title()}{port_info} "
@@ -620,12 +636,10 @@ class ComponentManager:
 
     def _print_quick_links(self, system_status: SystemStatus) -> None:
         """Print quick links section."""
-        has_links = False
 
         # Check if any component is running
         if system_status.api.is_healthy or system_status.monitoring.is_healthy:
             self.console.print("\n[bold]Quick Links:[/bold]")
-            has_links = True
 
         if system_status.api.is_healthy and self._api:
             base_url = f"http://localhost:{self._api.http_port}"
@@ -675,18 +689,27 @@ class ComponentManager:
     def _build_system_status(self, results: dict) -> SystemStatus:
         """Build SystemStatus from component results."""
         return SystemStatus(
-            api=results.get("api", ComponentHealth(
-                status=ComponentStatus.UNKNOWN,
-                message="API component not configured",
-            )),
-            runner=results.get("runner", ComponentHealth(
-                status=ComponentStatus.UNKNOWN,
-                message="Runner component not configured",
-            )),
-            monitoring=results.get("monitoring", ComponentHealth(
-                status=ComponentStatus.UNKNOWN,
-                message="Monitoring component not configured",
-            )),
+            api=results.get(
+                "api",
+                ComponentHealth(
+                    status=ComponentStatus.UNKNOWN,
+                    message="API component not configured",
+                ),
+            ),
+            runner=results.get(
+                "runner",
+                ComponentHealth(
+                    status=ComponentStatus.UNKNOWN,
+                    message="Runner component not configured",
+                ),
+            ),
+            monitoring=results.get(
+                "monitoring",
+                ComponentHealth(
+                    status=ComponentStatus.UNKNOWN,
+                    message="Monitoring component not configured",
+                ),
+            ),
             lambda_server=results.get("lambda_server"),  # Optional, may be None
         )
 
