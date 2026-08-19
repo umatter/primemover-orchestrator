@@ -6,7 +6,6 @@ Provides unified lifecycle management across API, Runner, and Monitoring compone
 
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Optional
 
 from rich.console import Console
 from rich.table import Table
@@ -25,7 +24,7 @@ class SystemStatus:
     api: ComponentHealth
     runner: ComponentHealth
     monitoring: ComponentHealth
-    lambda_server: Optional[ComponentHealth] = None
+    lambda_server: ComponentHealth | None = None
     overall: ComponentStatus = field(init=False)
 
     def __post_init__(self):
@@ -80,16 +79,16 @@ class ComponentManager:
 
     def __init__(
         self,
-        api_path: Optional[Path] = None,
-        runner_path: Optional[Path] = None,
-        orchestrator_path: Optional[Path] = None,
+        api_path: Path | None = None,
+        runner_path: Path | None = None,
+        orchestrator_path: Path | None = None,
         api_http_port: int = 8090,
         api_mysql_port: int = 3307,
         api_redis_port: int = 8889,
         grafana_port: int = 3000,
-        runner_java_opts: Optional[str] = None,
+        runner_java_opts: str | None = None,
         runner_spring_profile: str = "local",
-        runner_log_path: Optional[Path] = None,
+        runner_log_path: Path | None = None,
         lambda_server_port: int = 5001,
         lambda_server_enabled: bool = True,
     ):
@@ -113,10 +112,10 @@ class ComponentManager:
         self.console = Console()
 
         # Initialize components
-        self._api: Optional[ApiComponent] = None
-        self._runner: Optional[RunnerComponent] = None
-        self._monitoring: Optional[MonitoringComponent] = None
-        self._lambda_server: Optional[LambdaServerComponent] = None
+        self._api: ApiComponent | None = None
+        self._runner: RunnerComponent | None = None
+        self._monitoring: MonitoringComponent | None = None
+        self._lambda_server: LambdaServerComponent | None = None
 
         if api_path:
             self._api = ApiComponent(
@@ -147,26 +146,26 @@ class ComponentManager:
                 )
 
     @property
-    def api(self) -> Optional[ApiComponent]:
+    def api(self) -> ApiComponent | None:
         """Get API component."""
         return self._api
 
     @property
-    def runner(self) -> Optional[RunnerComponent]:
+    def runner(self) -> RunnerComponent | None:
         """Get Runner component."""
         return self._runner
 
     @property
-    def monitoring(self) -> Optional[MonitoringComponent]:
+    def monitoring(self) -> MonitoringComponent | None:
         """Get Monitoring component."""
         return self._monitoring
 
     @property
-    def lambda_server(self) -> Optional[LambdaServerComponent]:
+    def lambda_server(self) -> LambdaServerComponent | None:
         """Get Lambda Server component."""
         return self._lambda_server
 
-    def get_component(self, name: str) -> Optional[BaseComponent]:
+    def get_component(self, name: str) -> BaseComponent | None:
         """
         Get a component by name.
 
@@ -378,8 +377,6 @@ class ComponentManager:
         Args:
             verbose: Show detailed sub-component status
         """
-        from rich.panel import Panel
-        from rich.tree import Tree
 
         system_status = self.status()
 

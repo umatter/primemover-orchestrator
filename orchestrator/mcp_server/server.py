@@ -7,7 +7,6 @@ Provides Claude Code with tools for monitoring, debugging, and managing experime
 import json
 import os
 import sys
-from typing import Optional
 
 from orchestrator.config import get_settings
 
@@ -123,7 +122,7 @@ def _validate_limit(limit: int) -> int:
     return limit
 
 
-def _validate_id(value: Optional[int], name: str) -> Optional[int]:
+def _validate_id(value: int | None, name: str) -> int | None:
     """Validate an ID parameter."""
     if value is None:
         return None
@@ -156,8 +155,8 @@ def query_logs(
     time_range: str = "1h",
     level: str = "all",
     search: str = "",
-    experiment_id: Optional[int] = None,
-    crawler_id: Optional[int] = None,
+    experiment_id: int | None = None,
+    crawler_id: int | None = None,
     limit: int = 100,
 ) -> str:
     """
@@ -176,6 +175,7 @@ def query_logs(
         JSON array of log entries with timestamp, component, level, and message
     """
     import httpx
+
     from orchestrator.clients.loki import escape_logql_string
 
     # Validate inputs
@@ -440,7 +440,7 @@ def _api_request(method: str, endpoint: str, data: dict = None, params: dict = N
 # docs/specs/mcp-control-surface.md
 # =============================================================================
 
-def _require_local_write_target() -> Optional[str]:
+def _require_local_write_target() -> str | None:
     """Return an error string if the API target is not the local dev server (:8090)."""
     from urllib.parse import urlparse
 
@@ -592,8 +592,8 @@ def pm_activate_run(queue_id: int, active: int = 1, confirm: bool = False) -> st
 
 
 @mcp.tool()
-def pm_add_job(queue_id: int, type: str, name: str, order: Optional[int] = None,
-               description: str = "", active: int = 1, previous_job_id: Optional[int] = None,
+def pm_add_job(queue_id: int, type: str, name: str, order: int | None = None,
+               description: str = "", active: int = 1, previous_job_id: int | None = None,
                confirm: bool = False) -> str:
     """Append a Job to a Run's sequence. `order`/`previous_job_id` auto-computed if omitted.
     Job parameters are set separately as behaviours (see pm_set_behaviour). Dry-run unless confirm=true.
@@ -623,7 +623,7 @@ def pm_add_job(queue_id: int, type: str, name: str, order: Optional[int] = None,
 
 @mcp.tool()
 def pm_set_behaviour(job_id: int, name: str, value: str, description: str = "", active: bool = True,
-                     behaviour_id: Optional[int] = None, confirm: bool = False) -> str:
+                     behaviour_id: int | None = None, confirm: bool = False) -> str:
     """Set a Job behaviour (its type-specific parameter, e.g. url/seconds/selector). Creates, or
     updates when behaviour_id is given. Dry-run unless confirm=true.
 
@@ -1172,7 +1172,7 @@ def trace_job(job_id: int, time_range: str = "7d") -> str:
 
 @mcp.tool()
 def find_failed_executions(
-    time_range: str = "24h", experiment_id: Optional[int] = None
+    time_range: str = "24h", experiment_id: int | None = None
 ) -> str:
     """
     Find all failed job executions with error details.
@@ -1223,8 +1223,8 @@ def find_failed_executions(
 @mcp.tool()
 def get_lambda_invocations(
     time_range: str = "1h",
-    crawler_id: Optional[int] = None,
-    experiment_id: Optional[int] = None,
+    crawler_id: int | None = None,
+    experiment_id: int | None = None,
     limit: int = 50,
 ) -> str:
     """
@@ -1276,8 +1276,8 @@ def analyze_lambda_decisions(experiment_id: int, group_by: str = "crawler") -> s
 @mcp.tool()
 def get_lambda_cloudwatch_logs(
     time_range: str = "1h",
-    request_id: Optional[str] = None,
-    job_id: Optional[int] = None,
+    request_id: str | None = None,
+    job_id: int | None = None,
     search: str = "",
     limit: int = 100,
 ) -> str:
@@ -1522,9 +1522,13 @@ def validate_experiment_spec(yaml_content: str, strict: bool = False) -> str:
         JSON with validation results including errors, warnings, and summary
     """
     try:
-        from experiment_designer.spec import SpecParser, SpecConverter, SpecValidator
-        from experiment_designer.spec.file_loader import create_file_tag_loader, resolve_file_references
         import yaml as yaml_lib
+
+        from experiment_designer.spec import SpecConverter, SpecParser, SpecValidator
+        from experiment_designer.spec.file_loader import (
+            create_file_tag_loader,
+            resolve_file_references,
+        )
     except ImportError as e:
         return json.dumps({"error": f"experiment_designer not available: {e}"})
 
@@ -1637,7 +1641,7 @@ def convert_spec_to_json(yaml_content: str) -> str:
         JSON string ready for API upload, or error details
     """
     try:
-        from experiment_designer.spec import SpecParser, SpecConverter
+        from experiment_designer.spec import SpecConverter, SpecParser
     except ImportError as e:
         return json.dumps({"error": f"experiment_designer not available: {e}"})
 
@@ -1666,7 +1670,7 @@ def convert_spec_to_json(yaml_content: str) -> str:
 @mcp.tool()
 def upload_experiment(
     yaml_content: str,
-    experiment_id: Optional[int] = None,
+    experiment_id: int | None = None,
     dry_run: bool = False,
 ) -> str:
     """
@@ -1686,9 +1690,11 @@ def upload_experiment(
         or validation errors if the spec is invalid
     """
     try:
-        from experiment_designer.spec import SpecParser, SpecConverter
-        import requests
         from datetime import datetime
+
+        import requests
+
+        from experiment_designer.spec import SpecConverter, SpecParser
     except ImportError as e:
         return json.dumps({"error": f"Required modules not available: {e}"})
 

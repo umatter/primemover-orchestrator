@@ -5,14 +5,13 @@ Manages the Spring Boot Java runner application with PID-based process tracking.
 """
 
 import fcntl
-import glob
 import os
 import signal
 import subprocess
 import time
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Optional, Generator
+from typing import Generator
 
 from orchestrator.components.base import BaseComponent, ComponentHealth, ComponentStatus
 
@@ -44,7 +43,7 @@ def _pid_file_lock(pid_file: Path, timeout: float = 5.0) -> Generator[None, None
             try:
                 fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
                 break
-            except (OSError, IOError):
+            except OSError:
                 if time.time() - start_time > timeout:
                     raise TimeoutError(f"Could not acquire lock on {lock_file} within {timeout}s")
                 time.sleep(0.1)
@@ -53,7 +52,7 @@ def _pid_file_lock(pid_file: Path, timeout: float = 5.0) -> Generator[None, None
     finally:
         try:
             fcntl.flock(fd, fcntl.LOCK_UN)
-        except (OSError, IOError):
+        except OSError:
             pass
         os.close(fd)
 
@@ -85,9 +84,9 @@ class RunnerComponent(BaseComponent):
     def __init__(
         self,
         path: Path,
-        java_opts: Optional[str] = None,
+        java_opts: str | None = None,
         spring_profile: str = "local",
-        log_path: Optional[Path] = None,
+        log_path: Path | None = None,
     ):
         """
         Initialize Runner component.
@@ -101,12 +100,12 @@ class RunnerComponent(BaseComponent):
         super().__init__(name="Runner", path=path)
         self.java_opts = java_opts or self.DEFAULT_JAVA_OPTS
         self.spring_profile = spring_profile
-        self._jar_path: Optional[Path] = None
-        self._config_path: Optional[Path] = None
-        self._log_path: Optional[Path] = log_path
+        self._jar_path: Path | None = None
+        self._config_path: Path | None = None
+        self._log_path: Path | None = log_path
 
     @property
-    def jar_path(self) -> Optional[Path]:
+    def jar_path(self) -> Path | None:
         """Get path to the runner JAR file."""
         if self._jar_path is None:
             self._jar_path = self._find_jar()
@@ -126,7 +125,7 @@ class RunnerComponent(BaseComponent):
             return self._log_path
         return self.path / self.LOG_DIR
 
-    def _find_jar(self) -> Optional[Path]:
+    def _find_jar(self) -> Path | None:
         """Find the runner JAR file."""
         target_dir = self.path / "primemover-runner" / "target"
         if not target_dir.exists():
@@ -461,7 +460,7 @@ class RunnerComponent(BaseComponent):
         except subprocess.TimeoutExpired:
             return "Error: Log tail command timed out"
 
-    def _get_pid(self) -> Optional[int]:
+    def _get_pid(self) -> int | None:
         """Get PID from file if exists."""
         if not self.PID_FILE.exists():
             return None
@@ -580,14 +579,12 @@ class RunnerComponent(BaseComponent):
             if not pids:
                 return 0
 
-            # Only kill processes whose parent is init (PID 1) — truly orphaned —
-            # or whose parent is part of the MLX agent tree but the runner is gone
+            # Only kill browsers once the runner itself is gone — at that point every
+            # remaining browser process is an orphan. While the runner is alive its
+            # browsers are left alone, regardless of who their parent is.
             runner_pid = self._get_pid()
             for pid in pids:
                 try:
-                    ppid_text = Path(f"/proc/{pid}/stat").read_text().split()[3]
-                    ppid = int(ppid_text)
-
                     # If the runner is not running, all browser processes are orphans
                     if runner_pid and self._is_process_running(runner_pid):
                         continue  # Runner is still alive, don't touch its browsers

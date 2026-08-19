@@ -11,7 +11,6 @@ import subprocess
 import sys
 import time
 from pathlib import Path
-from typing import Optional
 
 import requests
 
@@ -35,7 +34,7 @@ class LambdaServerComponent(BaseComponent):
         self,
         port: int = DEFAULT_PORT,
         host: str = DEFAULT_HOST,
-        orchestrator_path: Optional[Path] = None,
+        orchestrator_path: Path | None = None,
     ):
         """
         Initialize Lambda Server component.
@@ -49,7 +48,7 @@ class LambdaServerComponent(BaseComponent):
         self.port = port
         self.host = host
         self.orchestrator_path = orchestrator_path or Path(__file__).parent.parent.parent
-        self._process: Optional[subprocess.Popen] = None
+        self._process: subprocess.Popen | None = None
         self._pid_file = self.orchestrator_path / ".lambda_server.pid"
         self._log_file = self.orchestrator_path / "log" / "lambda-server.log"
 
@@ -89,9 +88,12 @@ class LambdaServerComponent(BaseComponent):
 
         cmd = [
             str(python_path),
-            "-m", "orchestrator.lambda_service.server",
-            "--port", str(self.port),
-            "--host", self.host,
+            "-m",
+            "orchestrator.lambda_service.server",
+            "--port",
+            str(self.port),
+            "--host",
+            self.host,
         ]
 
         try:
@@ -298,6 +300,7 @@ class LambdaServerComponent(BaseComponent):
         # Check if port is available (only if not already running)
         if not self.is_running():
             import socket
+
             sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             try:
                 sock.bind((self.host, self.port))
@@ -343,12 +346,12 @@ class LambdaServerComponent(BaseComponent):
             time.sleep(self.HEALTH_CHECK_INTERVAL)
         return False
 
-    def _get_pid(self) -> Optional[int]:
+    def _get_pid(self) -> int | None:
         """Get PID from file."""
         if self._pid_file.exists():
             try:
                 return int(self._pid_file.read_text().strip())
-            except (ValueError, IOError):
+            except (OSError, ValueError):
                 return None
         return None
 

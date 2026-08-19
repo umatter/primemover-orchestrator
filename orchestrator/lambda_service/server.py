@@ -18,7 +18,7 @@ import logging
 import sys
 from pathlib import Path
 
-from flask import Flask, request, jsonify
+from flask import Flask, jsonify, request
 
 # Configure logging
 logging.basicConfig(
@@ -53,22 +53,27 @@ def get_decision_function():
             sys.path.insert(0, str(decision_path))
 
         from lambda_function import select_recommendation
+
         _select_recommendation = select_recommendation
         logger.info("Successfully loaded select_recommendation function")
         return _select_recommendation
     except ImportError as e:
         logger.error(f"Failed to import lambda_function: {e}")
-        logger.error("Make sure the 'decision' symlink exists and points to bot-decision-yt/bot-decision-EN")
+        logger.error(
+            "Make sure the 'decision' symlink exists and points to bot-decision-yt/bot-decision-EN"
+        )
         raise
 
 
 @app.route("/health", methods=["GET"])
 def health():
     """Health check endpoint."""
-    return jsonify({
-        "status": "healthy",
-        "service": "lambda_service",
-    })
+    return jsonify(
+        {
+            "status": "healthy",
+            "service": "lambda_service",
+        }
+    )
 
 
 @app.route("/invoke", methods=["POST"])
@@ -85,13 +90,18 @@ def invoke():
 
         # Get the request payload
         if not request.is_json:
-            return jsonify({
-                "error": "Request must be JSON",
-                "xpath": "",
-            }), 400
+            return (
+                jsonify(
+                    {
+                        "error": "Request must be JSON",
+                        "xpath": "",
+                    }
+                ),
+                400,
+            )
 
         event = request.json
-        logger.info(f"Received invoke request for video selection")
+        logger.info("Received invoke request for video selection")
         logger.debug(f"Request payload keys: {list(event.keys()) if event else 'None'}")
 
         # Call the decision function (it expects a JSON string)
@@ -103,28 +113,40 @@ def invoke():
 
     except ImportError as e:
         logger.error(f"Import error: {e}")
-        return jsonify({
-            "error": f"Failed to load decision function: {str(e)}",
-            "xpath": "",
-        }), 500
+        return (
+            jsonify(
+                {
+                    "error": f"Failed to load decision function: {str(e)}",
+                    "xpath": "",
+                }
+            ),
+            500,
+        )
     except Exception as e:
         logger.error(f"Error invoking decision function: {e}", exc_info=True)
-        return jsonify({
-            "error": str(e),
-            "xpath": "",
-        }), 500
+        return (
+            jsonify(
+                {
+                    "error": str(e),
+                    "xpath": "",
+                }
+            ),
+            500,
+        )
 
 
 @app.route("/", methods=["GET"])
 def root():
     """Root endpoint with service info."""
-    return jsonify({
-        "service": "PrimeMover Local Lambda Service",
-        "endpoints": {
-            "/health": "GET - Health check",
-            "/invoke": "POST - Invoke Lambda function",
-        },
-    })
+    return jsonify(
+        {
+            "service": "PrimeMover Local Lambda Service",
+            "endpoints": {
+                "/health": "GET - Health check",
+                "/invoke": "POST - Invoke Lambda function",
+            },
+        }
+    )
 
 
 def main():
