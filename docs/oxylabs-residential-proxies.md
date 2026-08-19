@@ -38,6 +38,11 @@ customer-{USER}-sessid-{SESSION}-{LOCATION}-sesstime-30
 
 ## 2. Why the existing integration will not work as-is
 
+> **Status: 2.1, 2.2 and the session-flavour issue are FIXED** in
+> `primemover_runner` commit `c610f15` (54 unit tests). This section is kept as
+> the rationale for what changed. 2.3 (lowercase session ids) is still open;
+> 2.5 and 2.6 remain true.
+
 Three real defects (2.1–2.3), one thing that is fine but for a non-obvious reason
 (2.4), and two gotchas that will cost an afternoon each if unknown (2.5–2.6).
 Most of it is in or adjacent to `OxylabsProxy.getUsername()`.
@@ -51,9 +56,12 @@ canonical order is `customer → cc → city → st → sessid → sesstime`:
 > — [making-requests.md]
 
 The docs contain **zero** examples with a location token after `sessid`. Our
-builder emits `-sessid-{SESSION}-{LOCATION}-`, i.e. exactly the unsupported
-order. The location segment needs to move to sit between `customer-{USER}` and
-`-sessid-`.
+builder emitted `-sessid-{SESSION}-{LOCATION}-`, i.e. exactly the unsupported
+order.
+
+**Fixed.** The location segment now sits between `customer-{USER}` and the
+session token. Since whether the order is enforced is undocumented and fails
+open, the documented order is emitted unconditionally rather than bet on.
 
 ### 2.2 Location values are injected raw, but Oxylabs requires typed tokens
 
@@ -87,6 +95,22 @@ is a silently corrupted dataset, not an outage. Which of the two happens is
 undocumented — see §11.
 
 This is the single largest piece of work: a **location translation layer**. See §5.
+
+**Fixed** by `OxylabsLocation` (`primemover_runner`). It translates the legacy
+form and refuses to guess wherever intent is ambiguous — hyphenated cities
+(`US-NY-NEW-YORK` must not become `city-york`), a bare region code (`US-CA` is
+California, not a city called `ca`), empty segments, and unknown keys all throw.
+
+One subtlety worth recording, found in review: three ISO country codes **collide
+with Oxylabs keys** — `CN` (China) with the continent key `cn-`, `ST` (São Tomé)
+with `st-`, `CC` (Cocos Islands) with `cc-`. A prefix-only test turns the legacy
+value `CN-SHANGHAI` into the nonsense continent token `cn-SHANGHAI`. Detection
+therefore validates each key's *value* too, and genuinely ambiguous values are
+rejected with an actionable message rather than resolved either way.
+
+Because translation happens in `setLocation`, a bad value fails at crawler
+conversion. `convertApiCrawler` already isolates that per crawler: the run
+continues, and the offending crawler is skipped with an ERROR naming its id.
 
 ### 2.3 Session IDs are lowercase hex, 32 chars
 
@@ -394,8 +418,13 @@ For data validity, a loud 502 we can detect, log against the correlation ID, and
 retry with a fresh session is **strictly better** than an undetected mid-job IP
 swap. It combines with `sesstime` identically, so it is a one-token change.
 
-**Recommendation:** make `sessid` vs `sessid_oneip` a flag on the proxy record,
-defaulting to `sessid_oneip` for experiment runs.
+**Fixed.** Selected by the new `oxylabs.session.oneip` property in the runner's
+`application.properties`, **defaulting to `sessid_oneip`**. The token name is
+emitted as a placeholder by `OxylabsProxy` and resolved in `SessionDecorator`,
+which is the Spring-managed component.
+
+Still to do on the runner side: handle the resulting 502 by minting a fresh
+session rather than retrying the dead one (§12).
 
 ### Alternative: country-specific sticky entry nodes
 
@@ -673,6 +702,8 @@ Ordered by dependency.
 6. Location token mapper + validator: `US-CO-COLORADO_SPRINGS` →
    `cc-US-city-colorado_springs`. Enforce: city requires `cc`; `_` for multi-word;
    `st`/`postalcode` US-only; never emit `cc`+`st` together.
+   *(The runner already does this in `OxylabsLocation`; doing it here too moves
+   the failure to `pmspec validate`, before an experiment is ever uploaded.)*
 7. Vendor `us_states.txt` and `City_list.csv` as validation tables (§5).
 8. Reject unmappable locations in `pmspec validate` before upload.
 9. Add an assert-proxy job type pointing at `ip.oxylabs.io/location`.
@@ -684,9 +715,13 @@ Ordered by dependency.
 11. Decide where the `sessid` vs `sessid_oneip` flag lives.
 
 **`primemover_runner`**
-12. `OxylabsProxy.getUsername()`: move the location segment **before** `-sessid-`.
-13. `SessionDecorator`: uppercase the session id (§2.3).
-14. Support `sessid_oneip`, defaulting to it for experiment runs.
+12. ~~`OxylabsProxy.getUsername()`: move the location segment **before**
+    `-sessid-`.~~ **Done** (`c610f15`).
+13. `SessionDecorator`: uppercase the session id (§2.3). Still open — the session
+    id is shared with GeoSurf's `X-session` header, so changing it globally needs
+    a check that GeoSurf tolerates the new case.
+14. ~~Support `sessid_oneip`, defaulting to it for experiment runs.~~ **Done**
+    (`c610f15`, property `oxylabs.session.oneip`).
 15. `AssertProxyByOxylabsJobHandler` with a **nested-providers** `IpInfo`; assert
     country strictly, city best-effort; move `IpInfo` out of `model.geosurf` (§7).
 16. Handle 502 `Session failed` by minting a fresh session rather than retrying.
