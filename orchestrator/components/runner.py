@@ -12,6 +12,7 @@ import time
 from collections.abc import Generator
 from contextlib import contextmanager
 from pathlib import Path
+from typing import Any
 
 from orchestrator.components.base import BaseComponent, ComponentHealth, ComponentStatus
 
@@ -67,6 +68,10 @@ class RunnerComponent(BaseComponent):
     automation jobs. It runs as a native process (not containerized)
     with PID file tracking for lifecycle management.
     """
+
+    # RunnerComponent always receives a path (unlike the optional base), so
+    # narrow it here rather than guarding every use.
+    path: Path
 
     # PID file location
     PID_FILE = Path("/tmp/primemover-runner.pid")
@@ -529,7 +534,7 @@ class RunnerComponent(BaseComponent):
 
     def _get_process_details(self, pid: int) -> dict:
         """Get detailed information about the running process."""
-        details = {"pid": pid}
+        details: dict[str, Any] = {"pid": pid}
 
         # Get process info from /proc
         try:
