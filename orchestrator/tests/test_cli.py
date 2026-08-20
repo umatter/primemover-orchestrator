@@ -6,6 +6,8 @@ Run with: pytest orchestrator/tests/test_cli.py -v
 
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 from orchestrator.cli import cli
 
 
