@@ -430,6 +430,111 @@ class TestSpecValidator(unittest.TestCase):
         result = self.validator.validate(spec)
         self.assertTrue(any("template" in e.lower() for e in result.errors))
 
+    def _validate_workflow_item(self, item):
+        """Validate a spec whose single crawler runs one workflow item."""
+        spec = {
+            "experiment": {"name": "Test"},
+            "crawlers": [{"name": "Test", "session": {"workflow": [item]}}],
+        }
+        return self.validator.validate(spec)
+
+    @staticmethod
+    def _required_behavior_warnings(result):
+        return [w for w in result.warnings if "required behavior" in w]
+
+    def test_warns_on_dict_shorthand_missing_required_behavior(self):
+        """Dict shorthand omitting a registry-required behavior warns, stays valid."""
+        cases = [
+            ({"scroll": {"direction": "UP"}}, "duration"),
+            ({"scroll_length": {"direction": "DOWN"}}, "length"),
+            ({"single_select": {}}, "selector"),
+            ({"single_select_url": {}}, "selector"),
+            ({"switch": {}}, "target"),
+            ({"try_switch": {}}, "target"),
+            ({"handle_alert": {}}, "action"),
+            ({"try_handle_alert": {}}, "action"),
+        ]
+        for item, behavior in cases:
+            with self.subTest(item=item):
+                result = self._validate_workflow_item(item)
+                # Warning, never an error: the parser substitutes a default today.
+                self.assertTrue(result.valid, f"unexpected errors: {result.errors}")
+                warnings = self._required_behavior_warnings(result)
+                self.assertTrue(
+                    any(f"'{behavior}'" in w for w in warnings),
+                    f"expected a warning naming '{behavior}', got {result.warnings}",
+                )
+
+    def test_click_missing_selector_warns_independently_of_jsonschema(self):
+        """click/try_click gain a check that does not depend on the jsonschema package.
+
+        These two are already rejected by the optional JSON Schema layer
+        (clickOptions.required=['selector']), which is silently skipped when
+        `jsonschema` is not installed. The registry-driven warning is the
+        dependency-independent backstop, so here it coexists with an error.
+        """
+        for item in [{"click": {"task": "x"}}, {"try_click": {"task": "x"}}]:
+            with self.subTest(item=item):
+                result = self._validate_workflow_item(item)
+                warnings = self._required_behavior_warnings(result)
+                self.assertTrue(
+                    any("'selector'" in w for w in warnings),
+                    f"expected a warning naming 'selector', got {result.warnings}",
+                )
+
+    def test_scalar_shorthand_does_not_warn(self):
+        """Scalar shorthand supplies its required behavior positionally."""
+        for item in [
+            {"scroll": "30s"},
+            {"single_select": "//a"},
+            {"switch": "//iframe"},
+            {"click": "//button"},
+            {"handle_alert": "dismiss"},
+            {"visit": "https://example.com"},
+            {"wait": "10s"},
+        ]:
+            with self.subTest(item=item):
+                result = self._validate_workflow_item(item)
+                self.assertEqual(self._required_behavior_warnings(result), [])
+
+    def test_behavior_key_aliases_accepted(self):
+        """YAML keys the parser renames on expansion satisfy the registry name."""
+        for item in [
+            # registry says 'target', parser reads 'target' or 'selector'
+            {"switch": {"target": "//iframe"}},
+            {"switch": {"selector": "//iframe"}},
+            # registry says 'selector', parser reads 'selector' or 'target'
+            {"single_select": {"target": "//a"}},
+            # registry says 'length', parser reads 'pixels' or 'length'
+            {"scroll_length": {"pixels": 500}},
+            {"scroll_length": {"length": 500}},
+            # registry says 'linkValue', parser reads 'function' or 'link_value'
+            {"lambda_select": {"task": "pick", "function": "chooser"}},
+            {"lambda_select": {"task": "pick", "link_value": "chooser"}},
+        ]:
+            with self.subTest(item=item):
+                result = self._validate_workflow_item(item)
+                self.assertEqual(self._required_behavior_warnings(result), [])
+
+    def test_hardcoded_errors_not_duplicated_as_warnings(self):
+        """Items the hardcoded checks reject do not also collect warnings."""
+        result = self._validate_workflow_item({"type": {}})
+        self.assertFalse(result.valid)
+        self.assertTrue(any("'text'" in e for e in result.errors))
+        self.assertTrue(any("'selector'" in e for e in result.errors))
+        self.assertEqual(self._required_behavior_warnings(result), [])
+
+        result = self._validate_workflow_item({"lambda_select": {}})
+        self.assertFalse(result.valid)
+        self.assertEqual(self._required_behavior_warnings(result), [])
+
+    def test_zero_is_a_value(self):
+        """Falsy-but-legitimate numeric values must not trigger the warning."""
+        for item in [{"scroll_length": {"pixels": 0}}, {"scroll": {"duration": 0}}]:
+            with self.subTest(item=item):
+                result = self._validate_workflow_item(item)
+                self.assertEqual(self._required_behavior_warnings(result), [])
+
 
 class TestEndToEnd(unittest.TestCase):
     """End-to-end tests using real spec files."""

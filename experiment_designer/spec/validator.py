@@ -48,6 +48,26 @@ class SpecValidator:
             print("Errors:", result.errors)
     """
 
+    # Registry behavior name -> YAML shorthand keys that can supply it.
+    #
+    # Bridges two namespaces: JobRegistry BehaviorSchema names are the *API*
+    # behavior names emitted after expansion, while the validator sees the raw
+    # YAML mapping, whose keys spec/parser.py::_expand_shorthand deliberately
+    # renames (function -> linkValue, pixels -> length, target/selector ->
+    # selector). Behaviors not listed here are looked up under their own name.
+    #
+    # Note switch/try_switch: the registry calls the required behavior 'target'
+    # but the parser always emits 'selector' and accepts either YAML key, so
+    # both are listed. Keep this table in sync with _expand_shorthand.
+    _BEHAVIOR_KEYS: dict[str, dict[str, tuple[str, ...]]] = {
+        "switch": {"target": ("target", "selector")},
+        "try_switch": {"target": ("target", "selector")},
+        "single_select": {"selector": ("selector", "target")},
+        "single_select_url": {"selector": ("selector", "target")},
+        "scroll_length": {"length": ("pixels", "length")},
+        "lambda_select": {"linkValue": ("function", "link_value")},
+    }
+
     def __init__(self, schema_path: str | None = None):
         """
         Initialize validator.
@@ -372,6 +392,8 @@ class SpecValidator:
             warnings.append(f"{prefix}: unknown job type '{job_type}'")
             return
 
+        errors_before = len(errors)
+
         # Check based on value type
         if job_type == "visit":
             if not isinstance(value, str) or not value:
@@ -398,6 +420,28 @@ class SpecValidator:
                     errors.append(f"{prefix}.lambda_select: 'function' or 'link_value' is required")
             else:
                 errors.append(f"{prefix}.lambda_select: must be an object")
+
+        # Schema-driven completeness check against JobRegistry. Only meaningful
+        # for the mapping form - the scalar form (visit: URL, click: "//button")
+        # supplies its required behavior positionally.
+        #
+        # Deliberately a warning, not an error: the parser silently substitutes
+        # defaults today (scroll duration=10, scroll_length length=500,
+        # handle_alert action="accept", empty selectors), so erroring here would
+        # reject specs that validate now. Skipped when the hardcoded checks above
+        # already rejected this item, so their messages are not duplicated.
+        if isinstance(value, dict) and len(errors) == errors_before:
+            aliases = self._BEHAVIOR_KEYS.get(job_type, {})
+            for behavior in (b.name for b in schema.behaviors if b.required):
+                keys = aliases.get(behavior, (behavior,))
+                # Explicit None/"" test, not truthiness: 0 is a legitimate value
+                # for numeric behaviors such as scroll length and duration.
+                if not any(value.get(k) is not None and value.get(k) != "" for k in keys):
+                    warnings.append(
+                        f"{prefix}.{job_type}: required behavior '{behavior}' has no value "
+                        f"(expected one of: {', '.join(keys)}); "
+                        "the generated job will fall back to a default"
+                    )
 
     def _validate_templates(self, spec: dict[str, Any]) -> tuple[list[str], list[str]]:
         """Validate template definitions."""

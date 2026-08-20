@@ -3874,7 +3874,19 @@ def test(ctx: click.Context, verbose: bool, quick: bool, test_filter: str) -> No
     "--timeout",
     default=None,
     type=int,
-    help="Timeout in seconds for job completion (default: 180 for basic, 600 for youtube)",
+    help=(
+        "Timeout in seconds for job execution, measured from when the runner picks up "
+        "the queue (default: 180 for basic/chrome, 600 for youtube)"
+    ),
+)
+@click.option(
+    "--pickup-timeout",
+    default=None,
+    type=int,
+    help=(
+        "Timeout in seconds for the runner to pick up the queue at all (default: 180). "
+        "The runner polls on runner.UpdateInterval, so pickup latency is variable."
+    ),
 )
 @click.option("-v", "--verbose", is_flag=True, help="Show detailed output")
 @click.option(
@@ -3891,6 +3903,7 @@ def test(ctx: click.Context, verbose: bool, quick: bool, test_filter: str) -> No
 def e2e(
     ctx: click.Context,
     timeout: int | None,
+    pickup_timeout: int | None,
     verbose: bool,
     youtube: bool,
     chrome: bool,
@@ -3920,12 +3933,23 @@ def e2e(
     - For YouTube test: Lambda function (bot-decision-yt) must be deployed
 
     \b
+    Timeouts:
+    The wait is split into two separately budgeted phases, because the runner
+    polls for new work on its own schedule (runner.UpdateInterval) and that
+    latency has nothing to do with how long the jobs take:
+    - --pickup-timeout: waiting for the runner to claim the queue (no jobs yet)
+    - --timeout: executing the jobs, counted from the moment it claimed it
+    Worst-case wall time is therefore pickup + execution, and a failure names
+    which of the two phases ran out.
+
+    \b
     Examples:
         orchestrator e2e                  # Run basic e2e test (requires MLX)
         orchestrator e2e --chrome         # Run with plain Chrome (no MLX needed)
         orchestrator e2e --chrome -v      # Chrome test with verbose output
         orchestrator e2e --youtube        # Run YouTube workflow test
-        orchestrator e2e --timeout 300 -v # Basic test with custom timeout
+        orchestrator e2e --timeout 300 -v # Basic test with a bigger execution budget
+        orchestrator e2e --pickup-timeout 900  # Runner polls on a long UpdateInterval
     """
     import sys
 
@@ -3942,6 +3966,7 @@ def e2e(
         timeout=timeout,
         verbose=verbose,
         test_type=test_type,
+        pickup_timeout=pickup_timeout,
     )
 
     result = runner.run()

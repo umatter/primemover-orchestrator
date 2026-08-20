@@ -246,6 +246,38 @@ class TestDistributions(unittest.TestCase):
         dist = DistributionFactory.create(42)
         self.assertIsInstance(dist, FixedValue)
 
+    def test_discrete_distribution_rejects_non_numeric_proportion(self):
+        """A bad proportion is an actionable ValueError, not a re-raise/TypeError."""
+        # Non-numeric proportion: the error must name both the key and the value
+        # so the user can find the offending line in a large `values:` mapping.
+        with self.assertRaises(ValueError) as ctx:
+            DistributionFactory.create({"distribution": "discrete", "values": {"0.5": "abc"}})
+        self.assertIn("0.5", str(ctx.exception))
+        self.assertIn("abc", str(ctx.exception))
+
+        # Int-ish key takes the other branch; same contract.
+        with self.assertRaises(ValueError) as ctx:
+            DistributionFactory.create({"distribution": "discrete", "values": {"0": "abc"}})
+        self.assertIn("abc", str(ctx.exception))
+
+        # `values: {"0":}` in YAML yields None, which used to escape as TypeError.
+        with self.assertRaises(ValueError):
+            DistributionFactory.create({"distribution": "discrete", "values": {"0": None}})
+
+        # Key-conversion semantics are unchanged: a non-numeric key is kept as-is.
+        dist = DistributionFactory.create(
+            {"distribution": "discrete", "values": {"1.2.3": 1.0, "control": 1.0}}
+        )
+        self.assertIsInstance(dist, DiscreteDistribution)
+        self.assertEqual(sorted(dist.values), ["1.2.3", "control"])
+
+        # Via the sampler, it surfaces as a collected error rather than raising.
+        sampler = ParameterSampler(seed=42)
+        sampler.add_parameter("kappa", {"distribution": "discrete", "values": {"0.5": "abc"}})
+        self.assertEqual(len(sampler.errors), 1)
+        self.assertIn("kappa", sampler.errors[0])
+        self.assertIn("0.5", sampler.errors[0])
+
     def test_parameter_sampler(self):
         """Test sampling multiple parameters at once."""
         sampler = ParameterSampler(seed=42)
