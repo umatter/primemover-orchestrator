@@ -1008,9 +1008,10 @@ def up(ctx: click.Context, api: bool, runner: bool, monitoring: bool, lambda_loc
     """
     settings = ctx.obj["settings"]
 
-    if not any([api, runner, monitoring]):
+    if not any([api, runner, monitoring, lambda_local]):
         console.print(
-            "[yellow]No components selected. Use --api, --runner, or --monitoring.[/yellow]"
+            "[yellow]No components selected."
+            " Use --api, --runner, --monitoring or --lambda-local.[/yellow]"
         )
         return
 
@@ -1058,9 +1059,10 @@ def down(
     """
     settings = ctx.obj["settings"]
 
-    if not any([api, runner, monitoring]):
+    if not any([api, runner, monitoring, lambda_local]):
         console.print(
-            "[yellow]No components selected. Use --api, --runner, or --monitoring.[/yellow]"
+            "[yellow]No components selected."
+            " Use --api, --runner, --monitoring or --lambda-local.[/yellow]"
         )
         return
 

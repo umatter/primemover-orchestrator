@@ -259,6 +259,34 @@ class TestUpDownCommands:
 
         assert result.exit_code == 0
 
+    @pytest.mark.parametrize("command", ["up", "down"])
+    def test_lambda_local_alone_is_a_valid_selection(self, command, cli_runner):
+        """The Lambda server is a component in its own right.
+
+        The guard used to test only api/runner/monitoring, so asking for just the
+        Lambda server bailed out with "No components selected" and did nothing.
+        """
+        with patch("orchestrator.cli._get_component_manager") as get_manager:
+            get_manager.return_value = MagicMock()
+            result = cli_runner.invoke(
+                cli,
+                [command, "--lambda-local", "--no-api", "--no-runner", "--no-monitoring"],
+            )
+
+        assert "No components selected" not in result.output
+        get_manager.assert_called_once()
+
+    @pytest.mark.parametrize("command", ["up", "down"])
+    def test_selecting_nothing_still_reports_it(self, command, cli_runner):
+        """Deselecting every component, Lambda included, is still a no-op."""
+        result = cli_runner.invoke(
+            cli,
+            [command, "--no-lambda-local", "--no-api", "--no-runner", "--no-monitoring"],
+        )
+
+        assert "No components selected" in result.output
+        assert "--lambda-local" in result.output
+
 
 class TestDoctorCommand:
     """Tests for doctor command."""
