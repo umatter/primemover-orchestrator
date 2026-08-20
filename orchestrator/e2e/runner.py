@@ -50,6 +50,22 @@ TEST_EXPERIMENT_JSON = Path(__file__).parent / "test_experiment.json"
 TEST_EXPERIMENT_YOUTUBE_JSON = Path(__file__).parent / "test_experiment_youtube.json"
 
 
+class QueuePickupTimeoutError(TimeoutError):
+    """The runner never claimed the queue within the pickup budget."""
+
+
+class QueueExecutionTimeoutError(TimeoutError):
+    """The runner claimed the queue, but the jobs did not finish in time."""
+
+
+# Queue-level status codes, as emitted by the runner's JoblistState enum.
+# NOTE: "skpped" is a real typo in the runner's enum (SKIPPED_INACTIVE and
+# SKIPPED_REVIEWED), so both spellings have to be matched.
+QUEUE_SUCCESS_STATUSES = ("completed", "done", "finished", "success")
+QUEUE_FAILURE_STATUSES = ("failed", "error", "failure")
+QUEUE_SKIPPED_STATUSES = ("skipped", "skpped")
+
+
 class TestTypeConfig(TypedDict, total=False):
     """Configuration for one e2e test type.
 
@@ -60,22 +76,40 @@ class TestTypeConfig(TypedDict, total=False):
     template: Path
     name: str
     timeout: int
+    pickup_timeout: int
     description: str
     identification_override: str
 
 
-# Test type configurations
+# Test type configurations.
+#
+# The wait for a queue to finish is split into two independently budgeted
+# phases, because they have completely different characteristics:
+#
+#   pickup_timeout - how long the runner may take to *claim* the queue. The
+#       runner polls for new work on a schedule (`runner.UpdateInterval`
+#       minutes, on a 60s tick), so this latency is variable and does not
+#       depend on the test workload at all. Observed range: 2s to 112s with
+#       UpdateInterval=1; a deployment with a larger interval is slower still.
+#   timeout - how long the jobs themselves may take once the runner has picked
+#       the queue up. This is what actually depends on the test type.
+#
+# Sharing one budget between the two used to fail healthy runs: a queue that
+# waited 112s for pickup and then executed in 88s (a success) was reported as
+# "Jobs did not complete within 180s timeout".
 TEST_TYPES: dict[str, TestTypeConfig] = {
     "basic": {
         "template": TEST_EXPERIMENT_JSON,
         "name": "Basic E2E Test",
         "timeout": 180,
+        "pickup_timeout": 180,
         "description": "Simple visit and wait jobs",
     },
     "chrome": {
         "template": TEST_EXPERIMENT_JSON,
         "name": "Chrome E2E Test",
         "timeout": 180,
+        "pickup_timeout": 180,
         "description": "Simple visit and wait jobs using plain Chrome (no Multilogin X)",
         "identification_override": "chrome",
     },
@@ -83,9 +117,34 @@ TEST_TYPES: dict[str, TestTypeConfig] = {
         "template": TEST_EXPERIMENT_YOUTUBE_JSON,
         "name": "YouTube E2E Test",
         "timeout": 600,  # 10 minutes for YouTube workflow with Lambda calls
+        "pickup_timeout": 180,
         "description": "YouTube recommendation workflow with Lambda selection",
     },
 }
+
+
+def _queue_status(queue: dict[str, Any]) -> str:
+    """Return the queue's status code, or "" when it has none yet.
+
+    The API returns ``status_code: null`` for a queue no runner has touched, and
+    ``dict.get(key, default)`` yields that stored ``None`` rather than the
+    default -- which is how a never-picked-up queue used to be reported as
+    ``Last status: None``.
+    """
+    return str(queue.get("status_code") or queue.get("status") or "")
+
+
+def _queue_picked_up(queue: dict[str, Any]) -> bool:
+    """Whether the runner has claimed this queue yet.
+
+    The runner sets ``status_code``/``started_at``/``processing`` the moment it
+    claims a queue (JobListRunner -> RUNNING_INPROGRESS), before it even starts
+    the browser. These are used purely as presence signals: ``started_at`` is
+    written by the runner and has been observed with a wrong UTC/CET offset, so
+    no arithmetic is done on it. ``processing`` flips back to false on
+    completion, hence the three-way OR.
+    """
+    return bool(queue.get("started_at") or queue.get("processing") or _queue_status(queue))
 
 
 class E2ETestRunner:
@@ -104,14 +163,19 @@ class E2ETestRunner:
         timeout: int | None = None,
         verbose: bool = False,
         test_type: str = "basic",
+        pickup_timeout: int | None = None,
     ):
         """
         Initialize e2e test runner.
 
         Args:
-            timeout: Maximum wait time in seconds for job completion (default: based on test type)
+            timeout: Maximum wait time in seconds for the jobs to finish, measured from the
+                moment the runner picks the queue up (default: based on test type)
             verbose: Show detailed output
-            test_type: Type of test to run ("basic" or "youtube")
+            test_type: Type of test to run ("basic", "chrome" or "youtube")
+            pickup_timeout: Maximum wait time in seconds for the runner to pick the queue up
+                at all (default: based on test type). Pickup latency depends on the runner's
+                `runner.UpdateInterval` poll schedule, not on the test workload.
         """
         if test_type not in TEST_TYPES:
             raise ValueError(
@@ -121,6 +185,9 @@ class E2ETestRunner:
         self.test_type = test_type
         self.test_config = TEST_TYPES[test_type]
         self.timeout = timeout if timeout is not None else self.test_config["timeout"]
+        self.pickup_timeout = (
+            pickup_timeout if pickup_timeout is not None else self.test_config["pickup_timeout"]
+        )
         self.verbose = verbose
         self.settings = get_settings()
         self.reporter = E2EReporter(verbose=verbose)
@@ -176,7 +243,12 @@ class E2ETestRunner:
             jobs = self._wait_for_completion(queue_id)
         except TimeoutError as e:
             self.reporter.print_error(str(e))
-            self.reporter.print_troubleshooting()
+            # The troubleshooting block is about a runner that never got going
+            # (MLX not logged in, runner down, components unhealthy). It is
+            # actively misleading for a queue that *was* executing normally and
+            # merely outran its budget, so only print it for a pickup failure.
+            if isinstance(e, QueuePickupTimeoutError):
+                self.reporter.print_troubleshooting()
             return E2EResult(
                 success=False,
                 duration=time.time() - start_time,
@@ -275,6 +347,46 @@ class E2ETestRunner:
         all_ok = all(c["ok"] for c in checks.values())
         return ValidationResult(ok=all_ok, checks=checks)
 
+    def _substitute_proxy(self, crawler: dict[str, Any]) -> None:
+        """Fill the scenario's proxy placeholders from untracked configuration.
+
+        The scenario JSONs ship PROXY_*_PLACEHOLDER instead of real credentials so
+        that nothing sensitive is committed. Multilogin validates a profile's proxy
+        on start -- it fetches proxy.multilogin.com through it -- and refuses to
+        launch the browser if that fails, so an unsubstituted placeholder surfaces
+        as ``GET_PROXY_CONNECTION_IP_ERROR`` from the launcher and a crawler that
+        never gets past setup. Fail here instead, naming what to set.
+
+        The ``chrome`` test type drives plain Chrome without Multilogin, so it is
+        exempt: it is the path that stays runnable without a proxy account.
+        """
+        proxy = crawler.get("proxy")
+        if not proxy:
+            return
+
+        placeholders = {str(v) for v in proxy.values() if isinstance(v, str)}
+        if not any(p.endswith("_PLACEHOLDER") for p in placeholders):
+            return  # a real proxy is already baked in; leave it alone
+
+        if not self.settings.e2e_proxy_configured:
+            if self.test_config.get("identification_override") == "chrome":
+                return  # no Multilogin, so no proxy validation to fail
+            raise RuntimeError(
+                "This e2e scenario needs a residential proxy, but its credentials are "
+                "placeholders and none are configured.\n"
+                "Set E2E_PROXY_HOST, E2E_PROXY_PORT, E2E_PROXY_USERNAME and "
+                "E2E_PROXY_PASSWORD in .env (untracked), or run `orchestrator e2e "
+                "--chrome`, which drives plain Chrome and needs no proxy.\n"
+                "Without this, Multilogin fails the profile's proxy check with "
+                "GET_PROXY_CONNECTION_IP_ERROR and the crawler never starts."
+            )
+
+        proxy["hostname"] = self.settings.e2e_proxy_host
+        proxy["username"] = self.settings.e2e_proxy_username
+        proxy["password"] = self.settings.e2e_proxy_password
+        if self.settings.e2e_proxy_port:
+            proxy["port"] = self.settings.e2e_proxy_port
+
     def _upload_experiment(self) -> tuple[int, int, int, int, str, str]:
         """
         Upload test experiment to API.
@@ -310,6 +422,8 @@ class E2ETestRunner:
         # Update the crawler data with dynamic values
         crawlers_data[0]["name"] = f"E2E Test Bot - {timestamp}"
         crawlers_data[0]["queues"][0]["start_at"] = start_time
+
+        self._substitute_proxy(crawlers_data[0])
 
         # Override agent identification if configured (e.g., "chrome" instead of "mlx")
         id_override = self.test_config.get("identification_override")
@@ -468,6 +582,12 @@ class E2ETestRunner:
         """
         Wait for queue execution to complete.
 
+        The wait is split into two independently budgeted phases (see TEST_TYPES):
+        first ``pickup_timeout`` seconds for the runner to claim the queue, then
+        ``timeout`` seconds for the claimed queue to finish executing. Each poll
+        reads the queue *before* the deadline is checked, so the decision to give
+        up is always made on a fresh observation.
+
         Args:
             queue_id: Queue ID to monitor
 
@@ -475,42 +595,38 @@ class E2ETestRunner:
             List of job details with status
 
         Raises:
-            TimeoutError: If jobs don't complete within timeout
+            QueuePickupTimeoutError: If the runner never claims the queue
+            QueueExecutionTimeoutError: If a claimed queue does not finish in time
+            RuntimeError: If the queue reaches a terminal failed/skipped state
         """
         client = APIClient()
-        start_time = time.time()
+        wait_started = time.time()
         poll_interval = 5  # seconds
-        last_status = ""
+        picked_up_at: float | None = None
+        picked_up_after = 0.0
+        last_waiting_bucket = -1
 
         try:
             while True:
-                elapsed = time.time() - start_time
-
-                if elapsed > self.timeout:
-                    raise TimeoutError(
-                        f"Jobs did not complete within {self.timeout}s timeout. "
-                        f"Last status: {last_status}. Check runner logs."
-                    )
-
-                # Get queue status
                 queue = client.get_queue(queue_id)
-                queue_status = queue.get("status_code", queue.get("status", "unknown"))
+                queue_status = _queue_status(queue)
+                status_message = str(queue.get("status_message") or "")
                 jobs: list[dict[str, Any]] = queue.get("jobs", [])
 
-                # Update status display
+                now = time.time()
+                if picked_up_at is None and _queue_picked_up(queue):
+                    picked_up_at = now
+                    picked_up_after = now - wait_started
+
                 completed_jobs = sum(
                     1
                     for j in jobs
                     if j.get("status_code", j.get("status")) in ("completed", "done", "success")
                 )
-                last_status = queue_status
 
-                if self.verbose:
-                    self.reporter.clear_line()
-                    self.reporter.print_progress(completed_jobs, len(jobs), queue_status)
-
-                # Check if queue is finished
-                if queue_status in ("completed", "done", "finished", "success"):
+                # --- Terminal states, checked before any deadline so that a
+                # queue which finishes on the very last poll still counts.
+                if queue_status in QUEUE_SUCCESS_STATUSES:
                     self.reporter.clear_line()
                     # Print individual job results
                     for job in jobs:
@@ -526,17 +642,58 @@ class E2ETestRunner:
 
                     return jobs
 
-                # Check if queue failed
-                if queue_status in ("failed", "error", "failure"):
+                if queue_status in QUEUE_FAILURE_STATUSES:
                     self.reporter.clear_line()
                     error_msg = queue.get("error", queue.get("message", "Queue failed"))
                     raise RuntimeError(f"Queue failed: {error_msg}")
 
-                # Still waiting
-                if elapsed < 30:
-                    self.reporter.print_waiting(
-                        f"Waiting for runner to pick up job... ({elapsed:.0f}s)"
+                if queue_status in QUEUE_SKIPPED_STATUSES:
+                    # Terminal too: every SKIPPED_* state sets processed=true and
+                    # a finish time. Waiting out the budget here would only turn a
+                    # precise diagnosis into a generic timeout.
+                    self.reporter.clear_line()
+                    raise RuntimeError(
+                        f"Queue {queue_id} was skipped by the runner "
+                        f"({status_message or 'no reason given'}). This usually means the queue "
+                        f"was scheduled in the past, or is inactive/already reviewed."
                     )
+
+                # --- Not terminal: enforce the budget for the phase we are in.
+                if picked_up_at is None:
+                    elapsed = now - wait_started
+                    bucket = int(elapsed // 30)
+                    if self.verbose or bucket != last_waiting_bucket:
+                        last_waiting_bucket = bucket
+                        self.reporter.print_waiting(
+                            f"Waiting for runner to pick up queue... "
+                            f"({elapsed:.0f}s / {self.pickup_timeout}s)"
+                        )
+                    if elapsed > self.pickup_timeout:
+                        raise QueuePickupTimeoutError(
+                            f"Queue {queue_id} was never picked up by the runner within "
+                            f"{self.pickup_timeout}s (queue status: "
+                            f"{queue_status or 'not set'}). No jobs ran. The runner polls for "
+                            f"new work every runner.UpdateInterval minutes - check that it is "
+                            f"running and that the interval is short enough: "
+                            f"orchestrator logs query -c runner -t 10m"
+                        )
+                else:
+                    running_for = now - picked_up_at
+                    if self.verbose:
+                        self.reporter.clear_line()
+                        self.reporter.print_progress(completed_jobs, len(jobs), queue_status)
+                    if running_for > self.timeout:
+                        self.reporter.clear_line()
+                        raise QueueExecutionTimeoutError(
+                            f"Queue {queue_id} was picked up after {picked_up_after:.0f}s but "
+                            f"had not finished {self.timeout}s later (status: "
+                            f"{queue_status or 'unknown'}"
+                            f"{f' / {status_message}' if status_message else ''}, "
+                            f"{completed_jobs}/{len(jobs)} jobs completed). The run may still be "
+                            f"progressing - check with: orchestrator trace queue {queue_id}. "
+                            f"Raise the execution budget with --timeout if this workload is "
+                            f"simply slower than the default."
+                        )
 
                 time.sleep(poll_interval)
 

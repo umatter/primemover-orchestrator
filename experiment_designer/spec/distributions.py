@@ -310,20 +310,29 @@ class DistributionFactory:
             # int/float, everything else keeps its original (str) form.
             converted: dict[int | float | str, float] = {}
             for k, v in values.items():
+                # Convert the proportion first, exactly once, so that the key
+                # handlers below can only ever fire for a bad *key*.
+                try:
+                    proportion = float(v)
+                except (TypeError, ValueError) as e:
+                    raise ValueError(
+                        f"discrete distribution: proportion for key {k!r} must be a "
+                        f"number, got {v!r}"
+                    ) from e
                 try:
                     # Try to convert key to int or float
                     if isinstance(k, str):
                         if "." in k:
-                            converted[float(k)] = float(v)
+                            converted[float(k)] = proportion
                         else:
                             try:
-                                converted[int(k)] = float(v)
+                                converted[int(k)] = proportion
                             except ValueError:
-                                converted[k] = float(v)
+                                converted[k] = proportion
                     else:
-                        converted[k] = float(v)
+                        converted[k] = proportion
                 except ValueError:
-                    converted[k] = float(v)
+                    converted[k] = proportion
             return DiscreteDistribution(values=converted)
 
         elif dist_type == "normal":

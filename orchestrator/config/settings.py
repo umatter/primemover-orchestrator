@@ -130,6 +130,26 @@ class Settings(BaseSettings):
     pm_api_password: str | None = Field(default=None, alias="PM_API_PASSWORD")
 
     # ==========================================================================
+    # E2E residential proxy
+    # ==========================================================================
+    # The browser-automation e2e scenarios need a working proxy: Multilogin
+    # validates a profile's proxy on start by fetching proxy.multilogin.com
+    # through it, and refuses to launch the browser if that fails.
+    #
+    # The scenario JSONs ship with PROXY_*_PLACEHOLDER rather than real values,
+    # so credentials are never committed. They are substituted from here at
+    # upload time. Leave unset to run only the non-proxy paths (--chrome).
+    e2e_proxy_host: str | None = Field(default=None, alias="E2E_PROXY_HOST")
+    e2e_proxy_port: int | None = Field(default=None, alias="E2E_PROXY_PORT")
+    e2e_proxy_username: str | None = Field(default=None, alias="E2E_PROXY_USERNAME")
+    e2e_proxy_password: str | None = Field(default=None, alias="E2E_PROXY_PASSWORD")
+
+    @property
+    def e2e_proxy_configured(self) -> bool:
+        """Whether a usable e2e proxy has been supplied."""
+        return bool(self.e2e_proxy_host and self.e2e_proxy_username and self.e2e_proxy_password)
+
+    # ==========================================================================
     # AWS (for CloudWatch Lambda logs)
     # ==========================================================================
     aws_region: str = Field(default="eu-central-1", alias="AWS_DEFAULT_REGION")
