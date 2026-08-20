@@ -47,7 +47,11 @@ def _runner(*, chrome: bool, configured: bool) -> E2ETestRunner:
         if configured
         else {}
     )
-    runner.settings = Settings(**creds)  # type: ignore[arg-type]  # aliases are env names
+    # _env_file=None is essential: Settings reads .env by default, so on a machine
+    # where the e2e proxy IS configured the "unconfigured" case would silently pick
+    # up real credentials and these tests would fail -- on exactly the machines that
+    # can run e2e. Isolate from the environment so the fixture means what it says.
+    runner.settings = Settings(_env_file=None, **creds)  # type: ignore[arg-type]  # aliases are env names
     return runner
 
 
