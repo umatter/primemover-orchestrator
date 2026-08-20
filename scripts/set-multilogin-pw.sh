@@ -6,8 +6,22 @@
 # puts the password in shell history or the process list.
 #
 #   bash scripts/set-multilogin-pw.sh
+#   RUNNER_CONF=/some/other/application.properties bash scripts/set-multilogin-pw.sh
 #
-CONF=/home/primemover/primemover_runner/primemover-runner/config/application.properties
+# The runner lives beside this repo, but the layout differs per host (/home/ubuntu
+# here, /home/primemover on the migration target), so the path is derived rather
+# than hardcoded.
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
+CONF="${RUNNER_CONF:-$(dirname "$PROJECT_DIR")/primemover_runner/primemover-runner/config/application.properties}"
+
+if [ ! -w "$CONF" ]; then
+  echo "✗ Runner config not writable at $CONF"
+  echo "  Set RUNNER_CONF=/path/to/application.properties and retry."
+  exit 1
+fi
+echo "Writing to: $CONF"
+
 
 read -rp  'Multilogin email: ' MLUSER
 read -rsp 'Multilogin password: ' MLPW; echo
