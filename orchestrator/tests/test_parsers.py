@@ -8,13 +8,13 @@ import unittest
 from datetime import datetime
 
 from orchestrator.logs.parsers.laravel import (
-    LaravelLogParser,
     LaravelLogEntry,
+    LaravelLogParser,
     parse_laravel_log,
 )
 from orchestrator.logs.parsers.runner import (
-    RunnerLogParser,
     RunnerLogEntry,
+    RunnerLogParser,
     parse_runner_log,
 )
 
@@ -55,7 +55,9 @@ class TestLaravelLogParser(unittest.TestCase):
 
     def test_parse_line_with_context(self):
         """Test parsing a log line with JSON context."""
-        line = '[2025-01-15 10:30:45] local.INFO: Job processed {"experiment_id": 15, "job_id": 456}'
+        line = (
+            '[2025-01-15 10:30:45] local.INFO: Job processed {"experiment_id": 15, "job_id": 456}'
+        )
 
         self.parser.parse_line(line)
         result = self.parser._flush_buffer()

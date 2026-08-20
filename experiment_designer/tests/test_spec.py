@@ -6,19 +6,19 @@ Or: python experiment_designer/tests/test_spec.py
 """
 
 import json
+import sys
 import unittest
 from pathlib import Path
-import sys
 
 # Add parent directory to path
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 from experiment_designer.spec import (
-    SpecParser,
-    SpecConverter,
-    SpecValidator,
     DesignExpander,
     JobRegistry,
+    SpecConverter,
+    SpecParser,
+    SpecValidator,
 )
 
 
@@ -116,10 +116,10 @@ crawlers:
                     return b["value"]
             return None
 
-        self.assertEqual(get_seconds(jobs[0]), 10)   # 10s
+        self.assertEqual(get_seconds(jobs[0]), 10)  # 10s
         self.assertEqual(get_seconds(jobs[1]), 300)  # 5m
-        self.assertEqual(get_seconds(jobs[2]), 3600) # 1h
-        self.assertEqual(get_seconds(jobs[3]), 30)   # 30
+        self.assertEqual(get_seconds(jobs[2]), 3600)  # 1h
+        self.assertEqual(get_seconds(jobs[3]), 30)  # 30
 
     def test_shorthand_expansion(self):
         """Test shorthand syntax expansion."""
@@ -212,12 +212,9 @@ class TestDesignExpander(unittest.TestCase):
                 "a": {"levels": ["a1", "a2"]},
                 "b": {"levels": ["b1", "b2"]},
             },
-            "replications": 1
+            "replications": 1,
         }
-        crawler_template = {
-            "name": "test_{a}_{b}",
-            "description": "Test crawler"
-        }
+        crawler_template = {"name": "test_{a}_{b}", "description": "Test crawler"}
 
         crawlers = self.expander.expand(design, crawler_template)
 
@@ -235,7 +232,7 @@ class TestDesignExpander(unittest.TestCase):
             "factors": {
                 "condition": {"levels": ["control", "treatment"]},
             },
-            "replications": 3
+            "replications": 3,
         }
         crawler_template = {
             "name": "crawler_{condition}_{replica}",
@@ -252,20 +249,12 @@ class TestDesignExpander(unittest.TestCase):
             "factors": {
                 "orientation": {
                     "levels": ["left", "right"],
-                    "maps_to": {
-                        "configuration.params.pi": {
-                            "left": -0.5,
-                            "right": 0.5
-                        }
-                    }
+                    "maps_to": {"configuration.params.pi": {"left": -0.5, "right": 0.5}},
                 }
             },
-            "replications": 1
+            "replications": 1,
         }
-        crawler_template = {
-            "name": "test_{orientation}",
-            "configuration": {"params": {}}
-        }
+        crawler_template = {"name": "test_{orientation}", "configuration": {"params": {}}}
 
         crawlers = self.expander.expand(design, crawler_template)
 
@@ -286,7 +275,7 @@ class TestDesignExpander(unittest.TestCase):
                 "a": {"levels": ["a1", "a2", "a3"], "maps_to": {"x": {}}},
                 "b": {"levels": ["b1", "b2"]},
             },
-            "replications": 5
+            "replications": 5,
         }
 
         preview = self.expander.preview(design)
@@ -401,29 +390,20 @@ class TestSpecValidator(unittest.TestCase):
 
     def test_validate_valid_spec(self):
         """Test validating a valid spec."""
-        spec = {
-            "experiment": {"name": "Test"},
-            "crawlers": [{"name": "Test Crawler"}]
-        }
+        spec = {"experiment": {"name": "Test"}, "crawlers": [{"name": "Test Crawler"}]}
         result = self.validator.validate(spec)
         self.assertTrue(result.valid)
 
     def test_validate_missing_experiment_name(self):
         """Test validation catches missing experiment name."""
-        spec = {
-            "experiment": {},
-            "crawlers": [{"name": "Test"}]
-        }
+        spec = {"experiment": {}, "crawlers": [{"name": "Test"}]}
         result = self.validator.validate(spec)
         self.assertFalse(result.valid)
         self.assertTrue(any("experiment.name" in e for e in result.errors))
 
     def test_validate_missing_crawlers(self):
         """Test validation catches missing crawlers."""
-        spec = {
-            "experiment": {"name": "Test"},
-            "crawlers": []
-        }
+        spec = {"experiment": {"name": "Test"}, "crawlers": []}
         result = self.validator.validate(spec)
         self.assertFalse(result.valid)
         self.assertTrue(any("crawler" in e.lower() for e in result.errors))
@@ -432,12 +412,8 @@ class TestSpecValidator(unittest.TestCase):
         """Test validation of design factors."""
         spec = {
             "experiment": {"name": "Test"},
-            "design": {
-                "factors": {
-                    "empty_factor": {"levels": []}  # Should fail
-                }
-            },
-            "crawlers": [{"name": "Test"}]
+            "design": {"factors": {"empty_factor": {"levels": []}}},  # Should fail
+            "crawlers": [{"name": "Test"}],
         }
         result = self.validator.validate(spec)
         self.assertFalse(result.valid)
@@ -447,14 +423,9 @@ class TestSpecValidator(unittest.TestCase):
         spec = {
             "experiment": {"name": "Test"},
             "templates": {},
-            "crawlers": [{
-                "name": "Test",
-                "session": {
-                    "workflow": [
-                        {"template": "nonexistent_template"}
-                    ]
-                }
-            }]
+            "crawlers": [
+                {"name": "Test", "session": {"workflow": [{"template": "nonexistent_template"}]}}
+            ],
         }
         result = self.validator.validate(spec)
         self.assertTrue(any("template" in e.lower() for e in result.errors))
@@ -465,12 +436,17 @@ class TestEndToEnd(unittest.TestCase):
 
     def test_youtube_factorial_study(self):
         """Test the example YouTube factorial study spec."""
-        spec_path = Path(__file__).parent.parent.parent / "examples" / "specs" / "youtube-factorial-study.yaml"
+        spec_path = (
+            Path(__file__).parent.parent.parent
+            / "examples"
+            / "specs"
+            / "youtube-factorial-study.yaml"
+        )
 
         if not spec_path.exists():
             self.skipTest(f"Example spec not found: {spec_path}")
 
-        with open(spec_path, 'r') as f:
+        with open(spec_path) as f:
             yaml_content = f.read()
 
         parser = SpecParser()

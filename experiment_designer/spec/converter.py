@@ -7,27 +7,27 @@ Produces JSON that matches the PrimeMover API upload format:
 - Proper nesting of configuration, agent, proxy, queues, jobs, behaviors
 """
 
-import json
 import copy
-from datetime import datetime
-from typing import Any, Dict, List, Optional
+import json
 from dataclasses import dataclass, field
+from typing import Any
 
-from .parser import ParsedSpec, SpecParser
 from .design_expander import DesignExpander
+from .parser import ParsedSpec, SpecParser
 from .time_utils import parse_relative_time
 
 
 @dataclass
 class ConversionResult:
     """Result of converting a spec to JSON."""
-    json_data: List[Dict[str, Any]]  # Array of crawler objects for API
+
+    json_data: list[dict[str, Any]]  # Array of crawler objects for API
     experiment_name: str
     experiment_description: str
     crawler_count: int
     total_jobs: int
-    errors: List[str] = field(default_factory=list)
-    warnings: List[str] = field(default_factory=list)
+    errors: list[str] = field(default_factory=list)
+    warnings: list[str] = field(default_factory=list)
 
     def to_json(self, pretty: bool = True) -> str:
         """Convert to JSON string."""
@@ -64,27 +64,20 @@ DEFAULT_MULTILOGIN_PROFILE = {
             "timezone_masking": "mask",
             "webrtc_masking": "mask",
             "canvas_noise": "mask",
-            "startup_behavior": "recover"
+            "startup_behavior": "recover",
         },
-        "storage": {
-            "is_local": False,
-            "save_service_worker": False
-        },
+        "storage": {"is_local": False, "save_service_worker": False},
         "fingerprint": {
             "proxy": {
                 "host": "%%PROXYHOST%%",
                 "type": "%%PROXYTYPE%%",
                 "port": "%%PROXYPORT%%",
                 "username": "%%PROXYUSERNAME%%",
-                "password": "%%PROXYPASSWORD%%"
+                "password": "%%PROXYPASSWORD%%",
             },
-            "screen": {
-                "height": 768,
-                "pixel_ratio": 1,
-                "width": 1366
-            }
-        }
-    }
+            "screen": {"height": 768, "pixel_ratio": 1, "width": 1366},
+        },
+    },
 }
 
 
@@ -105,9 +98,9 @@ class SpecConverter:
             api_json = result.to_json()
     """
 
-    def __init__(self):
-        self.errors: List[str] = []
-        self.warnings: List[str] = []
+    def __init__(self) -> None:
+        self.errors: list[str] = []
+        self.warnings: list[str] = []
 
     def convert(self, parsed: ParsedSpec) -> ConversionResult:
         """
@@ -130,7 +123,7 @@ class SpecConverter:
                 crawler_count=0,
                 total_jobs=0,
                 errors=self.errors,
-                warnings=self.warnings
+                warnings=self.warnings,
             )
 
         # Expand design if present
@@ -142,10 +135,7 @@ class SpecConverter:
         for crawler_template in parsed.crawlers:
             # Check if this crawler uses the design
             if crawler_template.get("from_design") and parsed.design:
-                expanded = expander.expand(
-                    parsed.design,
-                    crawler_template
-                )
+                expanded = expander.expand(parsed.design, crawler_template)
                 all_crawlers.extend(expanded)
                 self.errors.extend(expander.errors)
                 self.warnings.extend(expander.warnings)
@@ -175,7 +165,7 @@ class SpecConverter:
             crawler_count=len(api_crawlers),
             total_jobs=total_jobs,
             errors=self.errors,
-            warnings=self.warnings
+            warnings=self.warnings,
         )
 
     def convert_from_yaml(self, yaml_content: str) -> ConversionResult:
@@ -192,11 +182,7 @@ class SpecConverter:
         parsed = parser.parse(yaml_content)
         return self.convert(parsed)
 
-    def _convert_crawler(
-        self,
-        crawler: Dict[str, Any],
-        defaults: Dict[str, Any]
-    ) -> Dict[str, Any]:
+    def _convert_crawler(self, crawler: dict[str, Any], defaults: dict[str, Any]) -> dict[str, Any]:
         """
         Convert a crawler to API format.
 
@@ -216,8 +202,7 @@ class SpecConverter:
 
         # Convert configuration
         api_crawler["configuration"] = self._convert_configuration(
-            crawler.get("configuration", {}),
-            defaults
+            crawler.get("configuration", {}), defaults
         )
 
         # Convert proxy - use crawler proxy, or fall back to defaults.proxy
@@ -227,24 +212,18 @@ class SpecConverter:
         api_crawler["proxy"] = self._convert_proxy(proxy_config, defaults)
 
         # Convert agent
-        api_crawler["agent"] = self._convert_agent(
-            crawler.get("agent", {}),
-            defaults
-        )
+        api_crawler["agent"] = self._convert_agent(crawler.get("agent", {}), defaults)
 
         # Convert queues
         api_crawler["queues"] = [
-            self._convert_queue(q, defaults)
-            for q in crawler.get("queues", [])
+            self._convert_queue(q, defaults) for q in crawler.get("queues", [])
         ]
 
         return api_crawler
 
     def _convert_configuration(
-        self,
-        config: Dict[str, Any],
-        defaults: Dict[str, Any]
-    ) -> Dict[str, Any]:
+        self, config: dict[str, Any], defaults: dict[str, Any]
+    ) -> dict[str, Any]:
         """Convert configuration section to API format."""
         api_config = {
             "name": config.get("name", "Configuration"),
@@ -273,10 +252,8 @@ class SpecConverter:
         return api_config
 
     def _ensure_preferences(
-        self,
-        prefs: List[Dict[str, Any]],
-        defaults: Dict[str, Any]
-    ) -> List[Dict[str, Any]]:
+        self, prefs: list[dict[str, Any]], defaults: dict[str, Any]
+    ) -> list[dict[str, Any]]:
         """Ensure required preferences are present."""
         api_prefs = []
         pref_names = set()
@@ -301,12 +278,14 @@ class SpecConverter:
 
         for name, value in default_prefs:
             if name not in pref_names:
-                api_prefs.append({
-                    "name": name,
-                    "description": name,
-                    "value": value,
-                    "active": True,
-                })
+                api_prefs.append(
+                    {
+                        "name": name,
+                        "description": name,
+                        "value": value,
+                        "active": True,
+                    }
+                )
 
         return api_prefs
 
@@ -318,11 +297,7 @@ class SpecConverter:
             return str(value).lower()
         return str(value) if value is not None else ""
 
-    def _convert_proxy(
-        self,
-        proxy: Dict[str, Any],
-        defaults: Dict[str, Any]
-    ) -> Dict[str, Any]:
+    def _convert_proxy(self, proxy: dict[str, Any], defaults: dict[str, Any]) -> dict[str, Any]:
         """Convert proxy section to API format."""
         # Handle 'none' - no proxy (empty hostname signals runner to skip proxy)
         if proxy == "none":
@@ -364,11 +339,7 @@ class SpecConverter:
             "type": proxy_type,
         }
 
-    def _convert_agent(
-        self,
-        agent: Dict[str, Any],
-        defaults: Dict[str, Any]
-    ) -> Dict[str, Any]:
+    def _convert_agent(self, agent: dict[str, Any], defaults: dict[str, Any]) -> dict[str, Any]:
         """Convert agent section to API format."""
         api_agent = {
             "name": agent.get("name", "Agent"),
@@ -400,11 +371,7 @@ class SpecConverter:
 
         return api_agent
 
-    def _convert_queue(
-        self,
-        queue: Dict[str, Any],
-        defaults: Dict[str, Any]
-    ) -> Dict[str, Any]:
+    def _convert_queue(self, queue: dict[str, Any], defaults: dict[str, Any]) -> dict[str, Any]:
         """Convert queue section to API format."""
         # Handle start_at - supports "now", relative offsets (+5m, +1h), or ISO 8601
         start_at = queue.get("start_at", queue.get("start"))
@@ -418,25 +385,17 @@ class SpecConverter:
             "start_at": start_at,
             "timezone": queue.get("timezone", defaults.get("timezone", "America/Chicago")),
             "timezone_utc_offset": queue.get(
-                "timezone_utc_offset",
-                defaults.get("timezone_utc_offset", "-06:00")
+                "timezone_utc_offset", defaults.get("timezone_utc_offset", "-06:00")
             ),
             "active": True,
         }
 
         # Convert jobs
-        api_queue["jobs"] = [
-            self._convert_job(job, defaults)
-            for job in queue.get("jobs", [])
-        ]
+        api_queue["jobs"] = [self._convert_job(job, defaults) for job in queue.get("jobs", [])]
 
         return api_queue
 
-    def _convert_job(
-        self,
-        job: Dict[str, Any],
-        defaults: Dict[str, Any]
-    ) -> Dict[str, Any]:
+    def _convert_job(self, job: dict[str, Any], defaults: dict[str, Any]) -> dict[str, Any]:
         """Convert job to API format."""
         api_job = {
             "name": job.get("name", "Job"),
@@ -460,14 +419,11 @@ class SpecConverter:
             ]
         else:
             # Already list format
-            api_job["behaviors"] = [
-                self._convert_behavior(b)
-                for b in behaviors
-            ]
+            api_job["behaviors"] = [self._convert_behavior(b) for b in behaviors]
 
         return api_job
 
-    def _convert_behavior(self, behavior: Dict[str, Any]) -> Dict[str, Any]:
+    def _convert_behavior(self, behavior: dict[str, Any]) -> dict[str, Any]:
         """Convert behavior to API format."""
         return {
             "name": behavior.get("name", ""),
@@ -476,11 +432,7 @@ class SpecConverter:
             "active": behavior.get("active", True),
         }
 
-    def _deep_merge(
-        self,
-        base: Dict[str, Any],
-        override: Dict[str, Any]
-    ) -> None:
+    def _deep_merge(self, base: dict[str, Any], override: dict[str, Any]) -> None:
         """Deep merge override into base dict (in-place)."""
         for key, value in override.items():
             if key in base and isinstance(base[key], dict) and isinstance(value, dict):

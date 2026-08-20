@@ -5,9 +5,6 @@ Run with: pytest orchestrator/tests/test_clients.py -v
 """
 
 from datetime import datetime, timezone
-from unittest.mock import MagicMock, patch
-
-import pytest
 
 from orchestrator.clients.loki import LogEntry, LogLevel
 

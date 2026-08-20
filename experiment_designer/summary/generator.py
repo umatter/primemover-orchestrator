@@ -8,33 +8,34 @@ Supports:
 """
 
 import json
+import sys
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Union
-import sys
+from typing import Any
+
 import requests
 
 # Add parent directory to path for imports
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from .models import (
-    DataSource,
-    ExperimentSummary,
-    CrawlerSummary,
-    FactorSummary,
-    ParameterSummary,
-)
 from .analyzer import (
     ExperimentAnalyzer,
     compute_job_type_distribution,
     estimate_duration_from_jobs,
+)
+from .models import (
+    CrawlerSummary,
+    DataSource,
+    ExperimentSummary,
+    FactorSummary,
+    ParameterSummary,
 )
 
 
 class SummaryGenerator:
     """Generate experiment summaries from various sources."""
 
-    def __init__(self, seed: Optional[int] = None):
+    def __init__(self, seed: int | None = None):
         """
         Initialize the summary generator.
 
@@ -43,13 +44,11 @@ class SummaryGenerator:
         """
         self.seed = seed
 
-    def from_yaml_file(
-        self, file_path: Union[str, Path], seed: Optional[int] = None
-    ) -> ExperimentSummary:
+    def from_yaml_file(self, file_path: str | Path, seed: int | None = None) -> ExperimentSummary:
         """Generate summary from a YAML specification file."""
         file_path = Path(file_path)
 
-        with open(file_path, "r") as f:
+        with open(file_path) as f:
             yaml_content = f.read()
 
         summary = self.from_yaml_string(yaml_content, base_dir=file_path.parent, seed=seed)
@@ -59,12 +58,12 @@ class SummaryGenerator:
     def from_yaml_string(
         self,
         yaml_content: str,
-        base_dir: Optional[Path] = None,
-        seed: Optional[int] = None,
+        base_dir: Path | None = None,
+        seed: int | None = None,
     ) -> ExperimentSummary:
         """Generate summary from YAML content string."""
-        from ..spec.parser import SpecParser
         from ..spec.converter import SpecConverter
+        from ..spec.parser import SpecParser
 
         seed = seed or self.seed
 
@@ -105,12 +104,15 @@ class SummaryGenerator:
                 if isinstance(levels, list):
                     if levels and isinstance(levels[0], dict):
                         # Proportioned levels
-                        level_ids = [l.get("id", str(l)) for l in levels]
-                        proportions = {l.get("id", str(l)): l.get("proportion", 1.0/len(levels)) for l in levels}
-                        has_proportions = any(l.get("proportion") for l in levels)
+                        level_ids = [lvl.get("id", str(lvl)) for lvl in levels]
+                        proportions = {
+                            lvl.get("id", str(lvl)): lvl.get("proportion", 1.0 / len(levels))
+                            for lvl in levels
+                        }
+                        has_proportions = any(lvl.get("proportion") for lvl in levels)
                     else:
                         # Simple levels
-                        level_ids = [str(l) for l in levels]
+                        level_ids = [str(lvl) for lvl in levels]
                         proportions = {}
                         has_proportions = False
                 else:
@@ -120,14 +122,16 @@ class SummaryGenerator:
 
                 maps_to = list(factor_def.get("maps_to", {}).keys())
 
-                summary.design_factors.append(FactorSummary(
-                    name=factor_name,
-                    levels=level_ids,
-                    level_count=len(level_ids),
-                    has_proportions=has_proportions,
-                    proportions=proportions,
-                    maps_to=maps_to,
-                ))
+                summary.design_factors.append(
+                    FactorSummary(
+                        name=factor_name,
+                        levels=level_ids,
+                        level_count=len(level_ids),
+                        has_proportions=has_proportions,
+                        proportions=proportions,
+                        maps_to=maps_to,
+                    )
+                )
 
             # Extract parameter distributions
             params_data = parsed.design.get("parameters", {})
@@ -179,11 +183,11 @@ class SummaryGenerator:
 
         return summary
 
-    def from_json_file(self, file_path: Union[str, Path]) -> ExperimentSummary:
+    def from_json_file(self, file_path: str | Path) -> ExperimentSummary:
         """Generate summary from a JSON specification file."""
         file_path = Path(file_path)
 
-        with open(file_path, "r") as f:
+        with open(file_path) as f:
             json_content = f.read()
 
         summary = self.from_json_string(json_content)
@@ -263,7 +267,7 @@ class SummaryGenerator:
 
         return self.from_api_data(experiment_data.get("data", experiment_data))
 
-    def from_api_data(self, experiment_data: Dict[str, Any]) -> ExperimentSummary:
+    def from_api_data(self, experiment_data: dict[str, Any]) -> ExperimentSummary:
         """Generate summary from API experiment response data."""
         from .models import ExecutionStats
 
@@ -326,9 +330,7 @@ class SummaryGenerator:
         )
 
         if exec_stats.total_queues > 0:
-            exec_stats.completion_rate = (
-                exec_stats.total_queues_processed / exec_stats.total_queues
-            )
+            exec_stats.completion_rate = exec_stats.total_queues_processed / exec_stats.total_queues
 
         summary.execution_stats = exec_stats
 
@@ -342,9 +344,7 @@ class SummaryGenerator:
 
         return summary
 
-    def _extract_crawler_summary_from_json(
-        self, crawler_data: Dict[str, Any]
-    ) -> CrawlerSummary:
+    def _extract_crawler_summary_from_json(self, crawler_data: dict[str, Any]) -> CrawlerSummary:
         """Extract crawler summary from JSON crawler data."""
         summary = CrawlerSummary(
             name=crawler_data.get("name", ""),
@@ -374,9 +374,7 @@ class SummaryGenerator:
 
         return summary
 
-    def _extract_crawler_summary_from_api(
-        self, crawler_data: Dict[str, Any]
-    ) -> CrawlerSummary:
+    def _extract_crawler_summary_from_api(self, crawler_data: dict[str, Any]) -> CrawlerSummary:
         """Extract crawler summary from API crawler data."""
         summary = self._extract_crawler_summary_from_json(crawler_data)
 

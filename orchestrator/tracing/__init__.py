@@ -2,8 +2,8 @@
 Tracing module for reconstructing execution flows across components.
 """
 
-from .trace_builder import TraceBuilder, ExecutionTrace, TraceSpan
-from .correlation import CorrelationId, parse_correlation_id, build_correlation_id
+from .correlation import CorrelationId, build_correlation_id, parse_correlation_id
+from .trace_builder import ExecutionTrace, TraceBuilder, TraceSpan
 
 __all__ = [
     "TraceBuilder",

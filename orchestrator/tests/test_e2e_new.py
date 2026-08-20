@@ -16,12 +16,8 @@ Skip Multilogin tests:
     pytest orchestrator/tests/test_e2e_new.py -v --e2e -m "not multilogin"
 """
 
-import json
-import os
-import time
-from datetime import datetime, timedelta, timezone
+from datetime import datetime
 from pathlib import Path
-from typing import Any, Generator, Optional
 
 import httpx
 import pytest
@@ -102,9 +98,9 @@ class TestInfrastructureHealth:
         from orchestrator.components.base import ComponentStatus
 
         status = component_manager.status()
-        assert status.api.status == ComponentStatus.RUNNING, (
-            f"API not running: {status.api.message}"
-        )
+        assert (
+            status.api.status == ComponentStatus.RUNNING
+        ), f"API not running: {status.api.message}"
 
     def test_api_http_accessible(self, settings):
         """Verify API responds to HTTP requests."""
@@ -113,9 +109,11 @@ class TestInfrastructureHealth:
         with httpx.Client(timeout=10) as client:
             # Try root endpoint
             response = client.get(base_url)
-            assert response.status_code in (200, 302, 404), (
-                f"API not accessible: {response.status_code}"
-            )
+            assert response.status_code in (
+                200,
+                302,
+                404,
+            ), f"API not accessible: {response.status_code}"
 
     def test_api_authentication(self, api_client):
         """Verify API authentication works."""
@@ -131,9 +129,9 @@ class TestInfrastructureHealth:
         from orchestrator.components.base import ComponentStatus
 
         status = component_manager.status()
-        assert status.runner.status == ComponentStatus.RUNNING, (
-            f"Runner not running: {status.runner.message}"
-        )
+        assert (
+            status.runner.status == ComponentStatus.RUNNING
+        ), f"Runner not running: {status.runner.message}"
 
     def test_runner_jar_exists(self, settings):
         """Verify Runner JAR file exists."""
@@ -157,17 +155,15 @@ class TestInfrastructureHealth:
             runner_path / "primemover-runner/src/main/resources/application.properties",
         ]
 
-        assert any(p.exists() for p in config_paths), (
-            f"Runner config not found in: {[str(p) for p in config_paths]}"
-        )
+        assert any(
+            p.exists() for p in config_paths
+        ), f"Runner config not found in: {[str(p) for p in config_paths]}"
 
     def test_grafana_accessible(self, settings):
         """Verify Grafana is accessible."""
         with httpx.Client(timeout=10) as client:
             response = client.get(f"{settings.grafana_url}/api/health")
-            assert response.status_code == 200, (
-                f"Grafana not accessible: {response.status_code}"
-            )
+            assert response.status_code == 200, f"Grafana not accessible: {response.status_code}"
 
     def test_loki_healthy(self, loki_client):
         """Verify Loki is healthy."""
@@ -177,18 +173,16 @@ class TestInfrastructureHealth:
         """Verify Prometheus is accessible."""
         with httpx.Client(timeout=10) as client:
             response = client.get(f"{settings.prometheus_url}/-/healthy")
-            assert response.status_code == 200, (
-                f"Prometheus not accessible: {response.status_code}"
-            )
+            assert response.status_code == 200, f"Prometheus not accessible: {response.status_code}"
 
     def test_monitoring_stack_running(self, component_manager):
         """Verify monitoring stack (Grafana, Loki, Prometheus) is running."""
         from orchestrator.components.base import ComponentStatus
 
         status = component_manager.status()
-        assert status.monitoring.status == ComponentStatus.RUNNING, (
-            f"Monitoring not running: {status.monitoring.message}"
-        )
+        assert (
+            status.monitoring.status == ComponentStatus.RUNNING
+        ), f"Monitoring not running: {status.monitoring.message}"
 
     def test_overall_system_status(self, component_manager):
         """Verify overall system status is RUNNING."""
@@ -332,12 +326,12 @@ crawlers:
         runner_log_path = Path(settings.pm_runner_log_path)
 
         # At minimum, parent directories should exist
-        assert api_log_path.parent.exists(), (
-            f"API log parent directory missing: {api_log_path.parent}"
-        )
-        assert runner_log_path.parent.exists(), (
-            f"Runner log parent directory missing: {runner_log_path.parent}"
-        )
+        assert (
+            api_log_path.parent.exists()
+        ), f"API log parent directory missing: {api_log_path.parent}"
+        assert (
+            runner_log_path.parent.exists()
+        ), f"Runner log parent directory missing: {runner_log_path.parent}"
 
 
 # ---------------------------------------------------------------------------
@@ -517,7 +511,6 @@ class TestModuleImports:
     def test_import_components(self):
         """Verify component modules import."""
         from orchestrator.components.api import ApiComponent
-        from orchestrator.components.base import BaseComponent, ComponentStatus
         from orchestrator.components.manager import ComponentManager
         from orchestrator.components.monitoring import MonitoringComponent
         from orchestrator.components.runner import RunnerComponent

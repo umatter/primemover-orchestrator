@@ -7,12 +7,11 @@ Manages the observability stack: Grafana, Loki, Promtail, Prometheus, and Tempo.
 import subprocess
 import time
 from pathlib import Path
-from typing import Optional
 
 import httpx
 
-from orchestrator.components.base import BaseComponent, ComponentHealth, ComponentStatus
 from orchestrator.components.api import _get_compose_cmd
+from orchestrator.components.base import BaseComponent, ComponentHealth, ComponentStatus
 
 # Subprocess timeout constants (seconds)
 COMPOSE_TIMEOUT = 300  # 5 min for docker compose operations
@@ -293,7 +292,10 @@ class MonitoringComponent(BaseComponent):
         try:
             compose_cmd = _get_compose_cmd()
             compose_check = subprocess.run(
-                compose_cmd + ["version"], capture_output=True, text=True, timeout=HEALTH_CHECK_TIMEOUT
+                compose_cmd + ["version"],
+                capture_output=True,
+                text=True,
+                timeout=HEALTH_CHECK_TIMEOUT,
             )
             if compose_check.returncode != 0:
                 errors.append("Docker Compose is not installed or not accessible")

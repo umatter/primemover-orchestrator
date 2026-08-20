@@ -11,17 +11,16 @@ Examples:
 
 import re
 from dataclasses import dataclass
-from typing import Optional
 
 
 @dataclass
 class CorrelationId:
     """Parsed correlation ID with all context levels."""
 
-    experiment_id: Optional[int] = None
-    crawler_id: Optional[int] = None
-    queue_id: Optional[int] = None
-    job_id: Optional[int] = None
+    experiment_id: int | None = None
+    crawler_id: int | None = None
+    queue_id: int | None = None
+    job_id: int | None = None
 
     def __str__(self) -> str:
         """Convert back to string format."""
@@ -48,9 +47,9 @@ class CorrelationId:
     @property
     def is_empty(self) -> bool:
         """Check if correlation ID has no context."""
-        return all(v is None for v in [
-            self.experiment_id, self.crawler_id, self.queue_id, self.job_id
-        ])
+        return all(
+            v is None for v in [self.experiment_id, self.crawler_id, self.queue_id, self.job_id]
+        )
 
     def matches(self, other: "CorrelationId") -> bool:
         """Check if this correlation ID matches another (non-None fields must match)."""
@@ -121,10 +120,10 @@ def parse_correlation_id(value: str) -> CorrelationId:
 
 
 def build_correlation_id(
-    experiment_id: Optional[int] = None,
-    crawler_id: Optional[int] = None,
-    queue_id: Optional[int] = None,
-    job_id: Optional[int] = None,
+    experiment_id: int | None = None,
+    crawler_id: int | None = None,
+    queue_id: int | None = None,
+    job_id: int | None = None,
 ) -> str:
     """
     Build a correlation ID string from components.
@@ -138,12 +137,14 @@ def build_correlation_id(
     Returns:
         Correlation ID string
     """
-    return str(CorrelationId(
-        experiment_id=experiment_id,
-        crawler_id=crawler_id,
-        queue_id=queue_id,
-        job_id=job_id,
-    ))
+    return str(
+        CorrelationId(
+            experiment_id=experiment_id,
+            crawler_id=crawler_id,
+            queue_id=queue_id,
+            job_id=job_id,
+        )
+    )
 
 
 def extract_correlation_from_message(message: str) -> CorrelationId:

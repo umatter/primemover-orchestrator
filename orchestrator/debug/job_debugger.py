@@ -14,9 +14,8 @@ import zipfile
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Optional
 
-from .har_parser import HARParser, HARSummary, format_bytes, format_ms
+from .har_parser import HARParser, HARSummary
 
 
 @dataclass
@@ -28,8 +27,8 @@ class LambdaDecision:
     selected_id: str = ""
     xpath: str = ""
     warnings: list[str] = field(default_factory=list)
-    error: Optional[str] = None
-    raw_output: Optional[dict] = None
+    error: str | None = None
+    raw_output: dict | None = None
 
     def to_dict(self) -> dict:
         """Convert to dictionary for serialization."""
@@ -69,16 +68,16 @@ class JobMetadata:
     """Job metadata from PrimeMover API."""
 
     job_id: int
-    experiment_id: Optional[int] = None
-    crawler_id: Optional[int] = None
-    queue_id: Optional[int] = None
+    experiment_id: int | None = None
+    crawler_id: int | None = None
+    queue_id: int | None = None
     status: str = ""
     job_type: str = ""
-    started_at: Optional[datetime] = None
-    completed_at: Optional[datetime] = None
-    duration_seconds: Optional[float] = None
-    error_message: Optional[str] = None
-    raw_data: Optional[dict] = None
+    started_at: datetime | None = None
+    completed_at: datetime | None = None
+    duration_seconds: float | None = None
+    error_message: str | None = None
+    raw_data: dict | None = None
 
     def to_dict(self) -> dict:
         """Convert to dictionary for serialization."""
@@ -107,7 +106,7 @@ class CloudWatchInfo:
     memory_used_mb: int = 0
     memory_limit_mb: int = 0
     logs: list[LogEntry] = field(default_factory=list)
-    error: Optional[str] = None
+    error: str | None = None
 
     def to_dict(self) -> dict:
         """Convert to dictionary for serialization."""
@@ -127,10 +126,10 @@ class CloudWatchInfo:
 class Artifacts:
     """Paths to job artifacts."""
 
-    job_dir: Optional[Path] = None
-    har_file: Optional[Path] = None
+    job_dir: Path | None = None
+    har_file: Path | None = None
     screenshot_files: list[Path] = field(default_factory=list)
-    lambda_zip: Optional[Path] = None
+    lambda_zip: Path | None = None
 
     def to_dict(self) -> dict:
         """Convert to dictionary for serialization."""
@@ -150,11 +149,11 @@ class JobDebugReport:
     generated_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
 
     # Components
-    metadata: Optional[JobMetadata] = None
-    lambda_decision: Optional[LambdaDecision] = None
-    har_summary: Optional[HARSummary] = None
-    cloudwatch: Optional[CloudWatchInfo] = None
-    artifacts: Optional[Artifacts] = None
+    metadata: JobMetadata | None = None
+    lambda_decision: LambdaDecision | None = None
+    har_summary: HARSummary | None = None
+    cloudwatch: CloudWatchInfo | None = None
+    artifacts: Artifacts | None = None
 
     # Logs by component
     logs: list[LogEntry] = field(default_factory=list)
@@ -194,10 +193,10 @@ class JobDebugger:
 
     def __init__(
         self,
-        api_base_url: Optional[str] = None,
-        api_email: Optional[str] = None,
-        api_password: Optional[str] = None,
-        har_path: Optional[str] = None,
+        api_base_url: str | None = None,
+        api_email: str | None = None,
+        api_password: str | None = None,
+        har_path: str | None = None,
         slow_threshold_ms: float = 5000,
     ):
         """
@@ -220,7 +219,7 @@ class JobDebugger:
         self.har_path = Path(har_path or settings.pm_runner_har_path)
         self.slow_threshold_ms = slow_threshold_ms
 
-        self._token: Optional[str] = None
+        self._token: str | None = None
         self._har_parser = HARParser(slow_threshold_ms=slow_threshold_ms)
 
     def debug_job(
@@ -256,9 +255,7 @@ class JobDebugger:
 
         # 3. Extract Lambda decision output
         if report.artifacts and report.artifacts.lambda_zip:
-            report.lambda_decision = self._extract_lambda_decision(
-                report.artifacts.lambda_zip
-            )
+            report.lambda_decision = self._extract_lambda_decision(report.artifacts.lambda_zip)
 
         # 4. Parse HAR file
         if include_har and report.artifacts and report.artifacts.har_file:
@@ -281,7 +278,7 @@ class JobDebugger:
 
         return report
 
-    def _get_job_metadata(self, job_id: int) -> Optional[JobMetadata]:
+    def _get_job_metadata(self, job_id: int) -> JobMetadata | None:
         """Fetch job metadata from PrimeMover API."""
         try:
             import httpx
@@ -307,7 +304,9 @@ class JobDebugger:
             )
 
             if response.status_code != 200:
-                return JobMetadata(job_id=job_id, error_message=f"API error: {response.status_code}")
+                return JobMetadata(
+                    job_id=job_id, error_message=f"API error: {response.status_code}"
+                )
 
             data = response.json().get("data", response.json())
 
@@ -316,9 +315,7 @@ class JobDebugger:
             completed_at = None
             if data.get("started_at"):
                 try:
-                    started_at = datetime.fromisoformat(
-                        data["started_at"].replace("Z", "+00:00")
-                    )
+                    started_at = datetime.fromisoformat(data["started_at"].replace("Z", "+00:00"))
                 except ValueError:
                     pass
             if data.get("completed_at"):
@@ -367,9 +364,7 @@ class JobDebugger:
             artifacts.har_file = har_files[0]
 
         # Find screenshots
-        artifacts.screenshot_files = list(job_dir.glob("*.png")) + list(
-            job_dir.glob("*.jpg")
-        )
+        artifacts.screenshot_files = list(job_dir.glob("*.png")) + list(job_dir.glob("*.jpg"))
 
         # Find Lambda zip
         lambda_zips = list(job_dir.glob("*lambda*.zip"))
@@ -436,6 +431,7 @@ class JobDebugger:
                 # Extract request ID
                 if "RequestId:" in msg and not info.request_id:
                     import re
+
                     match = re.search(r"RequestId:\s*([a-f0-9-]+)", msg)
                     if match:
                         info.request_id = match.group(1)
@@ -443,6 +439,7 @@ class JobDebugger:
                 # Extract metrics from REPORT line
                 if msg.startswith("REPORT"):
                     import re
+
                     duration_match = re.search(r"Duration:\s*([\d.]+)\s*ms", msg)
                     billed_match = re.search(r"Billed Duration:\s*([\d.]+)\s*ms", msg)
                     memory_match = re.search(r"Memory Size:\s*(\d+)\s*MB", msg)
@@ -458,7 +455,9 @@ class JobDebugger:
                         info.memory_used_mb = int(used_match.group(1))
 
                 # Add non-system logs
-                if not any(x in msg for x in ["START RequestId", "END RequestId", "REPORT RequestId"]):
+                if not any(
+                    x in msg for x in ["START RequestId", "END RequestId", "REPORT RequestId"]
+                ):
                     info.logs.append(
                         LogEntry(
                             timestamp=entry.timestamp,
@@ -481,7 +480,7 @@ class JobDebugger:
     def _get_component_logs(
         self,
         job_id: int,
-        metadata: Optional[JobMetadata],
+        metadata: JobMetadata | None,
         time_range: str,
     ) -> tuple[list[LogEntry], list[LogEntry]]:
         """Get logs from all components for this job."""

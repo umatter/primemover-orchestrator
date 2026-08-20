@@ -8,7 +8,6 @@ Parses Spring Boot Logback log format:
 import re
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Optional
 
 from orchestrator.clients.loki import LogEntry
 
@@ -26,10 +25,10 @@ class RunnerLogEntry:
     message: str
 
     # MDC context (if present)
-    crawler_id: Optional[int] = None
-    queue_id: Optional[int] = None
-    job_id: Optional[int] = None
-    correlation_id: Optional[str] = None
+    crawler_id: int | None = None
+    queue_id: int | None = None
+    job_id: int | None = None
+    correlation_id: str | None = None
 
     def to_log_entry(self) -> LogEntry:
         """Convert to generic LogEntry."""
@@ -66,9 +65,7 @@ class RunnerLogParser:
     )
 
     # Pattern for MDC context in message
-    MDC_PATTERN = re.compile(
-        r"\{(?P<mdc>[^}]+)\}"
-    )
+    MDC_PATTERN = re.compile(r"\{(?P<mdc>[^}]+)\}")
 
     # Patterns for extracting IDs from MDC or message
     CRAWLER_ID_PATTERN = re.compile(r"crawler\.?[iI]d[=:]?\s*(\d+)")
@@ -76,11 +73,11 @@ class RunnerLogParser:
     JOB_ID_PATTERN = re.compile(r"job\.?[iI]d[=:]?\s*(\d+)")
     CORRELATION_PATTERN = re.compile(r"correlationId[=:]?\s*([^\s,]+)")
 
-    def __init__(self):
+    def __init__(self) -> None:
         self._buffer: list[str] = []
-        self._current_entry: Optional[RunnerLogEntry] = None
+        self._current_entry: RunnerLogEntry | None = None
 
-    def parse_line(self, line: str) -> Optional[RunnerLogEntry]:
+    def parse_line(self, line: str) -> RunnerLogEntry | None:
         """
         Parse a single log line.
 
@@ -139,7 +136,7 @@ class RunnerLogParser:
 
         return None
 
-    def _extract_id(self, pattern: re.Pattern, text: str) -> Optional[int]:
+    def _extract_id(self, pattern: re.Pattern, text: str) -> int | None:
         """Extract an ID using a regex pattern."""
         match = pattern.search(text)
         if match:
@@ -149,7 +146,7 @@ class RunnerLogParser:
                 pass
         return None
 
-    def _flush_buffer(self) -> Optional[RunnerLogEntry]:
+    def _flush_buffer(self) -> RunnerLogEntry | None:
         """Flush buffered multiline content to current entry."""
         if not self._current_entry:
             self._buffer.clear()
@@ -168,7 +165,7 @@ class RunnerLogParser:
         """Parse an entire log file."""
         entries = []
 
-        with open(filepath, "r", encoding="utf-8", errors="replace") as f:
+        with open(filepath, encoding="utf-8", errors="replace") as f:
             for line in f:
                 entry = self.parse_line(line)
                 if entry:

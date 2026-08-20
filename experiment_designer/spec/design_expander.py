@@ -15,33 +15,35 @@ import copy
 import itertools
 import random
 import re
-from typing import Any, Dict, List, Optional, Tuple
 from dataclasses import dataclass, field
+from typing import Any
 
-from .distributions import Distribution, DistributionFactory, ParameterSampler
+from .distributions import ParameterSampler
 
 
 @dataclass
 class FactorLevel:
     """A single level of a factor."""
+
     id: str
     value: Any
-    proportion: Optional[float] = None  # For stratified designs
+    proportion: float | None = None  # For stratified designs
 
 
 @dataclass
 class Factor:
     """A factor in the experimental design."""
+
     name: str
-    levels: List[FactorLevel]
-    maps_to: Dict[str, Dict[str, Any]] = field(default_factory=dict)
+    levels: list[FactorLevel]
+    maps_to: dict[str, dict[str, Any]] = field(default_factory=dict)
 
     @property
     def has_proportions(self) -> bool:
         """Check if this factor uses proportional levels."""
         return any(level.proportion is not None for level in self.levels)
 
-    def get_level_proportions(self) -> Dict[str, float]:
+    def get_level_proportions(self) -> dict[str, float]:
         """Get mapping of level IDs to proportions."""
         result = {}
         for level in self.levels:
@@ -56,9 +58,10 @@ class Factor:
 @dataclass
 class DesignCell:
     """A single cell in the factorial design (one combination of levels)."""
-    factor_values: Dict[str, str]  # factor_name -> level_id
-    parameter_values: Dict[str, Any]  # Resolved parameter values from maps_to
-    sampled_parameters: Dict[str, Any] = field(default_factory=dict)  # Sampled from distributions
+
+    factor_values: dict[str, str]  # factor_name -> level_id
+    parameter_values: dict[str, Any]  # Resolved parameter values from maps_to
+    sampled_parameters: dict[str, Any] = field(default_factory=dict)  # Sampled from distributions
     replica: int = 1
     cell_index: int = 0  # Index within the design
 
@@ -66,15 +69,16 @@ class DesignCell:
 @dataclass
 class ExpandedDesign:
     """Result of expanding a factorial design."""
-    cells: List[DesignCell]
+
+    cells: list[DesignCell]
     total_crawlers: int
-    factors: Dict[str, Factor]
+    factors: dict[str, Factor]
     replications: int
-    parameters: Dict[str, Any] = field(default_factory=dict)  # Parameter distributions
+    parameters: dict[str, Any] = field(default_factory=dict)  # Parameter distributions
     design_type: str = "factorial"
-    seed: Optional[int] = None
-    errors: List[str] = field(default_factory=list)
-    warnings: List[str] = field(default_factory=list)
+    seed: int | None = None
+    errors: list[str] = field(default_factory=list)
+    warnings: list[str] = field(default_factory=list)
 
 
 class DesignExpander:
@@ -127,7 +131,7 @@ class DesignExpander:
     or 100 crawlers with proportional sampling (stratified).
     """
 
-    def __init__(self, seed: Optional[int] = None):
+    def __init__(self, seed: int | None = None):
         """
         Initialize design expander.
 
@@ -136,16 +140,16 @@ class DesignExpander:
         """
         self.seed = seed
         self.rng = random.Random(seed)
-        self.errors: List[str] = []
-        self.warnings: List[str] = []
+        self.errors: list[str] = []
+        self.warnings: list[str] = []
 
     def expand(
         self,
-        design: Optional[Dict[str, Any]],
-        crawler_template: Dict[str, Any],
-        replications_override: Optional[int] = None,
-        total_crawlers_override: Optional[int] = None
-    ) -> List[Dict[str, Any]]:
+        design: dict[str, Any] | None,
+        crawler_template: dict[str, Any],
+        replications_override: int | None = None,
+        total_crawlers_override: int | None = None,
+    ) -> list[dict[str, Any]]:
         """
         Expand a design into multiple crawler definitions.
 
@@ -181,10 +185,7 @@ class DesignExpander:
         crawlers = []
         for cell in parsed.cells:
             crawler = self._apply_cell_to_template(
-                crawler_template,
-                cell,
-                parsed.factors,
-                parsed.parameters
+                crawler_template, cell, parsed.factors, parsed.parameters
             )
             crawlers.append(crawler)
 
@@ -192,9 +193,9 @@ class DesignExpander:
 
     def _parse_design(
         self,
-        design: Dict[str, Any],
-        replications_override: Optional[int] = None,
-        total_crawlers_override: Optional[int] = None
+        design: dict[str, Any],
+        replications_override: int | None = None,
+        total_crawlers_override: int | None = None,
     ) -> ExpandedDesign:
         """Parse design specification into ExpandedDesign."""
         errors = []
@@ -236,7 +237,9 @@ class DesignExpander:
         if design_type == "stratified":
             for factor_name, factor in factors.items():
                 if factor.has_proportions:
-                    total_prop = sum(level.proportion for level in factor.levels if level.proportion)
+                    total_prop = sum(
+                        level.proportion for level in factor.levels if level.proportion
+                    )
                     if abs(total_prop - 1.0) > 0.01:
                         warnings.append(
                             f"Factor '{factor_name}' proportions sum to {total_prop:.2f}, "
@@ -254,18 +257,14 @@ class DesignExpander:
                 design_type=design_type,
                 seed=seed,
                 errors=errors,
-                warnings=warnings
+                warnings=warnings,
             )
 
         # Generate cells based on design type
         if design_type == "stratified" and total_crawlers:
-            cells = self._generate_stratified_cells(
-                factors, total_crawlers, param_sampler
-            )
+            cells = self._generate_stratified_cells(factors, total_crawlers, param_sampler)
         else:
-            cells = self._generate_factorial_cells(
-                factors, replications, param_sampler
-            )
+            cells = self._generate_factorial_cells(factors, replications, param_sampler)
 
         return ExpandedDesign(
             cells=cells,
@@ -276,10 +275,10 @@ class DesignExpander:
             design_type=design_type,
             seed=seed,
             errors=errors,
-            warnings=warnings
+            warnings=warnings,
         )
 
-    def _parse_factor(self, name: str, factor_def: Dict[str, Any]) -> Optional[Factor]:
+    def _parse_factor(self, name: str, factor_def: dict[str, Any]) -> Factor | None:
         """Parse a single factor definition."""
         levels_raw = factor_def.get("levels", [])
         maps_to = factor_def.get("maps_to", {})
@@ -306,10 +305,10 @@ class DesignExpander:
 
     def _generate_factorial_cells(
         self,
-        factors: Dict[str, Factor],
+        factors: dict[str, Factor],
         replications: int,
-        param_sampler: Optional[ParameterSampler] = None
-    ) -> List[DesignCell]:
+        param_sampler: ParameterSampler | None = None,
+    ) -> list[DesignCell]:
         """Generate all factorial combinations with replications."""
         cells = []
         cell_index = 0
@@ -320,10 +319,9 @@ class DesignExpander:
 
         for combo in itertools.product(*level_lists):
             # Create factor_values dict for this combination
-            factor_values = {
-                factor_names[i]: combo[i].id
-                for i in range(len(factor_names))
-            } if factors else {}
+            factor_values = (
+                {factor_names[i]: combo[i].id for i in range(len(factor_names))} if factors else {}
+            )
 
             # Resolve parameter values from maps_to
             parameter_values = self._resolve_parameter_values(factors, factor_values)
@@ -335,23 +333,25 @@ class DesignExpander:
                 if param_sampler:
                     sampled_parameters = param_sampler.sample()
 
-                cells.append(DesignCell(
-                    factor_values=factor_values.copy(),
-                    parameter_values=parameter_values.copy(),
-                    sampled_parameters=sampled_parameters,
-                    replica=replica,
-                    cell_index=cell_index
-                ))
+                cells.append(
+                    DesignCell(
+                        factor_values=factor_values.copy(),
+                        parameter_values=parameter_values.copy(),
+                        sampled_parameters=sampled_parameters,
+                        replica=replica,
+                        cell_index=cell_index,
+                    )
+                )
                 cell_index += 1
 
         return cells
 
     def _generate_stratified_cells(
         self,
-        factors: Dict[str, Factor],
+        factors: dict[str, Factor],
         total_crawlers: int,
-        param_sampler: Optional[ParameterSampler] = None
-    ) -> List[DesignCell]:
+        param_sampler: ParameterSampler | None = None,
+    ) -> list[DesignCell]:
         """
         Generate cells using stratified sampling with proportions.
 
@@ -370,7 +370,7 @@ class DesignExpander:
         factorial_factors = {n: f for n, f in factors.items() if not f.has_proportions}
 
         # Calculate how many crawlers for each level of proportioned factors
-        level_counts: Dict[str, Dict[str, int]] = {}
+        level_counts: dict[str, dict[str, int]] = {}
         for factor_name, factor in proportion_factors.items():
             level_counts[factor_name] = {}
             remaining = total_crawlers
@@ -390,16 +390,15 @@ class DesignExpander:
             factor_names = list(factorial_factors.keys())
             level_lists = [factorial_factors[name].levels for name in factor_names]
             for combo in itertools.product(*level_lists):
-                factorial_combos.append({
-                    factor_names[i]: combo[i].id
-                    for i in range(len(factor_names))
-                })
+                factorial_combos.append(
+                    {factor_names[i]: combo[i].id for i in range(len(factor_names))}
+                )
         else:
             factorial_combos = [{}]
 
         # Generate cells with proportional sampling
         cell_index = 0
-        replica_counters: Dict[str, int] = {}
+        replica_counters: dict[str, int] = {}
 
         for _ in range(total_crawlers):
             # Select factor levels (proportioned ones based on remaining counts)
@@ -433,22 +432,22 @@ class DesignExpander:
             replica_counters[combo_key] = replica_counters.get(combo_key, 0) + 1
             replica = replica_counters[combo_key]
 
-            cells.append(DesignCell(
-                factor_values=factor_values.copy(),
-                parameter_values=parameter_values.copy(),
-                sampled_parameters=sampled_parameters,
-                replica=replica,
-                cell_index=cell_index
-            ))
+            cells.append(
+                DesignCell(
+                    factor_values=factor_values.copy(),
+                    parameter_values=parameter_values.copy(),
+                    sampled_parameters=sampled_parameters,
+                    replica=replica,
+                    cell_index=cell_index,
+                )
+            )
             cell_index += 1
 
         return cells
 
     def _resolve_parameter_values(
-        self,
-        factors: Dict[str, Factor],
-        factor_values: Dict[str, str]
-    ) -> Dict[str, Any]:
+        self, factors: dict[str, Factor], factor_values: dict[str, str]
+    ) -> dict[str, Any]:
         """
         Resolve parameter values from factor maps_to definitions.
 
@@ -478,11 +477,11 @@ class DesignExpander:
 
     def _apply_cell_to_template(
         self,
-        template: Dict[str, Any],
+        template: dict[str, Any],
         cell: DesignCell,
-        factors: Dict[str, Factor],
-        parameters: Optional[Dict[str, Any]] = None
-    ) -> Dict[str, Any]:
+        factors: dict[str, Factor],
+        parameters: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
         """
         Apply a design cell to a crawler template.
 
@@ -499,18 +498,12 @@ class DesignExpander:
 
         # Apply name substitution
         if "name" in crawler:
-            crawler["name"] = self._substitute_variables(
-                crawler["name"],
-                cell,
-                factors
-            )
+            crawler["name"] = self._substitute_variables(crawler["name"], cell, factors)
 
         # Apply description substitution
         if "description" in crawler:
             crawler["description"] = self._substitute_variables(
-                crawler["description"],
-                cell,
-                factors
+                crawler["description"], cell, factors
             )
 
         # Apply parameter values from maps_to
@@ -524,15 +517,12 @@ class DesignExpander:
             self._set_nested_value(crawler, param_path, value)
 
         # Substitute variables throughout the entire crawler structure
-        crawler = self._substitute_all_variables(crawler, cell, factors)
+        substituted: dict[str, Any] = self._substitute_all_variables(crawler, cell, factors)
 
-        return crawler
+        return substituted
 
     def _substitute_all_variables(
-        self,
-        obj: Any,
-        cell: DesignCell,
-        factors: Dict[str, Factor]
+        self, obj: Any, cell: DesignCell, factors: dict[str, Factor]
     ) -> Any:
         """
         Recursively substitute variables in any nested structure.
@@ -548,24 +538,13 @@ class DesignExpander:
         if isinstance(obj, str):
             return self._substitute_variables(obj, cell, factors)
         elif isinstance(obj, dict):
-            return {
-                k: self._substitute_all_variables(v, cell, factors)
-                for k, v in obj.items()
-            }
+            return {k: self._substitute_all_variables(v, cell, factors) for k, v in obj.items()}
         elif isinstance(obj, list):
-            return [
-                self._substitute_all_variables(item, cell, factors)
-                for item in obj
-            ]
+            return [self._substitute_all_variables(item, cell, factors) for item in obj]
         else:
             return obj
 
-    def _substitute_variables(
-        self,
-        text: str,
-        cell: DesignCell,
-        factors: Dict[str, Factor]
-    ) -> str:
+    def _substitute_variables(self, text: str, cell: DesignCell, factors: dict[str, Factor]) -> str:
         """
         Substitute variables in text.
 
@@ -614,7 +593,7 @@ class DesignExpander:
         result = result.replace("{cell_index}", str(cell.cell_index))
 
         # Handle formatted cell index (e.g., {cell_index:03d})
-        cell_index_format_pattern = r'\{cell_index:(\d+)d\}'
+        cell_index_format_pattern = r"\{cell_index:(\d+)d\}"
         for match in re.finditer(cell_index_format_pattern, result):
             width = int(match.group(1))
             formatted = str(cell.cell_index).zfill(width)
@@ -624,7 +603,7 @@ class DesignExpander:
         result = result.replace("{replica}", str(cell.replica))
 
         # Handle formatted replica (e.g., {replica:02d})
-        replica_format_pattern = r'\{replica:(\d+)d\}'
+        replica_format_pattern = r"\{replica:(\d+)d\}"
         for match in re.finditer(replica_format_pattern, result):
             width = int(match.group(1))
             formatted = str(cell.replica).zfill(width)
@@ -632,12 +611,7 @@ class DesignExpander:
 
         return result
 
-    def _set_nested_value(
-        self,
-        obj: Dict[str, Any],
-        path: str,
-        value: Any
-    ) -> None:
+    def _set_nested_value(self, obj: dict[str, Any], path: str, value: Any) -> None:
         """
         Set a value in a nested dict using dot notation path.
 
@@ -679,12 +653,14 @@ class DesignExpander:
                         break
 
                 if not found:
-                    prefs.append({
-                        "name": pref_name,
-                        "value": value,
-                        "description": pref_name,
-                        "active": True
-                    })
+                    prefs.append(
+                        {
+                            "name": pref_name,
+                            "value": value,
+                            "description": pref_name,
+                            "active": True,
+                        }
+                    )
                 return
 
         # Standard nested dict assignment
@@ -696,7 +672,7 @@ class DesignExpander:
 
         current[parts[-1]] = value
 
-    def preview(self, design: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    def preview(self, design: dict[str, Any] | None) -> dict[str, Any]:
         """
         Preview what a design will generate without full expansion.
 
@@ -707,10 +683,7 @@ class DesignExpander:
             Preview information
         """
         if not design:
-            return {
-                "has_design": False,
-                "message": "No factorial design specified"
-            }
+            return {"has_design": False, "message": "No factorial design specified"}
 
         factors_raw = design.get("factors", {})
         replications = design.get("replications", 1)
@@ -730,12 +703,14 @@ class DesignExpander:
                 else:
                     level_names.append(str(level))
 
-            factors_info.append({
-                "name": name,
-                "levels": level_names,
-                "num_levels": num_levels,
-                "maps_to": list(factor_def.get("maps_to", {}).keys())
-            })
+            factors_info.append(
+                {
+                    "name": name,
+                    "levels": level_names,
+                    "num_levels": num_levels,
+                    "maps_to": list(factor_def.get("maps_to", {}).keys()),
+                }
+            )
 
         total_crawlers = total_levels * replications
 
@@ -747,7 +722,6 @@ class DesignExpander:
             "total_cells": total_levels,
             "replications": replications,
             "total_crawlers": total_crawlers,
-            "formula": " × ".join(
-                [f"{f['name']}({f['num_levels']})" for f in factors_info]
-            ) + f" × {replications} replications = {total_crawlers} crawlers"
+            "formula": " × ".join([f"{f['name']}({f['num_levels']})" for f in factors_info])
+            + f" × {replications} replications = {total_crawlers} crawlers",
         }

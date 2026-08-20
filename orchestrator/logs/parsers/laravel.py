@@ -9,7 +9,6 @@ import json
 import re
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Optional
 
 from orchestrator.clients.loki import LogEntry
 
@@ -21,7 +20,7 @@ class LaravelLogEntry:
     timestamp: datetime
     environment: str
     level: str
-    code: Optional[str]
+    code: str | None
     message: str
     context: dict
 
@@ -61,11 +60,11 @@ class LaravelLogParser:
     STACK_TRACE_START = re.compile(r"^#\d+ ")
     EXCEPTION_PATTERN = re.compile(r"^\[object\] \((?P<class>[^)]+)\)")
 
-    def __init__(self):
+    def __init__(self) -> None:
         self._buffer: list[str] = []
-        self._current_entry: Optional[LaravelLogEntry] = None
+        self._current_entry: LaravelLogEntry | None = None
 
-    def parse_line(self, line: str) -> Optional[LaravelLogEntry]:
+    def parse_line(self, line: str) -> LaravelLogEntry | None:
         """
         Parse a single log line.
 
@@ -85,9 +84,7 @@ class LaravelLogParser:
 
             # Parse timestamp
             try:
-                timestamp = datetime.strptime(
-                    groups["timestamp"], "%Y-%m-%d %H:%M:%S"
-                )
+                timestamp = datetime.strptime(groups["timestamp"], "%Y-%m-%d %H:%M:%S")
             except ValueError:
                 timestamp = datetime.now()
 
@@ -116,7 +113,7 @@ class LaravelLogParser:
 
         return None
 
-    def _flush_buffer(self) -> Optional[LaravelLogEntry]:
+    def _flush_buffer(self) -> LaravelLogEntry | None:
         """Flush buffered multiline content to current entry."""
         if not self._current_entry:
             self._buffer.clear()
@@ -135,7 +132,7 @@ class LaravelLogParser:
         """Parse an entire log file."""
         entries = []
 
-        with open(filepath, "r", encoding="utf-8", errors="replace") as f:
+        with open(filepath, encoding="utf-8", errors="replace") as f:
             for line in f:
                 entry = self.parse_line(line)
                 if entry:

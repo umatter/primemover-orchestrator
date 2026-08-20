@@ -6,11 +6,9 @@ Pretty output formatting for e2e test results.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from rich.console import Console
-from rich.panel import Panel
 from rich.table import Table
 
 if TYPE_CHECKING:
@@ -35,7 +33,7 @@ class E2EReporter:
         """Print step header."""
         self.console.print(f"[bold]\\[{step}/{total}] {message}[/bold]")
 
-    def print_validation(self, result: "ValidationResult") -> None:
+    def print_validation(self, result: ValidationResult) -> None:
         """Print validation results."""
         for check, status in result.checks.items():
             if status["ok"]:
@@ -53,8 +51,12 @@ class E2EReporter:
         start_time: str,
     ) -> None:
         """Print upload results."""
-        self.console.print(f"  [green]✓[/green] Created experiment #{experiment_id} \"{experiment_name}\"")
-        self.console.print(f"  [green]✓[/green] Created {crawler_count} crawler(s) with {job_count} jobs")
+        self.console.print(
+            f'  [green]✓[/green] Created experiment #{experiment_id} "{experiment_name}"'
+        )
+        self.console.print(
+            f"  [green]✓[/green] Created {crawler_count} crawler(s) with {job_count} jobs"
+        )
         self.console.print(f"  [green]✓[/green] Queue scheduled for {start_time}")
         self.console.print()
 
@@ -77,18 +79,22 @@ class E2EReporter:
     def print_progress(self, completed: int, total: int, current_status: str) -> None:
         """Print progress indicator."""
         pct = (completed / total * 100) if total > 0 else 0
-        self.console.print(f"  [dim]Progress: {completed}/{total} ({pct:.0f}%) - {current_status}[/dim]", end="\r")
+        self.console.print(
+            f"  [dim]Progress: {completed}/{total} ({pct:.0f}%) - {current_status}[/dim]", end="\r"
+        )
 
     def clear_line(self) -> None:
         """Clear current line."""
         self.console.print(" " * 80, end="\r")
 
-    def print_results(self, result: "E2EResult") -> None:
+    def print_results(self, result: E2EResult) -> None:
         """Print final results."""
         self.console.print()
 
         if result.success:
-            self.console.print(f"  [bold green]✓ E2E test passed in {result.duration:.1f}s[/bold green]")
+            self.console.print(
+                f"  [bold green]✓ E2E test passed in {result.duration:.1f}s[/bold green]"
+            )
         else:
             self.console.print(f"  [bold red]✗ E2E test failed: {result.error}[/bold red]")
 
@@ -117,9 +123,13 @@ class E2EReporter:
 
         # Links
         if result.experiment_id:
-            settings_url = f"http://localhost:8090"
-            self.console.print(f"  [dim]Experiment:[/dim] {settings_url}/experiments/{result.experiment_id}")
-            self.console.print(f"  [dim]Trace:[/dim] orchestrator trace experiment {result.experiment_id}")
+            settings_url = "http://localhost:8090"
+            self.console.print(
+                f"  [dim]Experiment:[/dim] {settings_url}/experiments/{result.experiment_id}"
+            )
+            self.console.print(
+                f"  [dim]Trace:[/dim] orchestrator trace experiment {result.experiment_id}"
+            )
 
         self.console.print()
 

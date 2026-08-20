@@ -7,7 +7,7 @@ Provides authenticated access to the PrimeMover API for experiment management.
 from __future__ import annotations
 
 import json
-from typing import Any, Optional
+from typing import Any
 
 import httpx
 
@@ -105,7 +105,8 @@ class APIClient:
         if not response.content:
             return {}
 
-        return response.json()
+        data: dict[str, Any] = response.json()
+        return data
 
     def is_authenticated(self) -> bool:
         """Check if authentication is working."""
@@ -119,7 +120,7 @@ class APIClient:
         """Close the client."""
         self._client.close()
 
-    def __enter__(self) -> "APIClient":
+    def __enter__(self) -> APIClient:
         return self
 
     def __exit__(self, *args) -> None:
@@ -132,17 +133,24 @@ class APIClient:
     def list_experiments(self, page: int = 1, per_page: int = 15) -> list[dict]:
         """List experiments (paginated)."""
         result = self._request("GET", "experiments", params={"page": page, "per_page": per_page})
-        return result.get("data", []) if isinstance(result, dict) else result
+        experiments: list[dict] = result.get("data", []) if isinstance(result, dict) else result
+        return experiments
 
     def get_experiment(self, experiment_id: int) -> dict[str, Any]:
         """Get experiment details."""
         result = self._request("GET", f"experiments/{experiment_id}")
-        return result.get("data", result) if isinstance(result, dict) else result
+        experiment: dict[str, Any] = (
+            result.get("data", result) if isinstance(result, dict) else result
+        )
+        return experiment
 
     def create_experiment(self, data: dict[str, Any]) -> dict[str, Any]:
         """Create a new experiment."""
         result = self._request("POST", "experiments", json_data=data)
-        return result.get("data", result) if isinstance(result, dict) else result
+        experiment: dict[str, Any] = (
+            result.get("data", result) if isinstance(result, dict) else result
+        )
+        return experiment
 
     def delete_experiment(self, experiment_id: int) -> dict[str, Any]:
         """Delete an experiment."""
@@ -173,12 +181,14 @@ class APIClient:
     def list_crawlers(self, experiment_id: int) -> list[dict]:
         """List crawlers for an experiment."""
         result = self._request("GET", f"experiments/{experiment_id}/crawlers")
-        return result.get("data", []) if isinstance(result, dict) else result
+        crawlers: list[dict] = result.get("data", []) if isinstance(result, dict) else result
+        return crawlers
 
     def get_crawler(self, crawler_id: int) -> dict[str, Any]:
         """Get crawler details including queues."""
         result = self._request("GET", f"crawlers/{crawler_id}")
-        return result.get("data", result) if isinstance(result, dict) else result
+        crawler: dict[str, Any] = result.get("data", result) if isinstance(result, dict) else result
+        return crawler
 
     # =========================================================================
     # Queues
@@ -187,13 +197,15 @@ class APIClient:
     def get_queue(self, queue_id: int) -> dict[str, Any]:
         """Get queue details including jobs."""
         result = self._request("GET", f"queues/{queue_id}")
-        return result.get("data", result) if isinstance(result, dict) else result
+        queue: dict[str, Any] = result.get("data", result) if isinstance(result, dict) else result
+        return queue
 
     def list_queues_by_status(self, status: str = "") -> list[dict]:
         """List queues by status (pending, running, completed, failed)."""
         endpoint = f"queues-{status}" if status else "queues"
         result = self._request("GET", endpoint)
-        return result.get("data", []) if isinstance(result, dict) else result
+        queues: list[dict] = result.get("data", []) if isinstance(result, dict) else result
+        return queues
 
     # =========================================================================
     # Jobs
@@ -202,4 +214,5 @@ class APIClient:
     def get_job(self, job_id: int) -> dict[str, Any]:
         """Get job details."""
         result = self._request("GET", f"jobs/{job_id}")
-        return result.get("data", result) if isinstance(result, dict) else result
+        job: dict[str, Any] = result.get("data", result) if isinstance(result, dict) else result
+        return job

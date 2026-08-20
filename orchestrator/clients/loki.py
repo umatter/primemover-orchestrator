@@ -7,11 +7,12 @@ Provides a high-level interface for LogQL queries against Loki.
 import logging
 import re
 import time as time_module
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from enum import Enum
 from functools import wraps
-from typing import Callable, Iterator, Optional, TypeVar
+from typing import TypeVar
 
 import httpx
 
@@ -109,10 +110,10 @@ class LogEntry:
     raw: str = ""
 
     # Extracted correlation IDs
-    experiment_id: Optional[int] = None
-    crawler_id: Optional[int] = None
-    queue_id: Optional[int] = None
-    job_id: Optional[int] = None
+    experiment_id: int | None = None
+    crawler_id: int | None = None
+    queue_id: int | None = None
+    job_id: int | None = None
 
     def __post_init__(self):
         """Extract correlation IDs from message or labels."""
@@ -126,7 +127,7 @@ class LogEntry:
         if not self.experiment_id:
             self._extract_from_correlation_id()
 
-    def _extract_id(self, key: str) -> Optional[int]:
+    def _extract_id(self, key: str) -> int | None:
         """Extract an ID from labels or message."""
         # From labels
         if key in self.labels:
@@ -145,9 +146,7 @@ class LogEntry:
 
     def _extract_from_correlation_id(self):
         """Extract IDs from correlation_id format: exp-15|cr-42|q-123|j-456"""
-        corr_id = self.labels.get("correlation_id", "") or self.labels.get(
-            "correlationId", ""
-        )
+        corr_id = self.labels.get("correlation_id", "") or self.labels.get("correlationId", "")
         if not corr_id:
             # Try to find in message
             match = re.search(r"correlationId=([^\s,]+)", self.message)
@@ -273,7 +272,7 @@ class LokiClient:
         self,
         base_url: str = "http://localhost:3100",
         timeout: float = 30.0,
-        org_id: Optional[str] = None,
+        org_id: str | None = None,
     ):
         """
         Initialize Loki client.
@@ -330,8 +329,8 @@ class LokiClient:
         time_range: str = "1h",
         limit: int = 100,
         direction: str = "backward",
-        start: Optional[datetime] = None,
-        end: Optional[datetime] = None,
+        start: datetime | None = None,
+        end: datetime | None = None,
     ) -> QueryResult:
         """
         Execute a LogQL query.
@@ -386,12 +385,12 @@ class LokiClient:
 
     def query_logs(
         self,
-        component: Optional[str] = None,
-        level: Optional[str] = None,
-        search: Optional[str] = None,
-        experiment_id: Optional[int] = None,
-        crawler_id: Optional[int] = None,
-        job_id: Optional[int] = None,
+        component: str | None = None,
+        level: str | None = None,
+        search: str | None = None,
+        experiment_id: int | None = None,
+        crawler_id: int | None = None,
+        job_id: int | None = None,
         time_range: str = "1h",
         limit: int = 100,
     ) -> QueryResult:
@@ -424,12 +423,12 @@ class LokiClient:
 
     def _build_query(
         self,
-        component: Optional[str] = None,
-        level: Optional[str] = None,
-        search: Optional[str] = None,
-        experiment_id: Optional[int] = None,
-        crawler_id: Optional[int] = None,
-        job_id: Optional[int] = None,
+        component: str | None = None,
+        level: str | None = None,
+        search: str | None = None,
+        experiment_id: int | None = None,
+        crawler_id: int | None = None,
+        job_id: int | None = None,
     ) -> str:
         """Build a LogQL query from filters with proper escaping."""
         # Label selectors - validate component names
@@ -493,9 +492,7 @@ class LokiClient:
 
                 # Parse timestamp (nanoseconds to datetime)
                 try:
-                    timestamp = datetime.fromtimestamp(
-                        int(timestamp_ns) / 1e9, tz=timezone.utc
-                    )
+                    timestamp = datetime.fromtimestamp(int(timestamp_ns) / 1e9, tz=timezone.utc)
                 except (ValueError, TypeError):
                     timestamp = datetime.now(timezone.utc)
 
@@ -560,10 +557,12 @@ class LokiClient:
         """Get all values for a label."""
         response = self._client.get(f"/loki/api/v1/label/{label}/values")
         response.raise_for_status()
-        return response.json().get("data", [])
+        values: list[str] = response.json().get("data", [])
+        return values
 
     def get_labels(self) -> list[str]:
         """Get all available labels."""
         response = self._client.get("/loki/api/v1/labels")
         response.raise_for_status()
-        return response.json().get("data", [])
+        labels: list[str] = response.json().get("data", [])
+        return labels

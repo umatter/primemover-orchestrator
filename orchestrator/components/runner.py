@@ -9,9 +9,10 @@ import os
 import signal
 import subprocess
 import time
+from collections.abc import Generator
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Generator
+from typing import Any
 
 from orchestrator.components.base import BaseComponent, ComponentHealth, ComponentStatus
 
@@ -43,9 +44,11 @@ def _pid_file_lock(pid_file: Path, timeout: float = 5.0) -> Generator[None, None
             try:
                 fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
                 break
-            except OSError:
+            except OSError as e:
                 if time.time() - start_time > timeout:
-                    raise TimeoutError(f"Could not acquire lock on {lock_file} within {timeout}s")
+                    raise TimeoutError(
+                        f"Could not acquire lock on {lock_file} within {timeout}s"
+                    ) from e
                 time.sleep(0.1)
 
         yield
@@ -65,6 +68,10 @@ class RunnerComponent(BaseComponent):
     automation jobs. It runs as a native process (not containerized)
     with PID file tracking for lifecycle management.
     """
+
+    # RunnerComponent always receives a path (unlike the optional base), so
+    # narrow it here rather than guarding every use.
+    path: Path
 
     # PID file location
     PID_FILE = Path("/tmp/primemover-runner.pid")
@@ -425,6 +432,7 @@ class RunnerComponent(BaseComponent):
                 if "version" in version_output:
                     # Try to extract major version
                     import re
+
                     match = re.search(r'version "(\d+)', version_output)
                     if match:
                         major_version = int(match.group(1))
@@ -511,7 +519,10 @@ class RunnerComponent(BaseComponent):
             if log_file.exists():
                 try:
                     content = log_file.read_text()
-                    if "Started PrimemoverRunnerApplication" in content or "Tomcat started" in content:
+                    if (
+                        "Started PrimemoverRunnerApplication" in content
+                        or "Tomcat started" in content
+                    ):
                         return True
                 except OSError:
                     pass
@@ -523,15 +534,13 @@ class RunnerComponent(BaseComponent):
 
     def _get_process_details(self, pid: int) -> dict:
         """Get detailed information about the running process."""
-        details = {"pid": pid}
+        details: dict[str, Any] = {"pid": pid}
 
         # Get process info from /proc
         try:
             proc_stat = Path(f"/proc/{pid}/stat").read_text().split()
             # Field 22 is starttime
-            details["uptime_seconds"] = int(
-                (time.time() * 100 - int(proc_stat[21])) / 100
-            )
+            details["uptime_seconds"] = int((time.time() * 100 - int(proc_stat[21])) / 100)
         except (OSError, IndexError, ValueError):
             pass
 

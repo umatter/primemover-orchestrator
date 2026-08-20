@@ -9,12 +9,13 @@ Performs:
 
 import json
 import re
-from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
 from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Any
 
 try:
     import jsonschema
+
     HAS_JSONSCHEMA = True
 except ImportError:
     HAS_JSONSCHEMA = False
@@ -26,10 +27,11 @@ from .time_utils import is_relative_time
 @dataclass
 class ValidationResult:
     """Result of validation."""
+
     valid: bool
-    errors: List[str] = field(default_factory=list)
-    warnings: List[str] = field(default_factory=list)
-    info: Dict[str, Any] = field(default_factory=dict)
+    errors: list[str] = field(default_factory=list)
+    warnings: list[str] = field(default_factory=list)
+    info: dict[str, Any] = field(default_factory=dict)
 
 
 class SpecValidator:
@@ -46,7 +48,7 @@ class SpecValidator:
             print("Errors:", result.errors)
     """
 
-    def __init__(self, schema_path: Optional[str] = None):
+    def __init__(self, schema_path: str | None = None):
         """
         Initialize validator.
 
@@ -56,24 +58,27 @@ class SpecValidator:
         self.schema = None
         self._load_schema(schema_path)
 
-    def _load_schema(self, schema_path: Optional[str] = None) -> None:
+    def _load_schema(self, schema_path: str | None = None) -> None:
         """Load JSON Schema for validation."""
         if not HAS_JSONSCHEMA:
             return
 
+        resolved_path: str | Path
         if schema_path is None:
             # Use default schema path
             schema_dir = Path(__file__).parent.parent / "schema"
-            schema_path = schema_dir / "experiment-spec.schema.json"
+            resolved_path = schema_dir / "experiment-spec.schema.json"
+        else:
+            resolved_path = schema_path
 
         try:
-            with open(schema_path, 'r') as f:
+            with open(resolved_path) as f:
                 self.schema = json.load(f)
-        except (FileNotFoundError, json.JSONDecodeError) as e:
+        except (FileNotFoundError, json.JSONDecodeError):
             # Schema not found or invalid - continue without it
             pass
 
-    def validate(self, spec: Dict[str, Any]) -> ValidationResult:
+    def validate(self, spec: dict[str, Any]) -> ValidationResult:
         """
         Validate a specification.
 
@@ -83,9 +88,9 @@ class SpecValidator:
         Returns:
             ValidationResult with errors, warnings, and info
         """
-        errors = []
-        warnings = []
-        info = {}
+        errors: list[str] = []
+        warnings: list[str] = []
+        info: dict[str, Any] = {}
 
         # 1. JSON Schema validation (if available)
         schema_errors = self._validate_schema(spec)
@@ -120,14 +125,9 @@ class SpecValidator:
         errors.extend(ref_errors)
         warnings.extend(ref_warnings)
 
-        return ValidationResult(
-            valid=len(errors) == 0,
-            errors=errors,
-            warnings=warnings,
-            info=info
-        )
+        return ValidationResult(valid=len(errors) == 0, errors=errors, warnings=warnings, info=info)
 
-    def _validate_schema(self, spec: Dict[str, Any]) -> List[str]:
+    def _validate_schema(self, spec: dict[str, Any]) -> list[str]:
         """Validate against JSON Schema."""
         if not HAS_JSONSCHEMA or not self.schema:
             return []
@@ -144,7 +144,7 @@ class SpecValidator:
 
         return errors
 
-    def _validate_required_fields(self, spec: Dict[str, Any]) -> List[str]:
+    def _validate_required_fields(self, spec: dict[str, Any]) -> list[str]:
         """Validate required fields are present."""
         errors = []
 
@@ -159,10 +159,10 @@ class SpecValidator:
 
         return errors
 
-    def _validate_design(self, design: Dict[str, Any]) -> Tuple[List[str], List[str]]:
+    def _validate_design(self, design: dict[str, Any]) -> tuple[list[str], list[str]]:
         """Validate factorial design."""
-        errors = []
-        warnings = []
+        errors: list[str] = []
+        warnings: list[str] = []
 
         factors = design.get("factors", {})
         if not factors:
@@ -196,8 +196,8 @@ class SpecValidator:
                     continue
 
                 # Check all levels are covered
-                mapped_levels = set(str(k).lower() for k in level_map.keys())
-                defined_levels = set(str(l).lower() for l in level_ids)
+                mapped_levels = {str(k).lower() for k in level_map}
+                defined_levels = {str(level).lower() for level in level_ids}
 
                 missing = defined_levels - mapped_levels
                 if missing:
@@ -212,7 +212,7 @@ class SpecValidator:
 
         return errors, warnings
 
-    def _get_design_info(self, design: Dict[str, Any]) -> Dict[str, Any]:
+    def _get_design_info(self, design: dict[str, Any]) -> dict[str, Any]:
         """Get design summary information."""
         factors = design.get("factors", {})
         replications = design.get("replications", 1)
@@ -225,20 +225,22 @@ class SpecValidator:
             num_levels = len(levels)
             total_cells *= num_levels
 
-            factor_info.append({
-                "name": name,
-                "num_levels": num_levels,
-                "maps_to": list(factor_def.get("maps_to", {}).keys())
-            })
+            factor_info.append(
+                {
+                    "name": name,
+                    "num_levels": num_levels,
+                    "maps_to": list(factor_def.get("maps_to", {}).keys()),
+                }
+            )
 
         return {
             "factors": factor_info,
             "total_cells": total_cells,
             "replications": replications,
-            "total_crawlers": total_cells * replications
+            "total_crawlers": total_cells * replications,
         }
 
-    def _validate_crawlers(self, spec: Dict[str, Any]) -> Tuple[List[str], List[str]]:
+    def _validate_crawlers(self, spec: dict[str, Any]) -> tuple[list[str], list[str]]:
         """Validate crawler definitions."""
         errors = []
         warnings = []
@@ -274,11 +276,11 @@ class SpecValidator:
 
     def _validate_session(
         self,
-        session: Dict[str, Any],
+        session: dict[str, Any],
         prefix: str,
-        errors: List[str],
-        warnings: List[str],
-        spec: Dict[str, Any]
+        errors: list[str],
+        warnings: list[str],
+        spec: dict[str, Any],
     ) -> None:
         """Validate a session/queue definition."""
         # Check for start time
@@ -310,17 +312,12 @@ class SpecValidator:
         if is_relative_time(value):
             return True
         # Check ISO 8601 pattern (date with optional time)
-        if re.match(r'^\d{4}-\d{2}-\d{2}', value):
+        if re.match(r"^\d{4}-\d{2}-\d{2}", value):
             return True
         return False
 
     def _validate_workflow_item(
-        self,
-        item: Any,
-        prefix: str,
-        errors: List[str],
-        warnings: List[str],
-        spec: Dict[str, Any]
+        self, item: Any, prefix: str, errors: list[str], warnings: list[str], spec: dict[str, Any]
     ) -> None:
         """Validate a single workflow item."""
         if not isinstance(item, dict):
@@ -344,31 +341,36 @@ class SpecValidator:
                 errors.append(f"{prefix}: repeat requires 'template' or 'jobs'")
 
         # Validate job types
-        job_types = ["visit", "wait", "click", "try_click", "type", "try_type",
-                     "scroll", "scroll_length", "lambda_select", "single_select",
-                     "single_select_url", "switch", "try_switch", "handle_alert",
-                     "try_handle_alert"]
+        job_types = [
+            "visit",
+            "wait",
+            "click",
+            "try_click",
+            "type",
+            "try_type",
+            "scroll",
+            "scroll_length",
+            "lambda_select",
+            "single_select",
+            "single_select_url",
+            "switch",
+            "try_switch",
+            "handle_alert",
+            "try_handle_alert",
+        ]
 
         for job_type in job_types:
             if job_type in item:
                 self._validate_job_shorthand(job_type, item[job_type], prefix, errors, warnings)
 
     def _validate_job_shorthand(
-        self,
-        job_type: str,
-        value: Any,
-        prefix: str,
-        errors: List[str],
-        warnings: List[str]
+        self, job_type: str, value: Any, prefix: str, errors: list[str], warnings: list[str]
     ) -> None:
         """Validate job shorthand syntax."""
         schema = JobRegistry.get_schema(job_type)
         if not schema:
             warnings.append(f"{prefix}: unknown job type '{job_type}'")
             return
-
-        # Get required behaviors
-        required_behaviors = [b.name for b in schema.behaviors if b.required]
 
         # Check based on value type
         if job_type == "visit":
@@ -397,10 +399,10 @@ class SpecValidator:
             else:
                 errors.append(f"{prefix}.lambda_select: must be an object")
 
-    def _validate_templates(self, spec: Dict[str, Any]) -> Tuple[List[str], List[str]]:
+    def _validate_templates(self, spec: dict[str, Any]) -> tuple[list[str], list[str]]:
         """Validate template definitions."""
-        errors = []
-        warnings = []
+        errors: list[str] = []
+        warnings: list[str] = []
 
         templates = spec.get("templates", {})
 
@@ -414,10 +416,10 @@ class SpecValidator:
 
         return errors, warnings
 
-    def _validate_variable_references(self, spec: Dict[str, Any]) -> Tuple[List[str], List[str]]:
+    def _validate_variable_references(self, spec: dict[str, Any]) -> tuple[list[str], list[str]]:
         """Validate variable references in crawler templates."""
-        errors = []
-        warnings = []
+        errors: list[str] = []
+        warnings: list[str] = []
 
         design = spec.get("design")
         if not design:
@@ -446,26 +448,22 @@ class SpecValidator:
 
         return errors, warnings
 
-    def _find_undefined_variables(
-        self,
-        obj: Any,
-        available_vars: set
-    ) -> set:
+    def _find_undefined_variables(self, obj: Any, available_vars: set) -> set:
         """Find undefined variable references in an object."""
-        undefined = set()
+        undefined: set[str] = set()
 
         if isinstance(obj, str):
             # Skip strings that look like JSON (start and end with { })
             stripped = obj.strip()
-            if stripped.startswith('{') and stripped.endswith('}'):
+            if stripped.startswith("{") and stripped.endswith("}"):
                 # Check if it's a JSON object vs a simple variable
-                if '"' in stripped or ':' in stripped:
+                if '"' in stripped or ":" in stripped:
                     # Looks like JSON, skip it
                     return undefined
 
             # Find all {var} or {var:format} patterns
             # Only match simple variable names (alphanumeric + underscore)
-            pattern = r'\{([a-zA-Z_][a-zA-Z0-9_]*)(?::\d*d)?\}'
+            pattern = r"\{([a-zA-Z_][a-zA-Z0-9_]*)(?::\d*d)?\}"
             for match in re.finditer(pattern, obj):
                 var_name = match.group(1)
                 if var_name not in available_vars:
@@ -482,7 +480,7 @@ class SpecValidator:
         return undefined
 
 
-def validate_spec(spec: Dict[str, Any]) -> ValidationResult:
+def validate_spec(spec: dict[str, Any]) -> ValidationResult:
     """
     Convenience function to validate a specification.
 

@@ -8,8 +8,6 @@ import os
 from pathlib import Path
 from unittest.mock import patch
 
-import pytest
-
 from orchestrator.config.settings import Settings, get_settings
 
 
@@ -138,8 +136,8 @@ class TestGetSettings:
 
         get_settings.cache_clear()
 
-        # After clearing cache, a new instance is created
+        # After clearing the cache a genuinely new instance is built, so the
+        # two are equal in value but not the same object.
         settings2 = get_settings()
-        # Note: They may be equal but are different instances
-        # In practice, this test verifies no errors occur
         assert isinstance(settings2, Settings)
+        assert settings2 is not settings1

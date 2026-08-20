@@ -5,9 +5,6 @@ Run with: pytest orchestrator/tests/test_components.py -v
 """
 
 from pathlib import Path
-from unittest.mock import MagicMock, patch
-
-import pytest
 
 from orchestrator.components.base import (
     BaseComponent,
@@ -76,7 +73,7 @@ class TestComponentHealth:
 class ConcreteComponent(BaseComponent):
     """Concrete implementation of BaseComponent for testing."""
 
-    def __init__(self, name: str, path: Path = None):
+    def __init__(self, name: str, path: Path | None = None):
         super().__init__(name, path)
         self._running = False
 

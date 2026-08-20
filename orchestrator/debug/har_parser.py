@@ -12,7 +12,6 @@ import json
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import Optional
 from urllib.parse import urlparse
 
 
@@ -25,15 +24,15 @@ class HARRequest:
     status: int
     status_text: str
     time_ms: float
-    started: Optional[datetime] = None
+    started: datetime | None = None
 
     # Request details
     request_headers: dict = field(default_factory=dict)
-    request_body: Optional[str] = None
+    request_body: str | None = None
 
     # Response details
     response_headers: dict = field(default_factory=dict)
-    response_body: Optional[str] = None
+    response_body: str | None = None
     response_size: int = 0
 
     # Parsed URL components
@@ -100,7 +99,7 @@ class HARSummary:
     """Summary of a HAR file for debugging."""
 
     # File info
-    har_path: Optional[str] = None
+    har_path: str | None = None
     har_size_bytes: int = 0
 
     # Overall statistics
@@ -163,8 +162,8 @@ class HARParser:
         self,
         slow_threshold_ms: float = 5000,
         max_body_size: int = 2048,
-        include_domains: Optional[list[str]] = None,
-        exclude_domains: Optional[list[str]] = None,
+        include_domains: list[str] | None = None,
+        exclude_domains: list[str] | None = None,
     ):
         """
         Initialize the HAR parser.
@@ -199,9 +198,9 @@ class HARParser:
             return summary
 
         try:
-            with open(har_path, "r", encoding="utf-8", errors="replace") as f:
+            with open(har_path, encoding="utf-8", errors="replace") as f:
                 har_data = json.load(f)
-        except (json.JSONDecodeError, IOError) as e:
+        except (OSError, json.JSONDecodeError) as e:
             summary.page_title = f"Error parsing HAR: {e}"
             return summary
 
@@ -294,7 +293,7 @@ class HARParser:
             )
         )
 
-    def _parse_entry(self, entry: dict) -> Optional[HARRequest]:
+    def _parse_entry(self, entry: dict) -> HARRequest | None:
         """Parse a single HAR entry into a HARRequest."""
         try:
             request_data = entry.get("request", {})
@@ -363,7 +362,7 @@ class HARParser:
             return None
 
 
-def format_bytes(size: int) -> str:
+def format_bytes(size: float) -> str:
     """Format byte size to human-readable string."""
     for unit in ["B", "KB", "MB", "GB"]:
         if abs(size) < 1024:

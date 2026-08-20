@@ -3,8 +3,8 @@ Shared pytest fixtures for orchestrator tests.
 """
 
 import os
+from collections.abc import Generator
 from pathlib import Path
-from typing import Generator
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -26,8 +26,12 @@ def pytest_addoption(parser):
 
 def pytest_configure(config):
     """Add custom markers."""
-    config.addinivalue_line("markers", "e2e: mark test as end-to-end test (requires live infrastructure)")
-    config.addinivalue_line("markers", "multilogin: mark test as requiring Multilogin X browser automation")
+    config.addinivalue_line(
+        "markers", "e2e: mark test as end-to-end test (requires live infrastructure)"
+    )
+    config.addinivalue_line(
+        "markers", "multilogin: mark test as requiring Multilogin X browser automation"
+    )
 
 
 def pytest_collection_modifyitems(config, items):
@@ -52,8 +56,12 @@ def cli_runner() -> CliRunner:
 
 @pytest.fixture
 def isolated_cli_runner() -> CliRunner:
-    """Provide a Click CLI test runner with isolated filesystem."""
-    return CliRunner(mix_stderr=False)
+    """Provide a Click CLI test runner that keeps stdout and stderr separate.
+
+    Click 8.2 removed the ``mix_stderr`` argument and now always captures the
+    two streams separately, exposing stderr as ``result.stderr``.
+    """
+    return CliRunner()
 
 
 @pytest.fixture
@@ -80,15 +88,13 @@ def mock_settings() -> Settings:
 def temp_env_file(tmp_path: Path) -> Generator[Path, None, None]:
     """Create a temporary .env file for testing."""
     env_file = tmp_path / ".env"
-    env_file.write_text(
-        """
+    env_file.write_text("""
 ENV=test
 PM_API_PATH=./test_api
 PM_RUNNER_PATH=./test_runner
 PM_API_HTTP_PORT=8090
 GRAFANA_PORT=3000
-"""
-    )
+""")
     yield env_file
 
 
