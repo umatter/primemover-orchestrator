@@ -51,7 +51,9 @@ def _runner(*, chrome: bool, configured: bool) -> E2ETestRunner:
     # where the e2e proxy IS configured the "unconfigured" case would silently pick
     # up real credentials and these tests would fail -- on exactly the machines that
     # can run e2e. Isolate from the environment so the fixture means what it says.
-    runner.settings = Settings(_env_file=None, **creds)  # type: ignore[arg-type]  # aliases are env names
+    # call-arg: _env_file is a pydantic-settings runtime kwarg, not a declared field.
+    # arg-type: the **creds keys are env aliases rather than field names.
+    runner.settings = Settings(_env_file=None, **creds)  # type: ignore[call-arg, arg-type]
     return runner
 
 
