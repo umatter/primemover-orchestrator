@@ -1802,7 +1802,7 @@ def convert_spec_to_json(yaml_content: str) -> str:
 def upload_experiment(
     yaml_content: str,
     experiment_id: int | None = None,
-    dry_run: bool = False,
+    dry_run: bool = True,
 ) -> str:
     """
     Convert YAML spec and upload to PrimeMover API.
@@ -1811,10 +1811,15 @@ def upload_experiment(
     JSON format, and uploads it to create a new experiment or add crawlers
     to an existing one.
 
+    Previews by default. Pass dry_run=false to actually upload, and note that
+    writes are refused unless the API target is the local dev server -- the same
+    two rules every pm_ tool follows.
+
     Args:
         yaml_content: YAML experiment specification
         experiment_id: Optional experiment ID to add crawlers to (creates new if None)
-        dry_run: If True, validate and convert but don't actually upload
+        dry_run: Validate and convert without uploading. Defaults to True; pass
+            False to apply.
 
     Returns:
         JSON with upload result including experiment ID and crawler count,
@@ -1854,8 +1859,18 @@ def upload_experiment(
                 "crawler_count": result.crawler_count,
                 "total_jobs": result.total_jobs,
                 "warnings": result.warnings,
+                "to_apply": "call again with dry_run=false",
             }
         )
+
+    # Local-only, like every other write on this surface. Checked here rather
+    # than at the top of the function because the dry-run branch above is pure
+    # local YAML validation and conversion -- it touches no API at all, so it is
+    # useful whatever the configured target is. This is the first line that can
+    # actually change something.
+    guard = _require_local_write_target()
+    if guard:
+        return json.dumps({"success": False, "error": guard})
 
     # Get credentials
     api_url = settings.pm_api_base_url

@@ -243,11 +243,20 @@ MCP tools in `orchestrator/mcp_server/server.py` use `@mcp.tool()` decorator and
 
 There are **read/observe** tools (unprefixed: `list_experiments`, `list_crawlers`, `list_queues`, `list_library`, `get_*`, `trace_*`, `find_failed_executions`, `query_logs`, `list_job_types`, …) and **write/control** tools (`pm_` prefix: `pm_create_experiment`, `pm_add_bot`, `pm_create_run`, `pm_add_job`, `pm_set_behaviour`, `pm_activate_run`, `pm_delete`, and the composite `pm_compose_run`).
 
-Write-tool conventions (see `docs/specs/mcp-control-surface.md`):
-- **Dry-run by default** — every `pm_` tool previews the change; pass `confirm=true` to apply.
+Write-tool conventions (see `docs/specs/mcp-control-surface.md`). These apply to **every tool that can
+mutate**, not only the `pm_`-prefixed ones:
+- **Dry-run by default** — previews the change; pass `confirm=true` to apply (`pm_` tools) or
+  `dry_run=false` (`upload_experiment`, which predates the convention and keeps its own parameter name).
 - **Local-only** — `_require_local_write_target()` refuses to mutate anything unless the API is
   `localhost:8090`, even with `confirm`.
-- All API calls go through `_api_request` (auth at `/login`, supports GET/POST/PUT/DELETE).
+- All API calls go through `_api_request` (auth at `/login`, supports GET/POST/PUT/DELETE) — except
+  `upload_experiment`, which uses `requests` directly and therefore has to call the guard itself.
+
+`upload_experiment` was the exception to all three until 2026-08-21: it defaulted to `dry_run=False`
+and never called the guard, so it applied by default and could write to a remote API. Both are fixed.
+`test_mcp_write_guard.py` now walks the AST for any tool calling a write verb at a non-login endpoint
+and asserts it is guarded, so a new tool cannot reintroduce the gap — a name-based check would not
+have caught this one, since the tool is not `pm_`-prefixed.
 
 **Claude skills** live in `.claude/skills/`: `primemover` (orient/start-stop), `primemover-compose`
 (build experiments/runs via the `pm_` tools), `primemover-debug` (diagnose failing runs/jobs). They
