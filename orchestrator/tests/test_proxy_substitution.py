@@ -12,7 +12,7 @@ from typing import cast
 import pytest
 
 from orchestrator.config.settings import Settings
-from orchestrator.e2e.runner import E2ETestRunner, TestTypeConfig
+from orchestrator.e2e.runner import E2ETestRunner, E2ETestTypeConfig
 
 
 def _crawler() -> dict:
@@ -35,7 +35,7 @@ def _runner(*, chrome: bool, configured: bool) -> E2ETestRunner:
     """
     runner = E2ETestRunner.__new__(E2ETestRunner)
     runner.test_config = cast(
-        TestTypeConfig, {"identification_override": "chrome"} if chrome else {}
+        E2ETestTypeConfig, {"identification_override": "chrome"} if chrome else {}
     )
     creds = (
         {

@@ -67,11 +67,17 @@ QUEUE_FAILURE_STATUSES = ("failed", "error", "failure")
 QUEUE_SKIPPED_STATUSES = ("skipped", "skpped")
 
 
-class TestTypeConfig(TypedDict, total=False):
+class E2ETestTypeConfig(TypedDict, total=False):
     """Configuration for one e2e test type.
 
     ``total=False`` because ``identification_override`` is only set for the
     "chrome" test type; every other key is present for all test types.
+
+    Named with the ``E2E`` prefix on purpose: as ``TestTypeConfig`` it matched
+    pytest's default ``Test*`` collection pattern, so every run emitted a
+    PytestCollectionWarning about being unable to collect it (TypedDict has an
+    ``__init__``). Setting ``__test__ = False`` fixes the warning but mypy
+    rejects a plain assignment inside a TypedDict body, so the name is the fix.
     """
 
     template: Path
@@ -98,7 +104,7 @@ class TestTypeConfig(TypedDict, total=False):
 # Sharing one budget between the two used to fail healthy runs: a queue that
 # waited 112s for pickup and then executed in 88s (a success) was reported as
 # "Jobs did not complete within 180s timeout".
-TEST_TYPES: dict[str, TestTypeConfig] = {
+TEST_TYPES: dict[str, E2ETestTypeConfig] = {
     "basic": {
         "template": TEST_EXPERIMENT_JSON,
         "name": "Basic E2E Test",
