@@ -52,6 +52,15 @@ while they were missing, type errors reached CI three times in one day that
 either hook would have caught locally. If you are about to push and have not run
 `make hooks`, run `make check` first.
 
+`detect-secrets` excludes known-benign placeholder **values** (`password`,
+`testpass`, `PROXY_PASSWORD_PLACEHOLDER`, …) rather than excluding the files that
+contain them. Every file therefore stays scanned — a real token pasted into
+`docs/troubleshooting.md` is still caught, verified by planting one — while the
+baseline holds no entries. That last part is the point: the baseline stores line
+numbers, so any edit above a match used to rewrite it and block the commit until
+it was re-staged, which CLAUDE.md alone triggered on 12 of its last 90 days'
+commits. Nothing baselined means nothing to churn.
+
 The black/ruff/mypy hooks are deliberately `repo: local`, running the venv's own
 tools with the same arguments and the same scope as `make check`. The pinned
 upstream mirrors disagreed with it badly enough to be worse than nothing: the
