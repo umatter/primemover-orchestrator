@@ -386,9 +386,17 @@ Non-obvious constraints, each of which cost a red build to find:
   codecov v7). Node 20 leaves GitHub-hosted runners in autumn 2026. When adding
   a step, check `action.yml`'s `using:` — `upload-artifact@v5` still declares
   node20.
-- The orchestrator's Codecov step **cannot succeed**: private repo, no
-  `CODECOV_TOKEN`, and tokenless upload is public-repo-only. It is green only
-  because `fail_ci_if_error: false`. Add a token or delete the step.
+- Coverage is printed to the job log, not uploaded. A Codecov step used to
+  follow the pytest run and **could not succeed** — this repo is private,
+  tokenless upload is public-repo-only, and no `CODECOV_TOKEN` exists — so it
+  failed on every run and was green only because `fail_ci_if_error: false`.
+  Removed rather than tokenised: the number is one `pytest --cov` away, and the
+  history/PR-comment features it sells assume a team large enough for coverage
+  to drift unnoticed. Read it from the job log, or run
+  `pytest --cov=orchestrator --cov=experiment_designer` locally.
+  Worth knowing what it currently says: **~39% overall**, with
+  `mcp_server/server.py` at **0%** — every `pm_` write tool is untested —
+  `logs/aggregator.py` at 13% and `tracing/trace_builder.py` at 23%.
 
 ## Formatting & Linting
 
