@@ -183,3 +183,36 @@ def reset_settings_cache() -> Generator[None, None, None]:
     get_settings.cache_clear()
     yield
     get_settings.cache_clear()
+
+
+@pytest.fixture(autouse=True)
+def block_network_in_mcp_tests(
+    request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Make an unmocked MCP test fail loudly instead of hitting the real API.
+
+    Every MCP tool talks to the PrimeMover API, and on a developer or VM box that
+    API is genuinely running on :8090 with real experiment data behind it. A test
+    that forgets to patch ``_api_request`` would therefore not fail -- it would
+    quietly succeed against production, and a write tool test would mutate it.
+
+    All current MCP tests patch correctly; this exists so that stays true. It is
+    scoped to ``test_mcp_*`` files on purpose: a blanket block would break the
+    ``--e2e`` suite, which is supposed to reach the network.
+    """
+    if not Path(str(request.node.fspath)).name.startswith("test_mcp_"):
+        return
+
+    import socket
+
+    def _blocked(*args: object, **kwargs: object) -> None:
+        raise RuntimeError(
+            "This MCP test tried to open a network connection. MCP tests must be "
+            "hermetic -- patch orchestrator.mcp_server.server._api_request (or the "
+            "httpx layer) rather than letting the call reach the real API."
+        )
+
+    for attr in ("connect", "connect_ex"):
+        monkeypatch.setattr(socket.socket, attr, _blocked, raising=False)
+    for attr in ("create_connection", "getaddrinfo", "gethostbyname"):
+        monkeypatch.setattr(socket, attr, _blocked, raising=False)
