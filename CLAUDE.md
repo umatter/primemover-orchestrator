@@ -440,7 +440,16 @@ installed with `sudo scripts/install-systemd-services.sh`:
   does not drain gracefully, hence `TimeoutStopSec=180`. Prefer stopping when
   nothing is in flight.
 - `primemover-health-check.service` — one-shot boot check running
-  `scripts/boot-health-check.sh --quick` after everything else
+  `scripts/boot-health-check.sh --quick` after everything else. It had been
+  `failed` from 2026-08-13 until 2026-08-21 for three independent reasons, all
+  now fixed: the runner had no unit (above), and two checks had gone stale
+  against Multilogin X v12 — it looked for a standalone `/opt/mlx/agent.bin`
+  that no longer exists (v12 embeds the agent; only `/opt/mlxapp` is present),
+  and it required a 2xx from the launcher's `/api/v2`, which now returns 404
+  even though the launcher is healthy. The launcher check is liveness-only now:
+  any HTTP response counts, since `curl`'s `%{http_code}` is `000` only when the
+  connection itself fails. Treat a red boot check as real — it was right all
+  three times.
 - `primemover-har-drain.service` + `.timer` — spool-and-drain sidecar (every 5
   min) that ships the runner's local HAR/job-data buffer to Nextcloud. Resource-
   capped (`CPUQuota=50%`, idle IO, `MemoryMax`) so it never contends with the
