@@ -159,8 +159,12 @@ invocation contract. This is **on by default** (`orchestrator up`); pass
 - **Decision code**: imported from `orchestrator/lambda_service/decision`,
   a **symlink** to `bot-decision-yt/bot-decision-EN`. The symlink is a
   prerequisite — `LambdaServerComponent.validate()` errors if it (or
-  `lambda_function.py` inside it) is missing. Recreate with:
-  `ln -s /home/primemover/bot-decision-yt/bot-decision-EN orchestrator/lambda_service/decision`
+  `lambda_function.py` inside it) is missing. Recreate it **relative**, from the
+  repo root, so the checkout stays portable across machines and paths:
+  `ln -s ../../../bot-decision-yt/bot-decision-EN orchestrator/lambda_service/decision`
+  Note this points at `bot-decision-EN` specifically. The sibling
+  `bot-decision-EN-arm` and `bot-decision-DE` directories are stale forks that
+  still contain the pre-`364beae` xpath bug; never repoint the symlink at them.
 - **cwd matters**: the server runs with cwd set to the `decision/` directory so
   relative file reads (e.g. `mainstream_media_channels.csv`) resolve the same
   way they do under the AWS Lambda task root.
@@ -168,16 +172,37 @@ invocation contract. This is **on by default** (`orchestrator up`); pass
   `channel,verified` header — `lambda_function.py` does
   `drop_duplicates(subset=['channel', 'verified'])`. Never round-trip it through
   a spreadsheet application: doing so has previously renamed the header, added a
-  trailing empty column, and replaced the `;` in HTML entities with `,`, which
-  raises `KeyError` on every invocation with `pi >= 0.5` (the whole
-  mainstream-media-aversion treatment arm). Control crawlers never reach that
-  branch, so the e2e suite does **not** catch it.
+  trailing empty column, and replaced the `;` in HTML entities with `,`.
+
+  **It does not crash — that is the problem.** The `read_csv` sits inside a
+  `try` whose `except Exception` degrades to `warnings.warn('Aversion to
+  mainstream media channels ignored...')`, and the consumer downstream guards on
+  `if col in recommendations.columns`. So a corrupted file returns HTTP 200 with
+  plausible recommendations, fails no job, and logs nothing at error level: it
+  silently turns the mainstream-media-aversion **treatment arm into a second
+  control arm**. Control crawlers never reach that branch, so the e2e suite does
+  **not** catch it either.
+
+  Guarded since 2026-08-21 by `bot-decision-yt/tests/test_mainstream_media_csv.py`,
+  which runs in that repo's CI. Its `check_csv()` / `check_parsed()` helpers are
+  deliberately importable so the same assertions can be reused elsewhere — worth
+  doing, because the known incident was **never committed**: the damage lived
+  only in the working copy on the VM, where CI cannot see it. The natural second
+  home is `LambdaServerComponent.validate()`, so `orchestrator up` refuses to
+  start on a corrupted copy.
 - **Lifecycle**: `LambdaServerComponent` (`orchestrator/components/lambda_server.py`)
   manages it as a detached subprocess. PID is tracked in `.lambda_server.pid`,
   logs go to `log/lambda-server.log`. Component startup order is
   `monitoring → lambda_server → api → runner` (the runner depends on it).
 - **Runner side**: the runner selects local vs AWS via `lambda.mode` in its
   `application.properties` (`local` → `POST http://localhost:5001/invoke`).
+  `local` is also the **code** default since `primemover_runner` PR #53
+  (`LambdaCaller`), and an unrecognised value now raises instead of falling
+  through. Before that the code
+  default was `aws`, so losing the properties line silently sent every decision
+  to AWS — jobs kept succeeding while the answers came from a stale ECR image
+  predating the camelCase-selector and aria-hidden fixes. If you ever need AWS,
+  set it explicitly and check the deployed image is current first.
 - The decision function's deps (`flask`, `lxml`, `pandas`, `openai`,
   `langdetect`) are declared in `pyproject.toml` so the orchestrator venv can
   run it directly.
@@ -286,6 +311,16 @@ The experiment designer uses YAML to define experiments with factorial designs: 
 expansion, reusable templates, parameter distributions, data pools with scoring, and relative
 timestamps (`now`, `+5m`).
 
+> **The four selection parameters are switches, not intensities.** `pi`, `psi`,
+> `kappa` and `tau` are read by the decision function as
+> `int(round(aux.get('pi', 0)))` and then compared `== 1`, so **use only `0` or
+> `1`**. A fractional value does not scale the treatment — it rounds. And because
+> Python rounds half to even, `0.5` rounds to **`0`**, silently disabling the very
+> arm it looks like it configures, with no error anywhere. (An earlier version of
+> this example used `treatment: 0.5`; every value stored in the database has only
+> ever been `0` or `1`, so no experiment was affected.) If graded intensities are
+> ever wanted, that needs a change in `lambda_function.py`, not in the spec.
+
 ```yaml
 version: "1.0"
 experiment:
@@ -295,7 +330,7 @@ design:
     condition:
       levels: [control, treatment]
       maps_to:
-        params.pi: {control: 0, treatment: 0.5}
+        params.pi: {control: 0, treatment: 1}
   replications: 5
 crawlers:
   - from_design: true
@@ -316,6 +351,44 @@ See `docs/experiment-designer.md` for full documentation.
 - Custom markers: `@pytest.mark.e2e`, `@pytest.mark.multilogin`
 - Mock external services (API, Loki, CloudWatch) in unit tests
 - Shared fixtures in `orchestrator/tests/conftest.py`: `cli_runner`, `mock_settings`, `mock_httpx_client`, `sample_log_entries`
+
+### CI across the ecosystem
+
+As of 2026-08-21 all five repos have GitHub Actions workflows. Before that only
+this repo and the API did, so "mergeable" on a GUI, runner or decision-function
+PR meant *no merge conflicts* and nothing more.
+
+| repo | workflow | what it runs |
+|---|---|---|
+| `primemover-orchestrator` | `ci.yml`, `compatibility-check.yml` | pytest 3.10–3.12, ruff, black, mypy |
+| `primemover_api` | `laravel.yml`, `php.yml` | PHPUnit (249), pint, composer validate |
+| `primemover_gui` | `ci.yml` | eslint, karma, prod build, **image + endpoint-injection smoke test** |
+| `primemover_runner` | `ci.yml` | `mvn verify` on JDK **17 and 25** |
+| `bot-decision-yt` | `tests.yml` | pytest on **3.9** (Lambda parity), 3.12/3.13 advisory |
+
+Non-obvious constraints, each of which cost a red build to find:
+
+- **GUI**: the image job asserts on the bytes the container *serves*, not on the
+  build. Its two historical bugs — a bash-ism under busybox `ash`, and Angular's
+  minifier rewriting `content=""` to a bare `content` — were both invisible to
+  review and to `ng build`.
+- **runner**: the poms compile at `release=17` but production runs **Java 25**;
+  the matrix exists so CI tests the JVM that actually runs the jar. Never build
+  in the working copy while the runner is live — it executes from
+  `primemover-runner/target/`, and rebuilding the fat jar underneath it throws
+  `EOFException`. Build in a throwaway clone.
+- **bot-decision-yt**: pinned to `ubuntu-24.04`, not `ubuntu-latest` —
+  `actions/python-versions` has no 3.9 build for 26.04. The pinned
+  `requirements.txt` cannot install on 3.12+ (`numpy==1.25.2`, no cp312 wheel),
+  which is why those jobs are advisory and unpinned.
+- All actions are on **node24-native** majors (checkout v7, setup-python v7,
+  setup-node v7, setup-java v5, cache v6, upload-artifact v7, github-script v9,
+  codecov v7). Node 20 leaves GitHub-hosted runners in autumn 2026. When adding
+  a step, check `action.yml`'s `using:` — `upload-artifact@v5` still declares
+  node20.
+- The orchestrator's Codecov step **cannot succeed**: private repo, no
+  `CODECOV_TOKEN`, and tokenless upload is public-repo-only. It is green only
+  because `fail_ci_if_error: false`. Add a token or delete the step.
 
 ## Formatting & Linting
 
@@ -386,8 +459,12 @@ grep -nE '127\.0\.0\.1:.*(3307|8889)|ALLOW_EMPTY' ../primemover_api/docker-compo
 - Check `log/lambda-server.log` (the subprocess logs there, not to the console)
 - Verify the `orchestrator/lambda_service/decision` symlink resolves and that
   `decision/lambda_function.py` exists
-- If only `pi >= 0.5` crawlers fail, suspect `mainstream_media_channels.csv`
-  corruption (see "Local Lambda Server" above)
+- Suspect `mainstream_media_channels.csv` corruption if the mainstream-media
+  arm looks inert (see "Local Lambda Server" above). Note it will **not** show
+  up as a failure: `pi=1` crawlers keep returning 200 and behave like controls,
+  and the only trace is `Aversion to mainstream media channels ignored` in the
+  returned `warnings` list. Check with
+  `cd ../bot-decision-yt && pytest tests/test_mainstream_media_csv.py`
 - Port 5001 in use: stop the stale process (`.lambda_server.pid`) or check the
   `primemover-lambda` systemd unit isn't already running it
 
