@@ -190,9 +190,19 @@ invocation contract. This is **on by default** (`orchestrator up`); pass
   only in the working copy on the VM, where CI cannot see it. The natural second
   home is `LambdaServerComponent.validate()`, so `orchestrator up` refuses to
   start on a corrupted copy.
-- **Lifecycle**: `LambdaServerComponent` (`orchestrator/components/lambda_server.py`)
-  manages it as a detached subprocess. PID is tracked in `.lambda_server.pid`,
-  logs go to `log/lambda-server.log`. Component startup order is
+- **Lifecycle**: two different supervisors, and **they log to different places** —
+  check which one is actually running before reading a log, or you will be
+  reading a file that stopped being written weeks ago.
+
+  | started by | PID | logs to |
+  |---|---|---|
+  | `orchestrator up` (`LambdaServerComponent`) | `.lambda_server.pid` | `log/lambda-server.log` |
+  | `primemover-lambda.service` (the VM default) | systemd | `journalctl -u primemover-lambda` |
+
+  On this VM systemd owns it, so `log/lambda-server.log` is **stale** and its
+  last entry long predates the running process. `LambdaServerComponent` already
+  tolerates the systemd case for liveness (it never finds a PID file and trusts
+  the health endpoint instead). Component startup order is
   `monitoring → lambda_server → api → runner` (the runner depends on it).
 - **Runner side**: the runner selects local vs AWS via `lambda.mode` in its
   `application.properties` (`local` → `POST http://localhost:5001/invoke`).
@@ -493,7 +503,11 @@ grep -nE '127\.0\.0\.1:.*(3307|8889)|ALLOW_EMPTY' ../primemover_api/docker-compo
 **API logs not appearing in Loki** — the API logs in CET, Loki runs in UTC. Promtail config sets `location: "Europe/Zurich"`. Check `docker logs pm-orchestrator-promtail 2>&1 | grep "timestamp too new"`.
 
 **Local Lambda server fails to start / `/invoke` returns 500**
-- Check `log/lambda-server.log` (the subprocess logs there, not to the console)
+- Read the log of whichever supervisor is running it — they differ, and the
+  wrong one looks alarmingly quiet rather than erroring:
+  `systemctl is-active primemover-lambda && journalctl -u primemover-lambda -n 50`
+  under systemd (the VM default), or `log/lambda-server.log` when it was started
+  by `orchestrator up`. Neither logs to the console.
 - Verify the `orchestrator/lambda_service/decision` symlink resolves and that
   `decision/lambda_function.py` exists
 - Suspect `mainstream_media_channels.csv` corruption if the mainstream-media
