@@ -41,7 +41,29 @@ mypy orchestrator/ experiment_designer/ --ignore-missing-imports
 
 # All checks at once
 make check
+
+# Install git hooks — do this once per clone
+make hooks
 ```
+
+`make hooks` installs **both** stages: `pre-commit` runs black/ruff/mypy, and
+`pre-push` runs the full test suite. They are not installed automatically, and
+while they were missing, type errors reached CI three times in one day that
+either hook would have caught locally. If you are about to push and have not run
+`make hooks`, run `make check` first.
+
+The black/ruff/mypy hooks are deliberately `repo: local`, running the venv's own
+tools with the same arguments and the same scope as `make check`. The pinned
+upstream mirrors disagreed with it badly enough to be worse than nothing: the
+`mirrors-mypy` pin reported 10 errors on a tree CI called clean, and `psf/black`
+pinned at 24.3.0 (against the venv's 26.5.1) reformatted four files that
+`make check` immediately wanted to change back. **A hook that contradicts the
+canonical check is a hook people learn to bypass with `--no-verify`.**
+
+Known gap: `scripts/` is checked by neither — it has 6 mypy and 4 ruff errors
+(mostly `Optional[str]` where `str | None` is wanted). The hooks are scoped to
+match `make check` rather than silently widening it; fixing `scripts/` and adding
+it to both is worth doing separately.
 
 ## CLI Reference
 
@@ -458,6 +480,17 @@ installed with `sudo scripts/install-systemd-services.sh`:
   Stopping mid-job leaves queues flagged `processing=1, processed=0` — SIGTERM
   does not drain gracefully, hence `TimeoutStopSec=180`. Prefer stopping when
   nothing is in flight.
+
+  **`orchestrator doctor` reports the state of every PrimeMover unit**, with the
+  timestamp of a failure and the `journalctl` line to run. That exists because a
+  failed unit was otherwise visible only via `systemctl status`, which nobody
+  runs during normal work — so the boot health check sat `failed` for over a week
+  while correctly reporting three genuinely broken things. A check nobody reads
+  is worth about as much as no check.
+
+  Note a one-shot keeps its last result until it runs again: fixing the script
+  does **not** clear a `failed` unit. `sudo systemctl start primemover-health-check`
+  does.
 - `primemover-health-check.service` — one-shot boot check running
   `scripts/boot-health-check.sh --quick` after everything else. It had been
   `failed` from 2026-08-13 until 2026-08-21 for three independent reasons, all

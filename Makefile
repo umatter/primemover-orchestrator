@@ -222,7 +222,8 @@ check: format lint typecheck test
 # Install pre-commit hooks
 hooks:
 	$(VENV_BIN)/pre-commit install
-	@echo "Pre-commit hooks installed."
+	$(VENV_BIN)/pre-commit install --hook-type pre-push
+	@echo "Hooks installed: pre-commit (format/lint/types) and pre-push (tests)."
 
 # Run pre-commit on all files
 pre-commit:

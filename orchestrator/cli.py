@@ -1276,6 +1276,63 @@ def doctor(ctx: click.Context) -> None:
                 f"  [yellow]⚠[/yellow] Port {port} in use ({name}) - component may be running"
             )
 
+    # Systemd units.
+    #
+    # This exists because a failing unit is otherwise invisible.
+    # primemover-health-check is a one-shot that runs at boot; when it failed it
+    # stayed `failed` for over a week with nobody noticing, because the only
+    # place that state is visible is `systemctl status`, which nobody runs
+    # during normal work. `orchestrator doctor` is where people already look.
+    console.print("\n[bold]Checking systemd units...[/bold]\n")
+
+    if not shutil.which("systemctl"):
+        console.print("  [dim]-[/dim] systemd not present, skipping (not a VM deployment)")
+    else:
+        units = [
+            ("primemover-lambda", "Local Lambda service"),
+            ("primemover-runner", "Java runner"),
+            ("primemover-health-check", "Boot health check"),
+            ("vncserver@1", "VNC display :1"),
+            ("multilogin-desktop", "Multilogin X"),
+        ]
+
+        def _systemctl(*args: str) -> str:
+            return subprocess.run(
+                ["systemctl", *args], capture_output=True, text=True
+            ).stdout.strip()
+
+        installed_any = False
+        for unit, label in units:
+            enabled = _systemctl("is-enabled", unit)
+            if enabled == "not-found":
+                continue
+            installed_any = True
+
+            state = _systemctl("is-active", unit)
+            if state == "failed":
+                # When it last ran matters: a one-shot that failed at boot weeks
+                # ago reads identically to one that failed a minute ago.
+                # ActiveEnterTimestamp is empty for a unit that never went
+                # active, which is exactly the failing-one-shot case, so fall
+                # back to StateChangeTimestamp.
+                when = _systemctl("show", "-p", "StateChangeTimestamp", "--value", unit)
+                suffix = f", since {when}" if when else ""
+                console.print(f"  [red]✗[/red] {label} ({unit}) FAILED{suffix}")
+                console.print(f"      [dim]journalctl -u {unit} -n 50[/dim]")
+                all_ok = False
+            elif state == "active":
+                console.print(f"  [green]✓[/green] {label} ({unit})")
+            elif enabled == "disabled":
+                console.print(f"  [dim]-[/dim] {label} ({unit}) not enabled: {state}")
+            else:
+                console.print(f"  [yellow]⚠[/yellow] {label} ({unit}) {state}")
+
+        if not installed_any:
+            console.print(
+                "  [dim]-[/dim] no PrimeMover units installed "
+                "(run scripts/install-systemd-services.sh on a VM deployment)"
+            )
+
     console.print()
     if all_ok:
         console.print("[green bold]All checks passed![/green bold] Run 'orchestrator up' to start.")
