@@ -60,10 +60,16 @@ pinned at 24.3.0 (against the venv's 26.5.1) reformatted four files that
 `make check` immediately wanted to change back. **A hook that contradicts the
 canonical check is a hook people learn to bypass with `--no-verify`.**
 
-Known gap: `scripts/` is checked by neither — it has 6 mypy and 4 ruff errors
-(mostly `Optional[str]` where `str | None` is wanted). The hooks are scoped to
-match `make check` rather than silently widening it; fixing `scripts/` and adding
-it to both is worth doing separately.
+`scripts/` is covered too, as of 2026-08-21 — Python by black/ruff/mypy, and the
+13 shell scripts by **shellcheck at warning level** (`make lint-sh`, part of
+`make check`, enforced in CI). shellcheck is not a Python dependency, so the
+target uses a local install, else docker, else skips loudly rather than passing
+silently.
+
+That shell is load-bearing — it boots the stack, drains HAR data and runs the
+boot health check — and had never been linted. The four bare `except:` clauses
+removed from `scripts/multilogin-login.py` in the same pass were swallowing
+`KeyboardInterrupt`, so Ctrl-C during an agent login did nothing.
 
 ## CLI Reference
 

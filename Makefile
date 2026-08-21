@@ -10,7 +10,7 @@
 .PHONY: help prereqs setup-server setup setup-quick install venv clean \
         up down restart status doctor \
         db-migrate db-seed db-reset db-init \
-        test test-cov lint format typecheck check \
+        test test-cov lint lint-sh format typecheck check \
         docker-build docker-run \
         pre-commit hooks \
         compat-check
@@ -205,17 +205,29 @@ test-cov:
 	$(VENV_BIN)/pytest --cov=orchestrator --cov=experiment_designer --cov-report=term-missing
 
 lint:
-	$(VENV_BIN)/ruff check orchestrator/ experiment_designer/
+	$(VENV_BIN)/ruff check orchestrator/ experiment_designer/ scripts/
 
 format:
-	$(VENV_BIN)/black orchestrator/ experiment_designer/
-	$(VENV_BIN)/ruff check orchestrator/ experiment_designer/ --fix
+	$(VENV_BIN)/black orchestrator/ experiment_designer/ scripts/
+	$(VENV_BIN)/ruff check orchestrator/ experiment_designer/ scripts/ --fix
+
+lint-sh:
+	@# shellcheck is not a python dep, so use whatever is available: a local
+	@# install, else docker, else skip loudly rather than silently passing.
+	@if command -v shellcheck >/dev/null 2>&1; then \
+		shellcheck -S warning scripts/*.sh && echo "shellcheck: clean"; \
+	elif command -v docker >/dev/null 2>&1; then \
+		docker run --rm -v "$(PWD):/mnt" -w /mnt koalaman/shellcheck-alpine:stable \
+			shellcheck -S warning scripts/*.sh && echo "shellcheck (docker): clean"; \
+	else \
+		echo "shellcheck: SKIPPED (install shellcheck or docker); CI still enforces it"; \
+	fi
 
 typecheck:
-	$(VENV_BIN)/mypy orchestrator/ experiment_designer/ --ignore-missing-imports
+	$(VENV_BIN)/mypy orchestrator/ experiment_designer/ scripts/ --ignore-missing-imports
 
 # Run all checks (useful before committing)
-check: format lint typecheck test
+check: format lint lint-sh typecheck test
 	@echo ""
 	@echo "All checks passed!"
 

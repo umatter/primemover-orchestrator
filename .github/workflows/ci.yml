@@ -61,10 +61,20 @@ jobs:
           pip install ruff black
 
       - name: Check formatting with black
-        run: black --check orchestrator/ experiment_designer/
+        run: black --check orchestrator/ experiment_designer/ scripts/
 
       - name: Lint with ruff
-        run: ruff check orchestrator/ experiment_designer/
+        run: ruff check orchestrator/ experiment_designer/ scripts/
+
+      # The shell under scripts/ is load-bearing: it boots the stack, drains
+      # HAR data and runs the boot health check. It was unchecked entirely
+      # until 2026-08-21.
+      - name: Lint shell scripts with shellcheck
+        run: |
+          shellcheck --version >/dev/null 2>&1 || {
+            sudo apt-get update -qq && sudo apt-get install -y -qq shellcheck
+          }
+          shellcheck -S warning scripts/*.sh
 
   type-check:
     runs-on: ubuntu-latest
@@ -83,4 +93,4 @@ jobs:
           pip install -e ".[dev]"
 
       - name: Type check with mypy
-        run: mypy orchestrator/ experiment_designer/ --ignore-missing-imports
+        run: mypy orchestrator/ experiment_designer/ scripts/ --ignore-missing-imports
