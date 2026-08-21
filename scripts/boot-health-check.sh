@@ -143,21 +143,19 @@ fi
 log ""
 log "Checking Multilogin..."
 
-# Check agent
+# Check agent (pre-v12 only).
+#
+# Multilogin X v12 embeds the agent in the desktop app: there is no separate
+# agent.bin and /opt/mlx does not exist on this host at all -- only /opt/mlxapp.
+# This block used to warn, then try to launch /opt/mlx/agent.bin, then count a
+# FAILED when that non-existent binary predictably failed to start, so the boot
+# health check could never pass no matter how healthy Multilogin was. The real
+# functional test is the launcher API check below, which desktop.bin serves.
+#
+# Kept as a positive-only report so an older standalone-agent install is still
+# recognised, without failing the v12 layout.
 if pgrep -f "agent.bin" > /dev/null 2>&1; then
-    log_success "Multilogin Agent (process)"
-else
-    log_warn "Multilogin Agent not running"
-    # Try to start it
-    log_info "Attempting to start Multilogin agent..."
-    DISPLAY=:1 nohup /opt/mlx/agent.bin > /dev/null 2>&1 &
-    sleep 10
-    if pgrep -f "agent.bin" > /dev/null 2>&1; then
-        log_success "Multilogin Agent started"
-    else
-        log_error "Failed to start Multilogin Agent"
-        ((FAILED++))
-    fi
+    log_success "Multilogin Agent (standalone, pre-v12)"
 fi
 
 # Check desktop app
@@ -177,10 +175,24 @@ else
     fi
 fi
 
-# Check launcher API
-if curl -sf -k https://launcher.mlx.yt:45001/api/v2 > /dev/null 2>&1 || \
-   curl -sf http://127.0.0.1:45001/api/v2 > /dev/null 2>&1; then
-    log_success "Multilogin Launcher API"
+# Check launcher API.
+#
+# Liveness only: ANY HTTP response means the launcher is listening and serving.
+# This used to require a 2xx from /api/v2 (curl -sf), but that path returns 404
+# on Multilogin X v12 -- the launcher answers, just not on that route. The check
+# therefore reported "not responding" and told you to log in via VNC while
+# Multilogin was working perfectly and running jobs. A version-specific route is
+# the wrong thing to gate a boot check on; curl's %{http_code} is 000 only when
+# the connection itself fails, which is the condition actually worth alerting on.
+launcher_code=$(curl -s -k -m 5 -o /dev/null -w '%{http_code}' \
+    https://launcher.mlx.yt:45001/api/v2 2>/dev/null)
+if [[ -z "$launcher_code" || "$launcher_code" == "000" ]]; then
+    launcher_code=$(curl -s -k -m 5 -o /dev/null -w '%{http_code}' \
+        https://127.0.0.1:45001/api/v2 2>/dev/null)
+fi
+
+if [[ -n "$launcher_code" && "$launcher_code" != "000" ]]; then
+    log_success "Multilogin Launcher API (HTTP $launcher_code)"
 else
     log_error "Multilogin Launcher API not responding"
     log_warn "Manual login via VNC may be required"

@@ -37,7 +37,7 @@ if [[ -f "$SYSTEMD_DIR/vncserver@.service" ]]; then
 fi
 
 # Copy service files
-for service in primemover-lambda multilogin-agent multilogin-desktop primemover-health-check; do
+for service in primemover-lambda primemover-runner multilogin-agent multilogin-desktop primemover-health-check; do
     src="$SYSTEMD_DIR/${service}.service"
     if [[ -f "$src" ]]; then
         cp "$src" /etc/systemd/system/
@@ -64,6 +64,23 @@ for service in primemover-lambda primemover-health-check; do
     systemctl enable "$service" 2>/dev/null || true
     echo -e "${GREEN}✓${NC} $service enabled"
 done
+
+# The runner is installed but NOT auto-enabled. It needs a built jar
+# (target/primemover-runner-*.jar) and a logged-in Multilogin X, so enabling it on
+# a fresh machine would produce a restart loop rather than a working runner.
+# Enable it once those are in place -- until then the runner does not survive a
+# reboot, which is the gap this unit exists to close.
+echo ""
+if compgen -G "/home/primemover/primemover_runner/primemover-runner/target/primemover-runner-*.jar" > /dev/null; then
+    echo -e "${YELLOW}Note: primemover-runner installed but not enabled.${NC}"
+    echo "A built jar was found. Enable auto-start with:"
+    echo "  sudo systemctl enable --now primemover-runner"
+else
+    echo -e "${YELLOW}Note: primemover-runner installed but not enabled.${NC}"
+    echo "No built jar found. Build first, then enable:"
+    echo "  cd ~/primemover_runner && mvn -B -DskipTests package"
+    echo "  sudo systemctl enable --now primemover-runner"
+fi
 
 # Multilogin services are optional - they may need manual login
 echo ""

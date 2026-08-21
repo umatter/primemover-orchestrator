@@ -190,9 +190,19 @@ invocation contract. This is **on by default** (`orchestrator up`); pass
   only in the working copy on the VM, where CI cannot see it. The natural second
   home is `LambdaServerComponent.validate()`, so `orchestrator up` refuses to
   start on a corrupted copy.
-- **Lifecycle**: `LambdaServerComponent` (`orchestrator/components/lambda_server.py`)
-  manages it as a detached subprocess. PID is tracked in `.lambda_server.pid`,
-  logs go to `log/lambda-server.log`. Component startup order is
+- **Lifecycle**: two different supervisors, and **they log to different places** —
+  check which one is actually running before reading a log, or you will be
+  reading a file that stopped being written weeks ago.
+
+  | started by | PID | logs to |
+  |---|---|---|
+  | `orchestrator up` (`LambdaServerComponent`) | `.lambda_server.pid` | `log/lambda-server.log` |
+  | `primemover-lambda.service` (the VM default) | systemd | `journalctl -u primemover-lambda` |
+
+  On this VM systemd owns it, so `log/lambda-server.log` is **stale** and its
+  last entry long predates the running process. `LambdaServerComponent` already
+  tolerates the systemd case for liveness (it never finds a PID file and trusts
+  the health endpoint instead). Component startup order is
   `monitoring → lambda_server → api → runner` (the runner depends on it).
 - **Runner side**: the runner selects local vs AWS via `lambda.mode` in its
   `application.properties` (`local` → `POST http://localhost:5001/invoke`).
@@ -423,8 +433,33 @@ installed with `sudo scripts/install-systemd-services.sh`:
   orchestrator.lambda_service.server`), `Restart=always`
 - `multilogin-agent.service` / `multilogin-desktop.service` — Multilogin X,
   require the `vncserver@1` display (`DISPLAY=:1`)
+- `primemover-runner.service` — the Java runner, `Restart=always`. Installed by
+  `install-systemd-services.sh` but **not auto-enabled**: it needs a built jar
+  and a logged-in Multilogin X, so enabling it on a fresh machine yields a
+  restart loop rather than a runner. Enable with
+  `sudo systemctl enable --now primemover-runner` once both are in place.
+
+  Added 2026-08-21. Before it, the runner was only ever started by
+  `full-startup.sh` as a bare `nohup java`, which meant **it did not survive a
+  reboot** — and since it inherited `DISPLAY=:1` from the interactive session it
+  was launched in, there was nothing to inherit from at boot anyway. That is why
+  `primemover-health-check.service` had been sitting in `failed` since 2026-08-13,
+  passing every check and then reporting `✗ Runner (Java)`. It was right.
+
+  Stopping mid-job leaves queues flagged `processing=1, processed=0` — SIGTERM
+  does not drain gracefully, hence `TimeoutStopSec=180`. Prefer stopping when
+  nothing is in flight.
 - `primemover-health-check.service` — one-shot boot check running
-  `scripts/boot-health-check.sh --quick` after everything else
+  `scripts/boot-health-check.sh --quick` after everything else. It had been
+  `failed` from 2026-08-13 until 2026-08-21 for three independent reasons, all
+  now fixed: the runner had no unit (above), and two checks had gone stale
+  against Multilogin X v12 — it looked for a standalone `/opt/mlx/agent.bin`
+  that no longer exists (v12 embeds the agent; only `/opt/mlxapp` is present),
+  and it required a 2xx from the launcher's `/api/v2`, which now returns 404
+  even though the launcher is healthy. The launcher check is liveness-only now:
+  any HTTP response counts, since `curl`'s `%{http_code}` is `000` only when the
+  connection itself fails. Treat a red boot check as real — it was right all
+  three times.
 - `primemover-har-drain.service` + `.timer` — spool-and-drain sidecar (every 5
   min) that ships the runner's local HAR/job-data buffer to Nextcloud. Resource-
   capped (`CPUQuota=50%`, idle IO, `MemoryMax`) so it never contends with the
@@ -435,7 +470,11 @@ installed with `sudo scripts/install-systemd-services.sh`:
 Helper scripts in `scripts/`:
 - `full-startup.sh [--no-runner|--check]` — brings up VNC, Docker, monitoring,
   Multilogin, the Lambda service, and the runner in order (alternative to
-  systemd for manual starts)
+  systemd for manual starts). Note its runner step redirects stdout to
+  `log/runner-stdout.log` with **no rotation** — that file had reached 208 MB.
+  `primemover-runner.service` sends stdout to the journal instead; logback's own
+  rotated `log/primemover-runner.log` is unaffected either way, and that is the
+  file promtail scrapes.
 - `har-drain.sh [--dry-run]` — the spool-and-drain sidecar; tars settled job
   folders and uploads via rclone WebDAV (see `docs/har-spool-drain.md`)
 - `multilogin-login.py` — authenticates the Multilogin agent
@@ -464,7 +503,11 @@ grep -nE '127\.0\.0\.1:.*(3307|8889)|ALLOW_EMPTY' ../primemover_api/docker-compo
 **API logs not appearing in Loki** — the API logs in CET, Loki runs in UTC. Promtail config sets `location: "Europe/Zurich"`. Check `docker logs pm-orchestrator-promtail 2>&1 | grep "timestamp too new"`.
 
 **Local Lambda server fails to start / `/invoke` returns 500**
-- Check `log/lambda-server.log` (the subprocess logs there, not to the console)
+- Read the log of whichever supervisor is running it — they differ, and the
+  wrong one looks alarmingly quiet rather than erroring:
+  `systemctl is-active primemover-lambda && journalctl -u primemover-lambda -n 50`
+  under systemd (the VM default), or `log/lambda-server.log` when it was started
+  by `orchestrator up`. Neither logs to the console.
 - Verify the `orchestrator/lambda_service/decision` symlink resolves and that
   `decision/lambda_function.py` exists
 - Suspect `mainstream_media_channels.csv` corruption if the mainstream-media

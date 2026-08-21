@@ -1,0 +1,52 @@
+[Unit]
+Description=PrimeMover Runner (Java)
+# Ordering only -- deliberately NOT Requires=. The runner retries the API, the
+# Lambda service and the Multilogin agent on its own, so a hard dependency would
+# turn a restart of any one of them into a runner outage. After= just avoids a
+# pointless crash-and-retry loop during boot.
+After=network-online.target docker.service vncserver@1.service multilogin-desktop.service primemover-lambda.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=primemover
+Group=primemover
+WorkingDirectory=/home/primemover/primemover_runner/primemover-runner
+
+# DISPLAY is load-bearing: the runner drives Multilogin X, which needs the VNC
+# display at :1. The process this unit replaces inherited it from the interactive
+# session it was started in, which is exactly why the runner never survived a
+# reboot -- there was no session to inherit from.
+Environment=DISPLAY=:1
+Environment=HOME=/home/primemover
+Environment=LANG=en_US.UTF-8
+
+# Docker, the API and Multilogin all need to be answering before the runner is
+# useful. It retries, so this only avoids noisy startup failures.
+ExecStartPre=/bin/sleep 30
+
+# Wrapped in sh for the glob: the jar is versioned (primemover-runner-2.2.1.jar
+# today) and systemd does not expand globs in ExecStart. `exec` so systemd tracks
+# the JVM directly rather than a shell wrapper, which keeps MAINPID and the
+# restart logic honest.
+ExecStart=/bin/sh -c 'exec java -Xmx2g -Xms512m -jar target/primemover-runner-*.jar --spring.profiles.active=local --spring.config.location=config/'
+
+Restart=always
+RestartSec=30
+
+# A job in flight can take minutes. SIGTERM does not drain gracefully, so give it
+# room before SIGKILL -- see the note in docs about queues left in `processing`.
+TimeoutStopSec=180
+
+# stdout goes to the journal (journalctl -u primemover-runner). This is the one
+# behavioural change versus full-startup.sh, and it is an improvement: that script
+# redirected stdout to log/runner-stdout.log with no rotation, which had reached
+# 208 MB. Log AGGREGATION is unaffected -- logback writes the rotated
+# log/primemover-runner.log independently, and that is the file promtail scrapes
+# via the /var/log/primemover-runner bind mount.
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=primemover-runner
+
+[Install]
+WantedBy=multi-user.target
