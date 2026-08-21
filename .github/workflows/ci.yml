@@ -34,15 +34,15 @@ jobs:
           python -m pip install --upgrade pip
           pip install -e ".[dev]"
 
+      # Coverage is reported to the job log rather than uploaded anywhere. The
+      # Codecov step that used to follow could not succeed -- this repo is
+      # private, tokenless upload is public-repo-only, and no CODECOV_TOKEN
+      # exists -- so every run ended in
+      # `{"message":"Token required - not valid tokenless upload"}` and was
+      # green only because fail_ci_if_error was false. A step that always fails
+      # while reporting success is worse than no step.
       - name: Run tests
-        run: pytest --cov=orchestrator --cov=experiment_designer --cov-report=xml -v
-
-      - name: Upload coverage to Codecov
-        if: matrix.python-version == '3.11'
-        uses: codecov/codecov-action@v7
-        with:
-          files: ./coverage.xml
-          fail_ci_if_error: false
+        run: pytest --cov=orchestrator --cov=experiment_designer --cov-report=term -v
 
   lint:
     runs-on: ubuntu-latest
