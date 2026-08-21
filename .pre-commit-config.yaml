@@ -18,35 +18,54 @@ repos:
       - id: detect-private-key
       - id: check-case-conflict
 
-  # Python formatting with Black
-  - repo: https://github.com/psf/black
-    rev: 24.3.0
+  # Python formatting with Black.
+  #
+  # Local, running the repo's own black -- NOT the pinned psf/black mirror.
+  # That mirror was pinned at 24.3.0 while the venv (and CI) run 26.5.1, and
+  # black's formatting changes between majors: the hook reformatted four files
+  # that `make check`'s black then wanted to change straight back. A hook that
+  # fights the canonical formatter is a hook people disable.
+  - repo: local
     hooks:
       - id: black
-        language_version: python3
-        args: [--line-length=100]
+        name: black
+        entry: venv/bin/black --line-length=100
+        language: system
+        types: [python]
+        files: ^(orchestrator|experiment_designer)/
 
-  # Python linting with Ruff
-  - repo: https://github.com/astral-sh/ruff-pre-commit
-    rev: v0.3.4
+
+  # Python linting with Ruff -- local, same reason as black above.
+  - repo: local
     hooks:
       - id: ruff
-        args: [--fix, --exit-non-zero-on-fix]
+        name: ruff
+        entry: venv/bin/ruff check --fix --exit-non-zero-on-fix
+        language: system
+        types: [python]
+        files: ^(orchestrator|experiment_designer)/
 
-  # Python type checking with mypy
-  - repo: https://github.com/pre-commit/mirrors-mypy
-    rev: v1.9.0
+
+  # Python type checking with mypy.
+  #
+  # A local hook running the repo's own mypy, deliberately NOT mirrors-mypy.
+  # That runs a pinned mypy in an isolated env with a handful of stub packages
+  # and without --ignore-missing-imports, so it reported 10 errors on a tree
+  # where `make check` and CI both reported none. Two contradictory answers to
+  # "does mypy pass" is worse than no hook: the one that blocks your commit is
+  # the one you learn to bypass with --no-verify.
+  #
+  # This runs exactly what `make check` and CI run, so there is one answer.
+  - repo: local
     hooks:
       - id: mypy
-        additional_dependencies:
-          - pydantic>=2.0.0
-          - pydantic-settings>=2.0.0
-          - click>=8.1.0
-          - types-PyYAML
-          - types-requests
-        args: [--ignore-missing-imports]
+        name: mypy
+        entry: venv/bin/mypy orchestrator/ experiment_designer/ --ignore-missing-imports
+        language: system
         pass_filenames: false
-        entry: mypy orchestrator/ experiment_designer/
+        types: [python]
+        files: ^(orchestrator|experiment_designer)/
+
 
   # Check for secrets
   - repo: https://github.com/Yelp/detect-secrets
@@ -55,6 +74,24 @@ repos:
       - id: detect-secrets
         args: ['--baseline', '.secrets.baseline']
         exclude: package.lock.json
+
+  # Full test suite, on push only.
+  #
+  # The hooks above run per-commit on changed files, which catches formatting,
+  # lint and type errors. They do NOT run the tests -- doing that on every
+  # commit would be too slow to live with. Pushing is the right moment: it is
+  # the last point before CI, and it is where a red build starts costing other
+  # people time.
+  #
+  # Installed by `make hooks`, which sets up both stages.
+  - repo: local
+    hooks:
+      - id: pytest
+        name: pytest (full suite)
+        entry: venv/bin/pytest -q
+        language: system
+        pass_filenames: false
+        stages: [pre-push]
 
 # CI configuration
 ci:
