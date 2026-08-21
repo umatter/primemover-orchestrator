@@ -20,6 +20,7 @@ import httpx
 
 from orchestrator.clients.api import APIClient
 from orchestrator.config import get_settings
+from orchestrator.e2e.job_status import job_duration_seconds, job_succeeded
 
 from .reporter import E2EReporter
 
@@ -618,11 +619,7 @@ class E2ETestRunner:
                     picked_up_at = now
                     picked_up_after = now - wait_started
 
-                completed_jobs = sum(
-                    1
-                    for j in jobs
-                    if j.get("status_code", j.get("status")) in ("completed", "done", "success")
-                )
+                completed_jobs = sum(1 for j in jobs if job_succeeded(j))
 
                 # --- Terminal states, checked before any deadline so that a
                 # queue which finishes on the very last poll still counts.
@@ -631,10 +628,11 @@ class E2ETestRunner:
                     # Print individual job results
                     for job in jobs:
                         job_type = job.get("type", job.get("job_type", "unknown"))
-                        status = job.get("status_code", job.get("status", "unknown"))
-                        duration = job.get("duration", 0) or 0
+                        # Computed from started_at/finished_at -- the API has no
+                        # `duration`, so this used to print 0.0s for every job.
+                        duration = job_duration_seconds(job) or 0
 
-                        if status in ("completed", "done", "success"):
+                        if job_succeeded(job):
                             self.reporter.print_job_completed(job_type, duration)
                         else:
                             error = job.get("error", job.get("message", "Unknown error"))

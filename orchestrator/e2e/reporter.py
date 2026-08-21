@@ -11,6 +11,8 @@ from typing import TYPE_CHECKING
 from rich.console import Console
 from rich.table import Table
 
+from orchestrator.e2e.job_status import job_duration_seconds, job_status, job_succeeded
+
 if TYPE_CHECKING:
     from .runner import E2EResult, ValidationResult
 
@@ -109,12 +111,14 @@ class E2EReporter:
             table.add_column("Duration", justify="right")
 
             for job in result.jobs:
-                status_style = "green" if job.get("status") == "completed" else "red"
-                duration = f"{job.get('duration', 0):.1f}s" if job.get("duration") else "-"
+                status = job_status(job)
+                status_style = "green" if job_succeeded(job) else "red"
+                seconds = job_duration_seconds(job)
+                duration = f"{seconds:.1f}s" if seconds is not None else "-"
                 table.add_row(
                     str(job.get("id", "")),
                     job.get("type", "unknown"),
-                    f"[{status_style}]{job.get('status', 'unknown')}[/{status_style}]",
+                    f"[{status_style}]{status}[/{status_style}]",
                     duration,
                 )
 
