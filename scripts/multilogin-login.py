@@ -27,6 +27,7 @@ import subprocess
 import sys
 import time
 from pathlib import Path
+from typing import Any
 
 try:
     import requests
@@ -130,14 +131,14 @@ def check_agent_running() -> bool:
         # Try local launcher first
         response = requests.get(f"{MLX_LAUNCHER_LOCAL}/", timeout=5, verify=False)
         return response.status_code in [200, 404]  # 404 is OK, means agent is running
-    except:
+    except requests.RequestException:
         pass
 
     try:
         # Try external launcher
         response = requests.get(f"{MLX_LAUNCHER}/", timeout=5)
         return response.status_code in [200, 404]
-    except:
+    except requests.RequestException:
         return False
 
 
@@ -197,11 +198,11 @@ def load_cached_token() -> dict | None:
     """Load cached token if available and not expired."""
     try:
         if TOKEN_CACHE_FILE.exists():
-            data = json.loads(TOKEN_CACHE_FILE.read_text())
+            data: dict[Any, Any] = json.loads(TOKEN_CACHE_FILE.read_text())
             # Token expires in 30 minutes, but we'll try to use it anyway
             # and refresh if needed
             return data
-    except:
+    except (OSError, json.JSONDecodeError):
         pass
     return None
 
@@ -216,7 +217,7 @@ def verify_token(token: str) -> bool:
     try:
         response = requests.get(url, headers=headers, timeout=API_TIMEOUT)
         return response.status_code == 200
-    except:
+    except requests.RequestException:
         return False
 
 
@@ -227,7 +228,9 @@ def get_credentials_from_env() -> tuple[str, str]:
 
     # Also check the runner config as fallback
     if not email or not password:
-        config_file = Path("/home/primemover/primemover_runner/primemover-runner/config/application.properties")
+        config_file = Path(
+            "/home/primemover/primemover_runner/primemover-runner/config/application.properties"
+        )
         if config_file.exists():
             content = config_file.read_text()
             for line in content.splitlines():
@@ -241,7 +244,9 @@ def get_credentials_from_env() -> tuple[str, str]:
 
 def main():
     parser = argparse.ArgumentParser(description="Multilogin X API Authentication")
-    parser.add_argument("--env", action="store_true", help="Use credentials from environment/config")
+    parser.add_argument(
+        "--env", action="store_true", help="Use credentials from environment/config"
+    )
     parser.add_argument("--check-only", action="store_true", help="Only check if agent is running")
     parser.add_argument("--start-agent", action="store_true", help="Start agent if not running")
     parser.add_argument("--email", help="Multilogin account email")
@@ -275,6 +280,7 @@ def main():
     else:
         # Interactive mode
         import getpass
+
         email = input("Multilogin email: ")
         password = getpass.getpass("Multilogin password: ")
 
@@ -311,7 +317,7 @@ def main():
     if not start_agent():
         log("Warning: Agent may not be running", "WARN")
 
-    print(f"\nAuthentication successful!")
+    print("\nAuthentication successful!")
     print(f"Token: {result['token'][:50]}...")
     print(f"\nToken cached to: {TOKEN_CACHE_FILE}")
     print("Token expires in 30 minutes. Use refresh_token to extend.")

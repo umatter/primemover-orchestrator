@@ -28,11 +28,14 @@ NC='\033[0m'
 
 get_process_memory() {
     local pattern="$1"
-    local name="$2"
+    # $2 is a human label passed by callers for readability at the call site;
+    # it is deliberately not bound here, since nothing in this function uses it.
 
     # Get RSS memory in KB, sum all matching processes
-    local mem_kb=$(ps aux | grep -E "$pattern" | grep -v grep | awk '{sum += $6} END {print sum+0}')
-    local mem_mb=$((mem_kb / 1024))
+    local mem_kb
+    mem_kb=$(ps aux | grep -E "$pattern" | grep -v grep | awk '{sum += $6} END {print sum+0}')
+    local mem_mb
+    mem_mb=$((mem_kb / 1024))
 
     echo "$mem_mb"
 }
@@ -44,24 +47,36 @@ get_process_count() {
 
 monitor_once() {
     local json_mode="$1"
-    local timestamp=$(date -Iseconds)
+    local timestamp
+    timestamp=$(date -Iseconds)
 
     # Get memory for each component
-    local vnc_mem=$(get_process_memory "Xtigervnc|Xvnc" "VNC")
-    local multilogin_mem=$(get_process_memory "multilogin|mlx|desktop.bin|agent.bin" "Multilogin")
-    local chrome_mem=$(get_process_memory "chrome|chromium" "Chrome")
-    local runner_mem=$(get_process_memory "primemover-runner.*jar" "Runner")
-    local lambda_mem=$(get_process_memory "lambda_service" "Lambda")
-    local total_browser_mem=$((multilogin_mem + chrome_mem))
+    local vnc_mem
+    vnc_mem=$(get_process_memory "Xtigervnc|Xvnc" "VNC")
+    local multilogin_mem
+    multilogin_mem=$(get_process_memory "multilogin|mlx|desktop.bin|agent.bin" "Multilogin")
+    local chrome_mem
+    chrome_mem=$(get_process_memory "chrome|chromium" "Chrome")
+    local runner_mem
+    runner_mem=$(get_process_memory "primemover-runner.*jar" "Runner")
+    local lambda_mem
+    lambda_mem=$(get_process_memory "lambda_service" "Lambda")
+    local total_browser_mem
+    total_browser_mem=$((multilogin_mem + chrome_mem))
 
     # Get process counts
-    local chrome_count=$(get_process_count "chrome|chromium")
+    local chrome_count
+    chrome_count=$(get_process_count "chrome|chromium")
 
     # System memory
-    local total_mem=$(free -m | awk '/^Mem:/{print $2}')
-    local used_mem=$(free -m | awk '/^Mem:/{print $3}')
-    local available_mem=$(free -m | awk '/^Mem:/{print $7}')
-    local mem_percent=$((used_mem * 100 / total_mem))
+    local total_mem
+    total_mem=$(free -m | awk '/^Mem:/{print $2}')
+    local used_mem
+    used_mem=$(free -m | awk '/^Mem:/{print $3}')
+    local available_mem
+    available_mem=$(free -m | awk '/^Mem:/{print $7}')
+    local mem_percent
+    mem_percent=$((used_mem * 100 / total_mem))
 
     if [[ "$json_mode" == "true" ]]; then
         cat << EOF

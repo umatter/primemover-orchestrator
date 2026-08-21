@@ -16,12 +16,12 @@ import argparse
 import json
 import os
 import sys
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
-from typing import Optional
+from typing import Any
+from urllib.error import HTTPError  # noqa: F811
 from urllib.request import Request, urlopen
-from urllib.error import HTTPError
-
 
 # =============================================================================
 # Critical files that could break orchestrator integration
@@ -71,6 +71,7 @@ CRITICAL_FILES = {
 @dataclass
 class Change:
     """A potentially breaking change."""
+
     repo: str
     file: str
     severity: str
@@ -80,8 +81,14 @@ class Change:
     author: str
 
 
-def github_request(url: str, token: Optional[str] = None) -> dict:
-    """Make a GitHub API request."""
+def github_request(url: str, token: str | None = None) -> dict[str, Any] | list[dict[str, Any]]:
+    """Make a GitHub API request.
+
+    Returns whatever the endpoint sends: the commits list endpoint returns a
+    JSON array, commits/{sha} returns an object, and the error paths below
+    return an object. Callers must narrow before indexing -- this was
+    annotated ``-> dict`` while returning a list, which mypy caught.
+    """
     headers = {
         "Accept": "application/vnd.github.v3+json",
         "User-Agent": "primemover-orchestrator-compat-check",
@@ -92,7 +99,8 @@ def github_request(url: str, token: Optional[str] = None) -> dict:
     request = Request(url, headers=headers)
     try:
         with urlopen(request, timeout=30) as response:
-            return json.loads(response.read().decode())
+            payload: dict[str, Any] | list[dict[str, Any]] = json.loads(response.read().decode())
+            return payload
     except HTTPError as e:
         if e.code == 404:
             return {"error": "not_found"}
@@ -105,14 +113,16 @@ def get_recent_commits(
     owner: str,
     repo: str,
     since: datetime,
-    token: Optional[str] = None,
+    token: str | None = None,
 ) -> list[dict]:
     """Get commits since a given date."""
     since_str = since.strftime("%Y-%m-%dT%H:%M:%SZ")
     url = f"https://api.github.com/repos/{owner}/{repo}/commits?since={since_str}&per_page=100"
 
     result = github_request(url, token)
-    if isinstance(result, dict) and "error" in result:
+    # A dict here is either the error envelope or an unexpected object response;
+    # neither is a commit list.
+    if isinstance(result, dict):
         return []
     return result
 
@@ -121,20 +131,21 @@ def get_commit_files(
     owner: str,
     repo: str,
     sha: str,
-    token: Optional[str] = None,
+    token: str | None = None,
 ) -> list[str]:
     """Get list of files changed in a commit."""
     url = f"https://api.github.com/repos/{owner}/{repo}/commits/{sha}"
 
     result = github_request(url, token)
-    if isinstance(result, dict) and "error" in result:
+    # This endpoint returns an object; a list would be unexpected.
+    if not isinstance(result, dict) or "error" in result:
         return []
 
     files = result.get("files", [])
     return [f["filename"] for f in files]
 
 
-def check_file_match(changed_file: str, critical_patterns: list[str]) -> bool:
+def check_file_match(changed_file: str, critical_patterns: Sequence[str]) -> bool:
     """Check if a changed file matches any critical pattern."""
     for pattern in critical_patterns:
         if changed_file.startswith(pattern) or pattern in changed_file:
@@ -146,10 +157,10 @@ def check_repository(
     owner: str,
     repo: str,
     since: datetime,
-    token: Optional[str] = None,
+    token: str | None = None,
 ) -> list[Change]:
     """Check a repository for potentially breaking changes."""
-    changes = []
+    changes: list[Change] = []
 
     if repo not in CRITICAL_FILES:
         return changes
@@ -177,25 +188,29 @@ def check_repository(
 
         for f in files:
             if check_file_match(f, high_patterns):
-                changes.append(Change(
-                    repo=repo,
-                    file=f,
-                    severity="HIGH",
-                    commit_sha=sha[:8],
-                    commit_message=message,
-                    commit_date=date,
-                    author=author,
-                ))
+                changes.append(
+                    Change(
+                        repo=repo,
+                        file=f,
+                        severity="HIGH",
+                        commit_sha=sha[:8],
+                        commit_message=message,
+                        commit_date=date,
+                        author=author,
+                    )
+                )
             elif check_file_match(f, medium_patterns):
-                changes.append(Change(
-                    repo=repo,
-                    file=f,
-                    severity="MEDIUM",
-                    commit_sha=sha[:8],
-                    commit_message=message,
-                    commit_date=date,
-                    author=author,
-                ))
+                changes.append(
+                    Change(
+                        repo=repo,
+                        file=f,
+                        severity="MEDIUM",
+                        commit_sha=sha[:8],
+                        commit_message=message,
+                        commit_date=date,
+                        author=author,
+                    )
+                )
 
     return changes
 

@@ -32,7 +32,7 @@ repos:
         entry: venv/bin/black --line-length=100
         language: system
         types: [python]
-        files: ^(orchestrator|experiment_designer)/
+        files: ^(orchestrator|experiment_designer|scripts)/
 
 
   # Python linting with Ruff -- local, same reason as black above.
@@ -43,7 +43,7 @@ repos:
         entry: venv/bin/ruff check --fix --exit-non-zero-on-fix
         language: system
         types: [python]
-        files: ^(orchestrator|experiment_designer)/
+        files: ^(orchestrator|experiment_designer|scripts)/
 
 
   # Python type checking with mypy.
@@ -60,11 +60,11 @@ repos:
     hooks:
       - id: mypy
         name: mypy
-        entry: venv/bin/mypy orchestrator/ experiment_designer/ --ignore-missing-imports
+        entry: venv/bin/mypy orchestrator/ experiment_designer/ scripts/ --ignore-missing-imports
         language: system
         pass_filenames: false
         types: [python]
-        files: ^(orchestrator|experiment_designer)/
+        files: ^(orchestrator|experiment_designer|scripts)/
 
 
   # Check for secrets

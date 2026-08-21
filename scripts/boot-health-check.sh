@@ -33,7 +33,8 @@ NC='\033[0m'
 mkdir -p "$(dirname "$LOG_FILE")"
 
 log() {
-    local msg="[$(date -Iseconds)] $1"
+    local msg
+    msg="[$(date -Iseconds)] $1"
     echo -e "$msg"
     echo "$msg" >> "$LOG_FILE"
 }

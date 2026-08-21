@@ -13,6 +13,7 @@ set -uo pipefail
 SECRETS=/home/primemover/.pm-rotation-secrets
 API_DIR=/home/primemover/primemover_api
 PHP=primemover-php8.1
+# shellcheck source=/dev/null  # runtime secrets file, not in the repo
 source "$SECRETS"
 cd "$API_DIR" || exit 1
 
