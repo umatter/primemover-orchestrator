@@ -423,6 +423,22 @@ installed with `sudo scripts/install-systemd-services.sh`:
   orchestrator.lambda_service.server`), `Restart=always`
 - `multilogin-agent.service` / `multilogin-desktop.service` — Multilogin X,
   require the `vncserver@1` display (`DISPLAY=:1`)
+- `primemover-runner.service` — the Java runner, `Restart=always`. Installed by
+  `install-systemd-services.sh` but **not auto-enabled**: it needs a built jar
+  and a logged-in Multilogin X, so enabling it on a fresh machine yields a
+  restart loop rather than a runner. Enable with
+  `sudo systemctl enable --now primemover-runner` once both are in place.
+
+  Added 2026-08-21. Before it, the runner was only ever started by
+  `full-startup.sh` as a bare `nohup java`, which meant **it did not survive a
+  reboot** — and since it inherited `DISPLAY=:1` from the interactive session it
+  was launched in, there was nothing to inherit from at boot anyway. That is why
+  `primemover-health-check.service` had been sitting in `failed` since 2026-08-13,
+  passing every check and then reporting `✗ Runner (Java)`. It was right.
+
+  Stopping mid-job leaves queues flagged `processing=1, processed=0` — SIGTERM
+  does not drain gracefully, hence `TimeoutStopSec=180`. Prefer stopping when
+  nothing is in flight.
 - `primemover-health-check.service` — one-shot boot check running
   `scripts/boot-health-check.sh --quick` after everything else
 - `primemover-har-drain.service` + `.timer` — spool-and-drain sidecar (every 5
@@ -435,7 +451,11 @@ installed with `sudo scripts/install-systemd-services.sh`:
 Helper scripts in `scripts/`:
 - `full-startup.sh [--no-runner|--check]` — brings up VNC, Docker, monitoring,
   Multilogin, the Lambda service, and the runner in order (alternative to
-  systemd for manual starts)
+  systemd for manual starts). Note its runner step redirects stdout to
+  `log/runner-stdout.log` with **no rotation** — that file had reached 208 MB.
+  `primemover-runner.service` sends stdout to the journal instead; logback's own
+  rotated `log/primemover-runner.log` is unaffected either way, and that is the
+  file promtail scrapes.
 - `har-drain.sh [--dry-run]` — the spool-and-drain sidecar; tars settled job
   folders and uploads via rclone WebDAV (see `docs/har-spool-drain.md`)
 - `multilogin-login.py` — authenticates the Multilogin agent
