@@ -11,6 +11,7 @@ fixture makes any real connect attempt fail loudly.
 
 import json
 import socket
+from collections.abc import Callable
 from typing import Any
 
 import httpx
@@ -90,16 +91,15 @@ class FakeResponse:
 class FakeClient:
     """Records every request and answers it from the test-supplied handler."""
 
-    def __init__(self, record: dict[str, Any], handler: Any) -> None:
+    def __init__(self, record: dict[str, Any], handler: Callable[..., "FakeResponse"]) -> None:
         self._record = record
         self._handler = handler
 
     def __enter__(self) -> "FakeClient":
         return self
 
-    def __exit__(self, *exc_info: Any) -> bool:
+    def __exit__(self, *exc_info: Any) -> None:
         self._record["closed"] = True
-        return False
 
     def _call(self, method: str, url: str, **kwargs: Any) -> FakeResponse:
         self._record["calls"].append({"method": method, "url": url, "kwargs": kwargs})

@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import json
 import socket
+from collections.abc import Callable
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
@@ -104,7 +105,7 @@ class FakeHttp:
     (or raises, to simulate a connection failure).
     """
 
-    def __init__(self, handler):
+    def __init__(self, handler: Callable[..., FakeResponse]) -> None:
         self.handler = handler
         self.calls: list[dict[str, Any]] = []
 
