@@ -23,7 +23,6 @@ import argparse
 import hashlib
 import json
 import os
-import subprocess
 import sys
 import time
 from pathlib import Path
@@ -31,20 +30,29 @@ from typing import Any
 
 try:
     import requests
+    import urllib3
 except ImportError:
     print("Error: 'requests' library not installed.")
     print("Install with: pip install requests")
     sys.exit(1)
 
+# The launcher serves HTTPS with a self-signed cert on localhost, so every probe
+# is deliberately unverified; the warning would otherwise drown the script's own
+# output on each run.
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+
 
 # Multilogin API endpoints
 MLX_BASE = "https://api.multilogin.com"
 MLX_LAUNCHER = "https://launcher.mlx.yt:45001/api/v2"
-MLX_LAUNCHER_LOCAL = "http://127.0.0.1:45001/api/v2"
+MLX_LAUNCHER_LOCAL = "https://127.0.0.1:45001/api/v2"
 
 # Paths
-MLX_AGENT_BIN = "/opt/mlx/agent.bin"
+# Multilogin X v12 embeds the agent in the desktop app -- there is no
+# standalone agent.bin, and /opt/mlx does not exist. The desktop app is
+# managed by the multilogin-desktop systemd unit.
 MLX_DESKTOP_BIN = "/opt/mlxapp/desktop.bin"
+MLX_DESKTOP_UNIT = "multilogin-desktop"
 TOKEN_CACHE_FILE = Path.home() / ".mlx_token_cache"
 
 # Timeouts
@@ -126,62 +134,52 @@ def refresh_token(refresh_token: str) -> dict:
 
 
 def check_agent_running() -> bool:
-    """Check if Multilogin agent is running and responding."""
-    try:
-        # Try local launcher first
-        response = requests.get(f"{MLX_LAUNCHER_LOCAL}/", timeout=5, verify=False)
-        return response.status_code in [200, 404]  # 404 is OK, means agent is running
-    except requests.RequestException:
-        pass
+    """Whether the Multilogin launcher API is up.
 
-    try:
-        # Try external launcher
-        response = requests.get(f"{MLX_LAUNCHER}/", timeout=5)
-        return response.status_code in [200, 404]
-    except requests.RequestException:
-        return False
+    Liveness only: ANY HTTP response means something is listening and serving,
+    which is what "the agent is running" actually means here. Only a failure to
+    connect counts as down.
+
+    This used to compare against [200, 404] and `return` that comparison from the
+    FIRST probe -- so a local reply of 400 returned False immediately and the
+    working external probe was never reached. It fell through on an exception but
+    not on an unexpected status, which is exactly what happened: the local URL was
+    http:// against an HTTPS port, so it answered 400 and the check reported the
+    agent down while it was serving normally.
+    """
+    for url in (MLX_LAUNCHER_LOCAL, MLX_LAUNCHER):
+        try:
+            response = requests.get(f"{url}/", timeout=5, verify=False)
+        except requests.RequestException:
+            continue  # try the next endpoint, do not conclude anything yet
+        log(f"Launcher API responded on {url} (HTTP {response.status_code})", "DEBUG")
+        return True
+    return False
 
 
 def start_agent() -> bool:
-    """Start the Multilogin agent if not running."""
+    """Ensure the Multilogin launcher is up, starting the desktop app if needed.
+
+    On Multilogin X v12 there is no standalone agent to launch: the agent is
+    embedded in the desktop app, which is managed by the multilogin-desktop
+    systemd unit. This used to exec /opt/mlx/agent.bin -- a path that does not
+    exist on a v12 install -- so it could only ever fail.
+
+    Restarting the unit needs root, so this reports what to run rather than
+    pretending it can do it.
+    """
     if check_agent_running():
-        log("Multilogin agent is already running")
+        log("Multilogin launcher is already running")
         return True
 
-    log("Starting Multilogin agent...")
+    log("Multilogin launcher is not responding", "ERROR")
 
-    # Check if agent binary exists
-    if not os.path.exists(MLX_AGENT_BIN):
-        log(f"Agent binary not found at {MLX_AGENT_BIN}", "ERROR")
+    if not os.path.exists(MLX_DESKTOP_BIN):
+        log(f"Desktop app not found at {MLX_DESKTOP_BIN}", "ERROR")
         return False
 
-    # Start agent in background
-    # Note: Agent requires a display, so DISPLAY must be set
-    env = os.environ.copy()
-    if "DISPLAY" not in env:
-        env["DISPLAY"] = ":1"
-
-    try:
-        subprocess.Popen(
-            [MLX_AGENT_BIN],
-            env=env,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            start_new_session=True,
-        )
-    except Exception as e:
-        log(f"Failed to start agent: {e}", "ERROR")
-        return False
-
-    # Wait for agent to start
-    log("Waiting for agent to initialize...")
-    for i in range(AGENT_START_TIMEOUT):
-        time.sleep(1)
-        if check_agent_running():
-            log(f"Agent started successfully (took {i+1}s)")
-            return True
-
-    log("Agent failed to start within timeout", "ERROR")
+    log(f"Start it with:  sudo systemctl start {MLX_DESKTOP_UNIT}", "ERROR")
+    log("It needs the VNC display (DISPLAY=:1); the unit sets that up.", "ERROR")
     return False
 
 
