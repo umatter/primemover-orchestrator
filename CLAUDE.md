@@ -171,6 +171,9 @@ applies.
 - `experiment_designer/spec/job_registry.py` - Job type definitions and validation
 - `scripts/har-drain.sh` - HAR/job-data spool-and-drain sidecar (buffer → Nextcloud)
 - `scripts/mlx-proxy-gen.py` - generate N Multilogin sticky-session proxy records (one exit IP per bot)
+- `scripts/monitor-memory.sh` - per-component **PSS** memory + browser-instance count + disk; `--json` for a sampler. Uses PSS (shared pages counted once), not summed RSS, which over-counted the browser total ~5x at 19 concurrent browsers. `system.used_mb`/`available_mb` from `free` are the box-level ground truth.
+- `scripts/reap-orphan-browsers.sh` - kill Mimic browsers older than a session could be (orphan sweep)
+- `scripts/churn-soak.py` - drive many short session lifecycles to expose slow leaks over churn
 - `infrastructure/systemd/` - VM service units (lambda, multilogin, health-check, har-drain)
 
 ### Proxies / exit IPs
@@ -194,6 +197,29 @@ sources:
   meaningful dead-on-arrival rate** (~1 in 4 in a small sample), which is why the
   generator's `--verify` resolves each exit and rejects duplicates/failures
   before the credentials are used.
+
+### Parallel-bot capacity (measured 2026-08-24, ex63: 20 cores / 62 GB)
+
+Concurrency is capped by `runner.MaxParallelExecution` (the fixed browser
+thread-pool size). Measured limits, in the order they actually bind:
+
+1. **Multilogin `/profile/create` rate limit — the first real ceiling.** The
+   workspace allows 50 API ops/min (`workspace/restrictions.ratelimit`). Twenty
+   bots launching in the *same second* overran it: one of 20 failed init with a
+   `429`, the rest ran fine. So **~15 simultaneous launches is clean; beyond that,
+   stagger `start_at` over 60-90s** so profile-creates stay under 50/min. This
+   limits launch *rate*, not how many can *run*.
+2. **RAM is a distant second.** Real per-bot cost is **~0.85 GB (PSS/`free`),
+   not the ~1.8 GB an earlier summed-RSS reading suggested** — 19 concurrent bots
+   used ~30 GB of 62, leaving 33 GB free. By memory alone the box holds ~40-50.
+   Always judge headroom from `free` / PSS, never from summed RSS.
+3. **CPU, `/dev/shm`, task limits: not binding below ~30 bots.** VA-API decode
+   keeps each browser mostly idle-waiting; `/dev/shm` ran ~70 MB per browser of
+   its 32 GB.
+
+Proven clean at 15 concurrent (twice). 19 ran with only the one rate-limit
+casualty. Net: **~15 with instant launch, ~30-40 with staggered launch**, at
+which point the binding constraint is exit-IP supply and GB budget, not the box.
 
 ### Correlation IDs
 
