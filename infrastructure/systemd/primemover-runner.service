@@ -29,7 +29,13 @@ ExecStartPre=/bin/sleep 30
 # today) and systemd does not expand globs in ExecStart. `exec` so systemd tracks
 # the JVM directly rather than a shell wrapper, which keeps MAINPID and the
 # restart logic honest.
-ExecStart=/bin/sh -c 'exec java -Xmx2g -Xms512m -jar target/primemover-runner-*.jar --spring.profiles.active=local --spring.config.location=config/'
+# -Xmx4g, raised from 2g on 2026-08-24 for concurrent operation. The recorder's
+# MITM proxies run INSIDE this JVM, one per concurrent session, buffering HAR
+# data in heap. Measured: 8 concurrent sessions put the JVM at 2.86 GB RSS
+# against the old 2 GB heap cap; 15 sessions (runner.MaxParallelExecution=15)
+# need the headroom. The box has 62 GB; browsers peak ~1.8 GB each OUTSIDE this
+# JVM, so 15 bots + a 4 GB runner still leaves >25 GB free.
+ExecStart=/bin/sh -c 'exec java -Xmx4g -Xms512m -jar target/primemover-runner-*.jar --spring.profiles.active=local --spring.config.location=config/'
 
 Restart=always
 RestartSec=30
