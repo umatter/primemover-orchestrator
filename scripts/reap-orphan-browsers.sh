@@ -49,7 +49,13 @@ found=0
 # target the roots and let the children go with them.
 while read -r pid; do
     [[ -n "$pid" ]] || continue
-    args=$(tr '\0' ' ' < "/proc/$pid/cmdline" 2>/dev/null || true)
+    # `cat`, not `< /proc/$pid/cmdline`: when we kill a root browser its
+    # sub-processes vanish mid-loop, and a bash input redirect on a now-gone
+    # /proc file prints a "No such file" error to the script's own stderr BEFORE
+    # tr's 2>/dev/null can catch it. cat handles the missing file cleanly, so the
+    # output stays quiet in exactly the case that matters -- an actual reap.
+    args=$(cat "/proc/$pid/cmdline" 2>/dev/null | tr '\0' ' ')
+    [[ -n "$args" ]] || continue
     case "$args" in
         *mimic_151*--user-data-dir=*)
             case "$args" in *--type=*) continue ;; esac  # a child, skip
