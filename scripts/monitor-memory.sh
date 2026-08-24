@@ -31,13 +31,27 @@ get_process_memory() {
     # $2 is a human label passed by callers for readability at the call site;
     # it is deliberately not bound here, since nothing in this function uses it.
 
-    # Get RSS memory in KB, sum all matching processes
-    local mem_kb
-    mem_kb=$(ps aux | grep -E "$pattern" | grep -v grep | awk '{sum += $6} END {print sum+0}')
-    local mem_mb
-    mem_mb=$((mem_kb / 1024))
+    # Sum PROPORTIONAL set size (PSS), not RSS. PSS counts each shared page once
+    # (split among the processes sharing it), so summing it across a multi-process
+    # app gives an honest total. Summing RSS -- what this did before -- counts the
+    # shared browser binary, libraries and /dev/shm once PER sub-process, which
+    # inflated the browser total ~5x at 19 concurrent browsers (it read 60 GB of
+    # "browser" on a 62 GB box while 33 GB was actually free). smaps_rollup is
+    # cheap and present on this kernel; fall back to VmRSS where it is unreadable
+    # (older kernel or a cross-user process), which at worst restores the old
+    # behaviour for that one process rather than failing.
+    local total_kb=0 pid pss rss
+    for pid in $(pgrep -f "$pattern" 2>/dev/null); do
+        pss=$(awk '/^Pss:/{s+=$2} END{print s+0}' "/proc/$pid/smaps_rollup" 2>/dev/null || echo 0)
+        if [[ "$pss" -gt 0 ]]; then
+            total_kb=$((total_kb + pss))
+        else
+            rss=$(awk '/^VmRSS:/{print $2}' "/proc/$pid/status" 2>/dev/null || echo 0)
+            total_kb=$((total_kb + rss))
+        fi
+    done
 
-    echo "$mem_mb"
+    echo $((total_kb / 1024))
 }
 
 get_process_count() {
@@ -115,6 +129,7 @@ monitor_once() {
     "percent": $mem_percent
   },
   "components": {
+    "_metric": "pss_mb",
     "vnc_mb": $vnc_mem,
     "multilogin_mb": $multilogin_mem,
     "chrome_mb": $chrome_mem,
@@ -138,7 +153,7 @@ EOF
         printf "  Total: %'d MB | Used: %'d MB (%d%%) | Available: %'d MB\n" \
             "$total_mem" "$used_mem" "$mem_percent" "$available_mem"
 
-        echo -e "\n${CYAN}Component Memory:${NC}"
+        echo -e "\n${CYAN}Component Memory (PSS -- shared pages counted once):${NC}"
 
         # VNC
         if [[ $vnc_mem -gt $ALERT_THRESHOLD_MB ]]; then
@@ -187,12 +202,10 @@ EOF
         # Log to file
         echo "$timestamp | avail:${available_mem}MB | browsers:${total_browser_mem}MB/${browser_instances}inst | runner:${runner_mem}MB | mlxdisk:${mlx_profiles_mb}MB | rootfree:${root_avail_gb}GB" >> "$LOG_FILE"
 
-        # Alert check
-        if [[ $total_browser_mem -gt $ALERT_THRESHOLD_MB ]]; then
-            echo -e "\n${RED}WARNING: Browser memory usage is high (${total_browser_mem} MB)${NC}"
-            echo -e "${YELLOW}Consider restarting Multilogin or splitting long sessions into batches.${NC}"
-        fi
-
+        # Capacity signal is system available memory, not a per-component RSS
+        # sum. The old "browser memory high -> split into batches" warning was
+        # OLD-VM guidance that fired on a handful of healthy bots and no longer
+        # applies (62 GB host, ~0.85 GB PSS per bot). available_mem is the truth.
         if [[ $available_mem -lt 4000 ]]; then
             echo -e "\n${RED}WARNING: Low system memory (${available_mem} MB available)${NC}"
         fi
