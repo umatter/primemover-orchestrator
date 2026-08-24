@@ -170,7 +170,30 @@ applies.
 - `experiment_designer/spec/design_expander.py` - Factorial design expansion
 - `experiment_designer/spec/job_registry.py` - Job type definitions and validation
 - `scripts/har-drain.sh` - HAR/job-data spool-and-drain sidecar (buffer → Nextcloud)
+- `scripts/mlx-proxy-gen.py` - generate N Multilogin sticky-session proxy records (one exit IP per bot)
 - `infrastructure/systemd/` - VM service units (lambda, multilogin, health-check, har-drain)
+
+### Proxies / exit IPs
+
+A personalization study needs roughly one stable exit IP per bot; a single shared
+proxy IP is both a detection signal and an experimental confound across arms. Two
+sources:
+
+- **privateproxy** — the `103.195.116.28:5432` record in the `proxies` table.
+  One static endpoint (one exit IP), fine for a single bot; not enough for
+  parallel personas.
+- **Multilogin proxy** — part of the workspace plan (verified 2026-08-24 on the
+  `AutomateS` plan). `scripts/mlx-proxy-gen.py --count N --verify` mints N sticky
+  residential sessions via `profile-proxy.multilogin.com`, each a plain
+  `host:port:user:pass` on `gate.multilogin.com` with its own exit IP and a 24h
+  TTL. They drop straight into `proxies` records — no runner or MLX-profile
+  change. Verified end to end: 3 bots each egressed from exactly their assigned
+  exit (read back from the captured IP-echo page in MinIO). Budget is GB-metered
+  (~450 MB per bot-hour measured; a 15-bot 1h run ≈ 6-7 GB); the balance is only
+  visible in the Multilogin app, not the API. **Freshly-minted sessions have a
+  meaningful dead-on-arrival rate** (~1 in 4 in a small sample), which is why the
+  generator's `--verify` resolves each exit and rejects duplicates/failures
+  before the credentials are used.
 
 ### Correlation IDs
 
