@@ -45,6 +45,24 @@ get_process_count() {
     ps aux | grep -E "$pattern" | grep -v grep | wc -l
 }
 
+# Count distinct live browser INSTANCES (not sub-processes). Each Multilogin
+# Mimic browser runs with a unique --user-data-dir; counting those is the signal
+# that matters for churn: at a quiet moment between sessions this should be ~0,
+# and a number that climbs over a churn soak is an orphan-process leak.
+get_browser_instances() {
+    local n
+    n=$(ps -eo args | grep -oE -- '--user-data-dir=[^ ]+' | grep -iE 'mimic|mlx|multilogin' | sort -u | wc -l)
+    echo "$n"
+}
+
+# Disk usage of the paths that grow over weeks: the MLX profile store and the
+# runner's log dir. HAR now ships to MinIO off-host, so it is not tracked here.
+dir_mb() {
+    local d="$1"
+    [[ -d "$d" ]] || { echo 0; return; }
+    du -sm "$d" 2>/dev/null | awk '{print $1+0}'
+}
+
 monitor_once() {
     local json_mode="$1"
     local timestamp
@@ -67,6 +85,14 @@ monitor_once() {
     # Get process counts
     local chrome_count
     chrome_count=$(get_process_count "chrome|chromium")
+    local browser_instances
+    browser_instances=$(get_browser_instances)
+
+    # Disk (weeks-scale creep)
+    local mlx_profiles_mb log_dir_mb root_avail_gb
+    mlx_profiles_mb=$(dir_mb "/home/primemover/mlx/profiles")
+    log_dir_mb=$(dir_mb "$LOG_DIR")
+    root_avail_gb=$(df -BG --output=avail / | tail -1 | tr -dc '0-9')
 
     # System memory
     local total_mem
@@ -95,7 +121,13 @@ monitor_once() {
     "chrome_processes": $chrome_count,
     "runner_mb": $runner_mem,
     "lambda_mb": $lambda_mem,
-    "total_browser_mb": $total_browser_mem
+    "total_browser_mb": $total_browser_mem,
+    "browser_instances": $browser_instances
+  },
+  "disk": {
+    "mlx_profiles_mb": $mlx_profiles_mb,
+    "log_dir_mb": $log_dir_mb,
+    "root_avail_gb": $root_avail_gb
   }
 }
 EOF
@@ -149,10 +181,11 @@ EOF
             echo -e "  Lambda Server:  ${YELLOW}not running${NC}"
         fi
 
-        echo -e "\n  ${CYAN}Total Browser:  ${total_browser_mem} MB${NC}"
+        echo -e "\n  ${CYAN}Total Browser:  ${total_browser_mem} MB  (${browser_instances} live instance(s))${NC}"
+        echo -e "  ${CYAN}Disk: MLX profiles ${mlx_profiles_mb} MB | logs ${log_dir_mb} MB | root free ${root_avail_gb} GB${NC}"
 
         # Log to file
-        echo "$timestamp | System: ${used_mem}/${total_mem}MB (${mem_percent}%) | VNC: ${vnc_mem}MB | MLX: ${multilogin_mem}MB | Chrome: ${chrome_mem}MB (${chrome_count}) | Runner: ${runner_mem}MB | Lambda: ${lambda_mem}MB" >> "$LOG_FILE"
+        echo "$timestamp | avail:${available_mem}MB | browsers:${total_browser_mem}MB/${browser_instances}inst | runner:${runner_mem}MB | mlxdisk:${mlx_profiles_mb}MB | rootfree:${root_avail_gb}GB" >> "$LOG_FILE"
 
         # Alert check
         if [[ $total_browser_mem -gt $ALERT_THRESHOLD_MB ]]; then
@@ -160,7 +193,7 @@ EOF
             echo -e "${YELLOW}Consider restarting Multilogin or splitting long sessions into batches.${NC}"
         fi
 
-        if [[ $available_mem -lt 1000 ]]; then
+        if [[ $available_mem -lt 4000 ]]; then
             echo -e "\n${RED}WARNING: Low system memory (${available_mem} MB available)${NC}"
         fi
     fi

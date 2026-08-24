@@ -171,6 +171,9 @@ applies.
 - `experiment_designer/spec/job_registry.py` - Job type definitions and validation
 - `scripts/har-drain.sh` - HAR/job-data spool-and-drain sidecar (buffer → Nextcloud)
 - `scripts/mlx-proxy-gen.py` - generate N Multilogin sticky-session proxy records (one exit IP per bot)
+- `scripts/monitor-memory.sh` - per-component RSS + browser-instance count + disk; `--json` for a sampler
+- `scripts/reap-orphan-browsers.sh` - kill Mimic browsers older than a session could be (orphan sweep)
+- `scripts/churn-soak.py` - drive many short session lifecycles to expose slow leaks over churn
 - `infrastructure/systemd/` - VM service units (lambda, multilogin, health-check, har-drain)
 
 ### Proxies / exit IPs
