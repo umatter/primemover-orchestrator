@@ -577,10 +577,18 @@ grep -nE '127\.0\.0\.1:.*(3307|8889)|ALLOW_EMPTY' ../primemover_api/docker-compo
   `primemover-lambda` systemd unit isn't already running it
 
 **Chrome renderer becomes unresponsive on the headless VM after many jobs**
-- Root cause and fix are documented in `docs/chrome-browser-death-fix.txt`
-- Software VP9/AV1 decode + a ChromeDriver V8 heap leak saturate the renderer.
-  Fix lives in `primemover_runner` (H.264 codec override in `VisitJobHandler.java`
-  + `--max-old-space-size=1024` flag), not in this repo
+- Full history, measurements and current status: `docs/chrome-browser-death-fix.txt`
+  (rewritten 2026-08-24 — the old version described two fixes and a 1024 MB heap
+  cap; reality was three H.264 injection vectors, an effective cap of 512, and an
+  undocumented video teardown that cost ~2/3 of the bots' watch time)
+- The software-decode half of the root cause is **gone on this host**: VA-API
+  hardware decode works as of 2026-08-22 (iHD driver + `render`/`video` group
+  membership for `primemover`; groups are read at process start, so restart
+  `primemover-runner` and `multilogin-desktop` after changing them)
+- The V8 heap cap (`--max-old-space-size=512`, `ProfileService.java`) guards a
+  ChromeDriver leak and is hardware-independent — keep it on any host
+- **Never add GL flags (`--use-gl=egl` …) to the MLX profile**: Chrome 151 only
+  allows `(gl=egl-angle, angle=default)`; anything else kills the GPU process
 - `scripts/monitor-memory.sh` watches renderer RSS to catch regressions
 
 **No HAR files / job data on disk, or every job shows `problems writing jobresult`**

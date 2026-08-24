@@ -1,16 +1,78 @@
-Chrome Browser Death on Headless VMs — Root Cause & Fix
+Chrome Browser Death on Headless VMs — Root Cause, Fixes, and Current Status
+=============================================================================
+(rewritten 2026-08-24; the previous version of this file described two fixes
+and a 1024 MB heap cap, which had drifted badly from reality — that drift is
+why the video-teardown behaviour below went unnoticed for a month)
 
-Root cause: Three compounding factors caused the Chrome renderer to become unresponsive after 19-95 jobs:
+THE ORIGINAL INCIDENT (Feb 2026, on the OLD 8-core GPU-less Hetzner VM)
+-----------------------------------------------------------------------
+Three compounding factors made the Chrome renderer unresponsive after 19-95
+jobs:
 
-1. Software video decoding — The VM has no hardware GPU, so YouTube's VP9/AV1 video codecs are decoded entirely on CPU, saturating the renderer's main thread.
-2. V8 heap bloat — A known ChromeDriver memory leak (Selenium #13510/#13533) causes the V8 heap to grow to 4GB+ as window objects from previous SPA navigations are never released.
-3. GC thrashing — At ~4GB heap, V8 garbage collection cycles consume all CPU, leaving zero capacity for WebDriver/CDP commands. The browser appears "dead" but the process is actually running at 100% CPU.
+1. Software video decoding — the VM had no GPU, so YouTube's VP9/AV1 was
+   decoded on CPU, saturating the renderer main thread.   [hardware-dependent]
+2. V8 heap bloat — a ChromeDriver leak (Selenium #13510/#13533) grew the heap
+   to 4GB+ across SPA navigations.                        [hardware-INdependent]
+3. GC thrashing at ~4GB heap left no CPU for WebDriver commands.
 
-Normal users don't hit this because they have real GPUs for hardware video decode and don't use ChromeDriver.
+WHAT WAS ACTUALLY DEPLOYED (as of 2026-08, in primemover_runner)
+----------------------------------------------------------------
+Not two fixes but three H.264 injection vectors plus two side effects,
+accumulated over commits e8a80e1, 4d44084, 70e55eb:
 
-Fix (two changes in primemover_runner):
+a) MAIN-world extension (config/h264-override-extension/), loaded into every
+   MLX profile via ProfileService.java. On YouTube this is the ONLY effective
+   vector. It also carried an UNDOCUMENTED side effect: it paused, muted and
+   unloaded the <video> element 3s after every navigation ("free decoder
+   buffers"). See MEASUREMENT below.
+b) CDP Page.addScriptToEvaluateOnNewDocument (TaskOperator.java) — BROKEN in
+   production: Selenium has no CDP mapping for Mimic 151, fails every session.
+c) Post-load JS (VisitJobHandler.java) — always no-ops on YouTube (the
+   extension wins the document_start race); leaks the override onto
+   non-YouTube pages.
+d) V8 heap cap: --max-old-space-size=512 effective (ProfileService.java);
+   the 1024 in DefaultMultiLoginProfile.json is a stale template value.
 
-1. H.264 codec override (VisitJobHandler.java) — Injects JavaScript after each page load that overrides MediaSource.isTypeSupported to reject VP9/AV1, forcing YouTube to fall back to H.264 (much lighter for software decoding). Includes toString() stealth so the override looks like native code.
-2. V8 heap cap (ProfileService.java, DefaultMultiLoginProfile.json) — Adds --max-old-space-size=1024 Chrome flag to limit the V8 heap to 1GB, preventing runaway growth.
+MEASUREMENT OF THE VIDEO TEARDOWN (2026-08-24, production stack, A/B)
+---------------------------------------------------------------------
+Instrumented extension, MLX/Mimic browser, one full YouTube e2e per arm,
+video element sampled in-page, data recovered from per-job localstorage
+captures in MinIO:
 
-Results: Renderer RSS dropped from 4-6GB to ~800MB, CPU from 100% to ~20%. Two consecutive 131-job queues completed successfully (vs crashing at 19-95 jobs before).
+  WITH teardown:  playback starts ~2.5s after the watch page loads; the
+                  teardown kills it at +3s (readyState 0, currentTime 0,
+                  muted); dead ~15-20s; YouTube SELF-RECOVERS: resumes,
+                  unmuted, playhead advancing (5.0s -> 25.0s over 20s).
+                  Killed again after every SPA navigation.
+  WITHOUT:        continuous playback from +3s, never muted.
+
+So bots DO watch video (the recovery is why player telemetry showed
+streaming), but each navigation loses its first ~15-20s — on 30s dwells,
+roughly two thirds of the intended watch signal. Removal PR:
+primemover_runner #54. Only one non-test experiment ran while the teardown
+was live: experiment 42 (2026-08-12..18); its arms were affected uniformly.
+
+CURRENT STATUS ON THE NEW HOST (ex63: 20 cores, 62 GB, Arrow Lake iGPU)
+-----------------------------------------------------------------------
+Cause 1 is GONE as of 2026-08-22: VA-API hardware decode works end to end
+(intel-media-va-driver-non-free 26.1.2; primemover in BOTH the render and
+video groups; services restarted so they hold the groups; verified by the
+Mimic gpu-process holding /dev/dri/renderD128 during a real e2e).
+Measured with hardware decode live, full 20-job YouTube run:
+  H.264 override only: 67 CPU-s, peak browser RSS 1.9 GB
+  no override at all:  70 CPU-s, peak browser RSS 1.9 GB
+=> the codec override no longer buys performance. It is retained for now so
+the negotiated codec does not change mid-study; retire it at an experiment
+boundary, together with vectors (b) and (c).
+
+Causes 2-3 are a ChromeDriver bug and are NOT fixed by hardware: keep the
+V8 heap cap (d) regardless of host.
+
+OPERATIONAL NOTES
+-----------------
+- Supplementary groups are read at process start: after changing group
+  membership, restart primemover-runner AND multilogin-desktop.
+- Do NOT add GL flags (--use-gl=egl etc.) to the MLX profile: Chrome 151
+  allows only (gl=egl-angle, angle=default); anything else kills the GPU
+  process outright.
+- scripts/monitor-memory.sh watches renderer RSS to catch regressions.
