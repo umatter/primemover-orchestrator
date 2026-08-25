@@ -586,6 +586,33 @@ Helper scripts in `scripts/`:
 - `multilogin-login.py` — authenticates the Multilogin agent
 - `boot-health-check.sh` / `monitor-memory.sh` — health and memory monitoring
 
+### Reaching things from off the box (ex63 edge)
+
+Everything on ex63 that a browser should reach goes through the Traefik edge in
+`/opt/ex63-infra` — tailnet-only, real certificates, DNS pointing at the box's
+Tailscale IP. Nothing is public. The pieces, and where each is wired:
+
+| URL | what | wired in |
+|---|---|---|
+| `primemover.qamelab.org` | the GUI (`ghcr.io/umatter/primemover_gui:sha-…`) | `ex63-infra/compose/apps.yml` |
+| `primemover.qamelab.org/api` | the API, same origin as the GUI, so no CORS and no `API_ENDPOINT` | `primemover_api/docker-compose.ex63.yml` (opt-in overlay) |
+| `pm-ops.qamelab.org` | **this repo's Grafana** — runner/Laravel file logs, HAR data, Tempo traces | `docker-compose.ex63.yml` here (opt-in overlay) |
+| `ops.qamelab.org` | the *infra* Grafana — node/cAdvisor, container stdout | `ex63-infra/compose/observability.yml` |
+
+The overlays are opt-in on purpose: the base compose files stay portable and
+bind to `127.0.0.1`. Apply with
+`docker compose -f docker-compose.yml -f docker-compose.ex63.yml up -d grafana`
+(and the API's equivalent). Two traps, both hit once: the overlays interpolate
+`DOMAIN` from *that repo's* `.env`, and without it the rule renders as
+``Host(`pm-ops.`)`` with no error; and a Traefik router's default priority is
+its rule **length**, so an explicit priority meant to win must exceed ~30, not
+merely be non-zero. Testing from the box itself gives `403` via `127.0.0.1`
+(the `tailnet-only` allow-list sees the docker bridge address) — use
+`--resolve host:443:<ex63-tailnet-ip>` instead.
+
+Loki, Prometheus and Tempo have no auth of their own and are deliberately
+**not** routed; reach them through Grafana, or over an SSH tunnel.
+
 **Do not deploy the API's `docker-compose.yml` from a branch that predates the
 post-incident hardening.** MySQL and Redis must bind to `127.0.0.1` only and
 `MYSQL_ALLOW_EMPTY_PASSWORD` must be absent. Verify before `docker compose up`:

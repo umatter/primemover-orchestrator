@@ -1,0 +1,46 @@
+# ex63 edge integration -- OPT-IN overlay, NOT auto-loaded.
+#
+# The base docker-compose.yml stays portable: it knows nothing about traefik or
+# the shared edge network, and publishes the monitoring stack on 127.0.0.1 only.
+# This file joins the PrimeMover Grafana to the shared `ex63_internal` network
+# so the edge traefik can reach it, and routes
+#
+#     https://pm-ops.${DOMAIN}   -> pm-orchestrator-grafana:3000
+#
+# ONLY Grafana gets a route. Loki, Prometheus and Tempo have no authentication
+# of their own; they stay on the internal network behind Grafana's login, and
+# on 127.0.0.1 for anything running on the box (the orchestrator CLI, promtail).
+#
+# This is a different Grafana from the infra one at ops.${DOMAIN}
+# (ex63-infra, node-exporter/cAdvisor/container stdout). This one carries the
+# PrimeMover-specific sources: the runner's and Laravel's file logs, HAR-derived
+# Lambda data, Tempo traces, correlation-ID links.
+#
+# Use on ex63 ONLY, and explicitly:
+#
+#     docker compose -f docker-compose.yml -f docker-compose.ex63.yml up -d grafana
+#
+# Requires DOMAIN in .env, the `ex63_internal` network (created by the ex63-infra
+# edge stack), and a DNS A record pm-ops.${DOMAIN} -> the box's tailnet IP
+# (DNS-only, like the other hosts; the tailnet-only middleware does the rest).
+services:
+  grafana:
+    networks:
+      - orchestrator-network
+      - ex63_internal
+    environment:
+      # Grafana builds absolute links (alerts, share, OAuth) from this; behind
+      # a TLS-terminating proxy it must be the public URL, not localhost:3000.
+      - GF_SERVER_ROOT_URL=https://pm-ops.${DOMAIN}
+    labels:
+      traefik.enable: "true"
+      # Two networks; dial the one the edge can route to.
+      traefik.docker.network: ex63_internal
+      traefik.http.routers.pm-grafana.rule: Host(`pm-ops.${DOMAIN}`)
+      traefik.http.routers.pm-grafana.tls.certresolver: letsencrypt
+      traefik.http.routers.pm-grafana.middlewares: tailnet-only@file
+      traefik.http.services.pm-grafana.loadbalancer.server.port: "3000"
+
+networks:
+  ex63_internal:
+    external: true
