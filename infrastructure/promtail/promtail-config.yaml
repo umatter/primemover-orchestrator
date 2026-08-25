@@ -55,26 +55,41 @@ scrape_configs:
           environment: development
           __path__: /var/log/primemover-runner/*.log
     pipeline_stages:
-      # Match Logback format: 2025-12-02T10:25:21.079+01:00  DEBUG 514253 --- [thread] class  : Message
+      # Logback line, as produced by the runner's logback-spring.xml
+      # (LOG_LEVEL_PATTERN = "%X{} %5p", Spring Boot 3 layout):
+      #
+      #   2026-08-24T20:59:21.413+02:00 correlationId=cr-244|jl-838, crawler.id=244, crawler.name=Stage4 Bot 18, joblist.id=838  INFO 3901671 --- [primemover-runner] [executor-18] primemover.service.JobService : updated data
+      #   2026-08-24T22:28:04.304+02:00   INFO 4052391 --- [primemover-runner] [main] primemover.RunnerApplication : The following 1 profile is active: "local"
+      #
+      # Two things the previous pattern got wrong, which left every runner line
+      # with NO level label (so `level=` filters silently matched nothing):
+      # the MDC context sits BETWEEN the timestamp and the level, and is empty
+      # outside a job thread; and there are two bracketed fields (app name,
+      # then thread), not one.
       - multiline:
           firstline: '^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}'
           max_wait_time: 3s
       - regex:
-          expression: '^(?P<timestamp>\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3})[^\s]*\s+(?P<level>\w+)\s+(?P<pid>\d+)\s+---\s+\[(?P<thread>[^\]]+)\]\s+(?P<logger>[^\s]+)\s+:\s+(?P<message>.*)$'
+          expression: '^(?P<timestamp>\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}[+-]\d{2}:\d{2})\s+(?P<mdc>.*?)\s*(?P<level>TRACE|DEBUG|INFO|WARN|ERROR)\s+(?P<pid>\d+)\s+---\s+\[(?P<app>[^\]]+)\]\s+\[(?P<thread>[^\]]+)\]\s+(?P<logger>[^\s]+)\s+:\s+(?P<message>.*)$'
       - labels:
           level:
+      # The offset MUST be part of the parsed value. Capturing only the local
+      # time and parsing it with a zone-less layout made Loki treat 16:06+02:00
+      # as 16:06Z -- two hours in the future -- and reject every runner line
+      # with "timestamp too new" the moment the regex above started matching.
       - timestamp:
           source: timestamp
-          format: "2006-01-02T15:04:05.000"
-      # Extract MDC context from log message (crawler.id, joblist.id, correlationId)
+          format: "2006-01-02T15:04:05.000-07:00"
+      # Extract MDC context (crawler.id, joblist.id, correlationId). It lives in
+      # the prefix, not in the message.
       - regex:
-          source: message
+          source: mdc
           expression: 'crawler\.id=(?P<crawler_id>\d+)'
       - regex:
-          source: message
+          source: mdc
           expression: 'joblist\.id=(?P<queue_id>\d+)'
       - regex:
-          source: message
+          source: mdc
           expression: 'correlationId=(?P<correlation_id>[^\s,]+)'
 
   # ==========================================================================
