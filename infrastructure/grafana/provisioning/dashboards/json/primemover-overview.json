@@ -1,0 +1,170 @@
+{
+  "uid": "primemover-overview",
+  "title": "PrimeMover Overview",
+  "tags": ["primemover"],
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "version": 1,
+  "editable": true,
+  "graphTooltip": 1,
+  "refresh": "30s",
+  "time": { "from": "now-6h", "to": "now" },
+  "templating": {
+    "list": [
+      {
+        "name": "search",
+        "label": "Search logs for",
+        "type": "textbox",
+        "query": "",
+        "current": { "text": "", "value": "" },
+        "description": "Substring matched against runner + API lines in the bottom panel, e.g. cr-244, jl-838, exp-141, a crawler name, or an exception class."
+      }
+    ]
+  },
+  "panels": [
+    {
+      "type": "row", "title": "Health", "collapsed": false,
+      "gridPos": { "x": 0, "y": 0, "w": 24, "h": 1 }, "id": 100
+    },
+    {
+      "type": "stat", "id": 1, "title": "Runner",
+      "description": "Seen = the runner wrote a log line in the last 2 minutes (it polls the API every 60 s, so silence means it is down or hung).",
+      "gridPos": { "x": 0, "y": 1, "w": 4, "h": 4 },
+      "datasource": { "type": "loki", "uid": "loki" },
+      "targets": [ { "refId": "A", "expr": "sum(count_over_time({component=\"runner\"}[2m]))", "instant": true } ],
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "colorMode": "background", "graphMode": "none", "textMode": "value" },
+      "fieldConfig": { "defaults": {
+        "noValue": "SILENT",
+        "mappings": [ { "type": "range", "options": { "from": 1, "to": 1000000000, "result": { "text": "alive", "color": "green" } } },
+                      { "type": "range", "options": { "from": 0, "to": 0, "result": { "text": "SILENT", "color": "red" } } } ],
+        "color": { "mode": "thresholds" }, "thresholds": { "mode": "absolute", "steps": [ { "color": "red", "value": null }, { "color": "green", "value": 1 } ] }
+      } }
+    },
+    {
+      "type": "stat", "id": 2, "title": "Jobs pending",
+      "description": "Last \"jobs detected: N\" reported by the runner's poll of /crawlers-unprocessed.",
+      "gridPos": { "x": 4, "y": 1, "w": 4, "h": 4 },
+      "datasource": { "type": "loki", "uid": "loki" },
+      "targets": [ { "refId": "A", "expr": "last_over_time({component=\"runner\"} |= \"jobs detected:\" | regexp \"jobs detected: (?P<n>\\\\d+)\" | unwrap n [10m])", "instant": true } ],
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "colorMode": "value", "graphMode": "none" },
+      "fieldConfig": { "defaults": { "noValue": "-", "color": { "mode": "thresholds" }, "thresholds": { "mode": "absolute", "steps": [ { "color": "text", "value": null }, { "color": "blue", "value": 1 } ] } } }
+    },
+    {
+      "type": "stat", "id": 3, "title": "Runner errors",
+      "description": "ERROR lines in the selected time range, excluding the recording proxy (LittleProxy/BrowserUp) which is noisy by design.",
+      "gridPos": { "x": 8, "y": 1, "w": 4, "h": 4 },
+      "datasource": { "type": "loki", "uid": "loki" },
+      "targets": [ { "refId": "A", "expr": "sum(count_over_time({component=\"runner\"} |~ \" ERROR \" != \"LittleProxy\" != \"BrowserUp\" [$__range]))", "instant": true } ],
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "colorMode": "value", "graphMode": "none" },
+      "fieldConfig": { "defaults": { "noValue": "0", "color": { "mode": "thresholds" }, "thresholds": { "mode": "absolute", "steps": [ { "color": "green", "value": null }, { "color": "orange", "value": 1 }, { "color": "red", "value": 20 } ] } } }
+    },
+    {
+      "type": "stat", "id": 4, "title": "API errors",
+      "description": "Laravel ERROR/ALERT/CRITICAL entries in the selected time range.",
+      "gridPos": { "x": 12, "y": 1, "w": 4, "h": 4 },
+      "datasource": { "type": "loki", "uid": "loki" },
+      "targets": [ { "refId": "A", "expr": "sum(count_over_time({component=\"api\"} |~ \"\\\\.(ERROR|ALERT|CRITICAL|EMERGENCY):\" [$__range]))", "instant": true } ],
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "colorMode": "value", "graphMode": "none" },
+      "fieldConfig": { "defaults": { "noValue": "0", "color": { "mode": "thresholds" }, "thresholds": { "mode": "absolute", "steps": [ { "color": "green", "value": null }, { "color": "orange", "value": 1 }, { "color": "red", "value": 20 } ] } } }
+    },
+    {
+      "type": "stat", "id": 5, "title": "Joblists finished",
+      "description": "\"execution of joblist N finished\" events in the selected time range — one per completed bot session.",
+      "gridPos": { "x": 16, "y": 1, "w": 4, "h": 4 },
+      "datasource": { "type": "loki", "uid": "loki" },
+      "targets": [ { "refId": "A", "expr": "sum(count_over_time({component=\"runner\"} |= \"execution of joblist\" |= \"finished\" [$__range]))", "instant": true } ],
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "colorMode": "value", "graphMode": "none" },
+      "fieldConfig": { "defaults": { "noValue": "0", "color": { "mode": "fixed", "fixedColor": "blue" } } }
+    },
+    {
+      "type": "stat", "id": 6, "title": "Lambda decisions",
+      "description": "Lambda invocation results written by the runner (LambdaInvocationWriter) in the selected time range.",
+      "gridPos": { "x": 20, "y": 1, "w": 4, "h": 4 },
+      "datasource": { "type": "loki", "uid": "loki" },
+      "targets": [ { "refId": "A", "expr": "sum(count_over_time({component=\"runner\"} |= \"LambdaInvocationWriter\" |= \"writting\" [$__range]))", "instant": true } ],
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "colorMode": "value", "graphMode": "none" },
+      "fieldConfig": { "defaults": { "noValue": "0", "color": { "mode": "fixed", "fixedColor": "purple" } } }
+    },
+
+    {
+      "type": "row", "title": "Activity", "collapsed": false,
+      "gridPos": { "x": 0, "y": 5, "w": 24, "h": 1 }, "id": 101
+    },
+    {
+      "type": "timeseries", "id": 10, "title": "Bot sessions",
+      "description": "Distinct crawlers writing log lines (MDC crawler.id) vs joblists finishing. A run shows as a plateau of active bots followed by a burst of finishes.",
+      "gridPos": { "x": 0, "y": 6, "w": 12, "h": 8 },
+      "datasource": { "type": "loki", "uid": "loki" },
+      "targets": [
+        { "refId": "A", "legendFormat": "active bots", "expr": "count(sum by (crawler_id) (count_over_time({component=\"runner\"} | regexp \"crawler\\\\.id=(?P<crawler_id>\\\\d+)\" | crawler_id != \"\" [$__auto])))" },
+        { "refId": "B", "legendFormat": "joblists finished", "expr": "sum(count_over_time({component=\"runner\"} |= \"execution of joblist\" |= \"finished\" [$__auto]))" }
+      ],
+      "fieldConfig": { "defaults": { "custom": { "drawStyle": "line", "lineWidth": 2, "fillOpacity": 10 }, "unit": "short", "decimals": 0 },
+        "overrides": [ { "matcher": { "id": "byName", "options": "joblists finished" }, "properties": [ { "id": "custom.drawStyle", "value": "bars" } ] } ] },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "multi" } }
+    },
+    {
+      "type": "timeseries", "id": 11, "title": "Jobs pending at the API",
+      "description": "\"jobs detected: N\" from each runner poll. Should drain to 0 as a run progresses; a flat non-zero line with no bot activity means the runner is not picking work up (start_at in the past? Multilogin down?).",
+      "gridPos": { "x": 12, "y": 6, "w": 12, "h": 8 },
+      "datasource": { "type": "loki", "uid": "loki" },
+      "targets": [ { "refId": "A", "legendFormat": "pending", "expr": "max_over_time({component=\"runner\"} |= \"jobs detected:\" | regexp \"jobs detected: (?P<n>\\\\d+)\" | unwrap n [$__auto])" } ],
+      "fieldConfig": { "defaults": { "custom": { "drawStyle": "line", "lineWidth": 2, "fillOpacity": 15, "spanNulls": true }, "unit": "short", "decimals": 0, "color": { "mode": "fixed", "fixedColor": "blue" } } },
+      "options": { "legend": { "displayMode": "hidden" }, "tooltip": { "mode": "single" } }
+    },
+    {
+      "type": "timeseries", "id": 12, "title": "Warnings and errors",
+      "description": "Runner WARN/ERROR (recording-proxy noise excluded) and Laravel ERROR+ per interval.",
+      "gridPos": { "x": 0, "y": 14, "w": 12, "h": 8 },
+      "datasource": { "type": "loki", "uid": "loki" },
+      "targets": [
+        { "refId": "A", "legendFormat": "runner ERROR", "expr": "sum(count_over_time({component=\"runner\"} |~ \" ERROR \" != \"LittleProxy\" != \"BrowserUp\" [$__auto]))" },
+        { "refId": "B", "legendFormat": "runner WARN", "expr": "sum(count_over_time({component=\"runner\"} |~ \" WARN \" != \"LittleProxy\" != \"BrowserUp\" != \"HarCaptureFilter\" [$__auto]))" },
+        { "refId": "C", "legendFormat": "api ERROR+", "expr": "sum(count_over_time({component=\"api\"} |~ \"\\\\.(ERROR|ALERT|CRITICAL|EMERGENCY):\" [$__auto]))" }
+      ],
+      "fieldConfig": { "defaults": { "custom": { "drawStyle": "bars", "fillOpacity": 60, "stacking": { "mode": "normal" } }, "unit": "short", "decimals": 0 },
+        "overrides": [
+          { "matcher": { "id": "byName", "options": "runner ERROR" }, "properties": [ { "id": "color", "value": { "mode": "fixed", "fixedColor": "red" } } ] },
+          { "matcher": { "id": "byName", "options": "runner WARN" }, "properties": [ { "id": "color", "value": { "mode": "fixed", "fixedColor": "orange" } } ] },
+          { "matcher": { "id": "byName", "options": "api ERROR+" }, "properties": [ { "id": "color", "value": { "mode": "fixed", "fixedColor": "dark-red" } } ] }
+        ] },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "multi" } }
+    },
+    {
+      "type": "timeseries", "id": 13, "title": "Log volume by component",
+      "description": "Lines per interval. The runner runs at DEBUG under the `local` profile and dominates.",
+      "gridPos": { "x": 12, "y": 14, "w": 12, "h": 8 },
+      "datasource": { "type": "loki", "uid": "loki" },
+      "targets": [ { "refId": "A", "legendFormat": "{{component}}", "expr": "sum by (component) (count_over_time({component=~\".+\"}[$__auto]))" } ],
+      "fieldConfig": { "defaults": { "custom": { "drawStyle": "line", "lineWidth": 1, "fillOpacity": 20, "stacking": { "mode": "normal" } }, "unit": "short", "decimals": 0 } },
+      "options": { "legend": { "displayMode": "list", "placement": "right" }, "tooltip": { "mode": "multi", "sort": "desc" } }
+    },
+
+    {
+      "type": "row", "title": "Logs", "collapsed": false,
+      "gridPos": { "x": 0, "y": 22, "w": 24, "h": 1 }, "id": 102
+    },
+    {
+      "type": "logs", "id": 20, "title": "Runner — warnings and errors (proxy noise excluded)",
+      "gridPos": { "x": 0, "y": 23, "w": 12, "h": 12 },
+      "datasource": { "type": "loki", "uid": "loki" },
+      "targets": [ { "refId": "A", "expr": "{component=\"runner\"} |~ \" (WARN|ERROR) \" != \"LittleProxy\" != \"BrowserUp\" != \"HarCaptureFilter\"" } ],
+      "options": { "showTime": true, "wrapLogMessage": true, "prettifyLogMessage": false, "enableLogDetails": true, "sortOrder": "Descending", "dedupStrategy": "none" }
+    },
+    {
+      "type": "logs", "id": 21, "title": "API — errors",
+      "gridPos": { "x": 12, "y": 23, "w": 12, "h": 12 },
+      "datasource": { "type": "loki", "uid": "loki" },
+      "targets": [ { "refId": "A", "expr": "{component=\"api\"} |~ \"\\\\.(ERROR|ALERT|CRITICAL|EMERGENCY):\"" } ],
+      "options": { "showTime": true, "wrapLogMessage": true, "prettifyLogMessage": false, "enableLogDetails": true, "sortOrder": "Descending", "dedupStrategy": "none" }
+    },
+    {
+      "type": "logs", "id": 22, "title": "Search: runner + API lines containing \"$search\"",
+      "description": "Set the 'Search logs for' box at the top. Correlation IDs work: cr-<crawler>, jl-<joblist> in the runner; exp-<experiment>|cr-…|q-…|j-… in the API.",
+      "gridPos": { "x": 0, "y": 35, "w": 24, "h": 14 },
+      "datasource": { "type": "loki", "uid": "loki" },
+      "targets": [ { "refId": "A", "expr": "{component=~\"runner|api\"} |= \"$search\" != \"RestTemplate\"" } ],
+      "options": { "showTime": true, "showLabels": true, "wrapLogMessage": true, "prettifyLogMessage": false, "enableLogDetails": true, "sortOrder": "Descending", "dedupStrategy": "none" }
+    }
+  ]
+}

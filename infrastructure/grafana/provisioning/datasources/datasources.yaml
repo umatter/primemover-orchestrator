@@ -1,10 +1,17 @@
 apiVersion: 1
 
+# Container names, not compose service names. With the ex63 overlay applied
+# (docker-compose.ex63.yml) Grafana also sits on ex63_internal, where the infra
+# stack has its OWN `loki` and `prometheus` -- and Docker's DNS resolved the
+# short names to those. Every panel then queried the wrong Loki and came back
+# empty, with no error anywhere. The container names are unique on the host.
+
 datasources:
   - name: Loki
     type: loki
     access: proxy
-    url: http://loki:3100
+    uid: loki
+    url: http://pm-orchestrator-loki:3100
     jsonData:
       maxLines: 1000
       derivedFields:
@@ -21,7 +28,8 @@ datasources:
   - name: Prometheus
     type: prometheus
     access: proxy
-    url: http://prometheus:9090
+    uid: prometheus
+    url: http://pm-orchestrator-prometheus:9090
     isDefault: true
     jsonData:
       exemplarTraceIdDestinations:
@@ -31,7 +39,7 @@ datasources:
   - name: Tempo
     type: tempo
     access: proxy
-    url: http://tempo:3200
+    url: http://pm-orchestrator-tempo:3200
     uid: tempo
     jsonData:
       tracesToLogsV2:
