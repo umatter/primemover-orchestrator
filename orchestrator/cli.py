@@ -1656,7 +1656,9 @@ def db_migrate(ctx: click.Context, fresh: bool, seed: bool, force: bool) -> None
         if seed and not fresh:
             # Run seed separately
             console.print("\n[dim]Running seeder...[/dim]")
-            seed_success, seed_output = manager.api.run_artisan("db:seed")
+            seed_success, seed_output = manager.api.run_artisan(
+                "db:seed --force" if force else "db:seed"
+            )
             if seed_success:
                 console.print("[green]Seeding completed![/green]")
             else:
