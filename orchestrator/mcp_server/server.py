@@ -2485,6 +2485,53 @@ def get_current_settings() -> str:
     )
 
 
+def _auth_token_from_env() -> str | None:
+    token = os.environ.get("MCP_AUTH_TOKEN", "").strip()
+    return token or None
+
+
+def build_http_app(token: str):
+    """Wrap the streamable-HTTP ASGI app so every MCP request needs a bearer token.
+
+    The server has no notion of users: whoever reaches the port gets every tool,
+    including the ``pm_`` writes. Network-level controls (a tailnet allow-list, a
+    tunnel) say who can reach it; the token says who may use it. ``GET /health``
+    stays open so the edge proxy and the boot check can probe liveness.
+    """
+    import hmac
+
+    from starlette.responses import JSONResponse, PlainTextResponse
+
+    inner = mcp.streamable_http_app()
+
+    async def app(scope, receive, send):
+        if scope["type"] != "http":
+            await inner(scope, receive, send)
+            return
+
+        if scope["method"] == "GET" and scope["path"] == "/health":
+            await PlainTextResponse("ok")(scope, receive, send)
+            return
+
+        auth = ""
+        for name, value in scope.get("headers", []):
+            if name == b"authorization":
+                auth = value.decode("latin-1")
+                break
+        scheme, _, presented = auth.partition(" ")
+        if scheme.lower() != "bearer" or not hmac.compare_digest(presented.strip(), token):
+            await JSONResponse(
+                {"error": "unauthorized"},
+                status_code=401,
+                headers={"WWW-Authenticate": "Bearer"},
+            )(scope, receive, send)
+            return
+
+        await inner(scope, receive, send)
+
+    return app
+
+
 def main():
     """
     Run the MCP server.
@@ -2500,7 +2547,9 @@ def main():
     - Command line with host: python -m orchestrator.mcp_server.server --http --host 0.0.0.0
 
     SECURITY NOTE: By default, HTTP mode binds to localhost (127.0.0.1) only.
-    Use --host 0.0.0.0 to allow external connections (ensure proper network security).
+    Use --host to bind elsewhere (ensure proper network security). HTTP mode
+    always requires MCP_AUTH_TOKEN; requests without the matching bearer token
+    get 401. ``GET /health`` is the only unauthenticated route.
     """
     if _transport == "streamable-http":
         print(f"Starting MCP server in HTTP mode on {_host}:{_port}...", file=sys.stderr)
@@ -2510,11 +2559,26 @@ def main():
             print("WARNING: Server bound to all interfaces (0.0.0.0).", file=sys.stderr)
             print("         Ensure proper network security is in place.", file=sys.stderr)
 
+        token = _auth_token_from_env()
+        if token is None:
+            # Fail closed: an unauthenticated HTTP MCP server hands out the
+            # write tools to anyone who can reach the port.
+            print(
+                "ERROR: HTTP mode requires MCP_AUTH_TOKEN (e.g. `openssl rand -hex 32`) "
+                "in the environment or .env. Refusing to start.",
+                file=sys.stderr,
+            )
+            sys.exit(2)
+
         print(
-            f"Connect with: claude mcp add --transport http primemover http://your-server:{_port}/mcp",
+            "Connect with: claude mcp add --transport http primemover "
+            f"http://your-server:{_port}/mcp --header 'Authorization: Bearer <MCP_AUTH_TOKEN>'",
             file=sys.stderr,
         )
-        mcp.run(transport="streamable-http")
+
+        import uvicorn
+
+        uvicorn.run(build_http_app(token), host=_host, port=_port, log_level="info")
     else:
         mcp.run(transport="stdio")
 
