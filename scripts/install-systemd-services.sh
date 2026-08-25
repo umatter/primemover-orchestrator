@@ -37,7 +37,7 @@ if [[ -f "$SYSTEMD_DIR/vncserver@.service" ]]; then
 fi
 
 # Copy service files
-for service in primemover-lambda primemover-runner multilogin-agent multilogin-desktop primemover-health-check; do
+for service in primemover-lambda primemover-runner primemover-mcp multilogin-agent multilogin-desktop primemover-health-check; do
     src="$SYSTEMD_DIR/${service}.service"
     if [[ -f "$src" ]]; then
         cp "$src" /etc/systemd/system/
@@ -84,6 +84,7 @@ fi
 
 # Multilogin services are optional - they may need manual login
 echo ""
+echo -e "${YELLOW}Note: primemover-mcp not auto-enabled: set MCP_AUTH_TOKEN, MCP_HOST, MCP_PORT in .env first, then 'systemctl enable --now primemover-mcp'.${NC}"
 echo -e "${YELLOW}Note: Multilogin services not auto-enabled.${NC}"
 echo "Multilogin X requires manual login via VNC on first use."
 echo "After logging in once, you can enable auto-start with:"

@@ -1,0 +1,39 @@
+# Traefik dynamic configuration for https://mcp.qamelab.org -- ONE host for
+# every qamelab MCP server, each under its own path prefix:
+#
+#   https://mcp.qamelab.org/primemover/mcp   -> this repo's MCP server
+#   https://mcp.qamelab.org/<other>/mcp      -> add a router+service pair below
+#
+# Lives in ex63-infra (config/traefik/dynamic/mcp.yml); kept here as the
+# reference copy because it is the ex63-infra side of this repo's
+# primemover-mcp.service. Traefik's file provider watches that directory, so a
+# change applies without a restart.
+#
+# The MCP server is a host process, not a container, bound on the host's
+# ex63_internal address (MCP_HOST in the orchestrator .env), which is why this
+# is a file-provider entry with an explicit URL rather than container labels.
+# tailnet-only says who can reach it; the server's own bearer token (see
+# MCP_AUTH_TOKEN) says who may use it. Both are required.
+#
+# DNS: A record  mcp.qamelab.org -> <ex63-tailnet-ip>  (DNS-only, like the others).
+http:
+  routers:
+    mcp-primemover:
+      rule: Host(`mcp.qamelab.org`) && PathPrefix(`/primemover`)
+      entryPoints: [websecure]
+      tls: {certResolver: letsencrypt}
+      middlewares: [tailnet-only, mcp-primemover-strip]
+      service: mcp-primemover
+
+  middlewares:
+    # The server serves /mcp and /health at its root; the prefix is only the
+    # public namespace on the shared host.
+    mcp-primemover-strip:
+      stripPrefix:
+        prefixes: ["/primemover"]
+
+  services:
+    mcp-primemover:
+      loadBalancer:
+        servers:
+          - url: "http://172.19.0.1:8100"

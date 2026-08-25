@@ -359,18 +359,41 @@ Ecosystem specs are in `docs/specs/` (`runs-and-bots.md`, `mcp-control-surface.m
 # Register once so the pm_ write tools are available in Claude Code
 claude mcp add --scope user primemover /path/to/primemover-orchestrator/scripts/mcp-server.sh
 
-# Remote (HTTP mode - binds to 127.0.0.1 by default)
-./scripts/mcp-server.sh --http --port 8100
+# Remote (HTTP mode - binds to 127.0.0.1 by default; REQUIRES MCP_AUTH_TOKEN)
+MCP_AUTH_TOKEN=$(openssl rand -hex 32) ./scripts/mcp-server.sh --http --port 8100
 ```
 
-For cloud VM → laptop access, prefer an SSH tunnel over binding publicly:
+**HTTP mode is bearer-token protected and fails closed.** The server has no
+users: whoever reaches the port gets every tool, `pm_` writes included. So
+`--http` refuses to start unless `MCP_AUTH_TOKEN` is set (env or `.env`), every
+request to `/mcp` needs `Authorization: Bearer <token>` (else 401), and only
+`GET /health` is open. Network controls say who can *reach* it; the token says
+who may *use* it. Both are required — `tailnet-only` on the edge is not a
+substitute for the token, and the token is not a reason to bind publicly.
+
+**On ex63 it runs as `primemover-mcp.service`** (`infrastructure/systemd/`,
+installed but not auto-enabled by `install-systemd-services.sh`) and is reached
+at **`https://mcp.qamelab.org/primemover/mcp`** — one host for every qamelab MCP
+server, each under its own path prefix. The pieces, because they span two repos
+and a firewall:
+
+| piece | where | note |
+|---|---|---|
+| `MCP_AUTH_TOKEN`, `MCP_HOST=172.19.0.1`, `MCP_PORT=8100` | this repo's `.env` | `172.19.0.1` is the host's address on the `ex63_internal` bridge: reachable from the edge Traefik container and the host, from nothing else |
+| Traefik router + `stripPrefix` + service URL | `ex63-infra/config/traefik/dynamic/mcp.yml` | reference copy: `infrastructure/traefik/mcp.qamelab.org.yml`. File provider, not labels — the server is a host process, not a container |
+| ufw rule | host | `ufw default deny incoming` also drops bridge→host traffic, so Traefik times out until `sudo ufw allow in on br-<ex63_internal id> to 172.19.0.1 port 8100 proto tcp` (`docker network inspect ex63_internal --format '{{.Id}}' \| cut -c1-12` gives the id) |
+| DNS | Cloudflare | `mcp` A record → the tailnet IP, DNS-only |
+
+Client side, from any tailnet machine:
 
 ```bash
-ssh -L 8100:localhost:8100 user@your-vm-host          # on laptop
-claude mcp add --transport http primemover http://localhost:8100/mcp
+claude mcp add --scope user --transport http primemover https://mcp.qamelab.org/primemover/mcp \
+  --header "Authorization: Bearer <MCP_AUTH_TOKEN from the ex63 .env>"
 ```
 
-> **Security**: HTTP mode defaults to `127.0.0.1`. Use `--host 0.0.0.0` only behind a firewall.
+An SSH tunnel to `127.0.0.1:8100` still works for a one-off and needs the same
+token. Adding another MCP server to the host is a second router/middleware/
+service triple in `mcp.yml` with its own prefix and its own token.
 
 ### Adding a New Log Parser
 

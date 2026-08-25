@@ -1,0 +1,23 @@
+[Unit]
+Description=PrimeMover Orchestrator MCP server (HTTP, bearer-token protected)
+Documentation=file:///home/primemover/primemover-orchestrator/CLAUDE.md
+After=network.target docker.service
+
+[Service]
+Type=simple
+User=primemover
+Group=primemover
+WorkingDirectory=/home/primemover/primemover-orchestrator
+# MCP_AUTH_TOKEN comes from .env; the server refuses to start in HTTP mode
+# without it. MCP_HOST is the host's address on the ex63_internal bridge, so the
+# process is reachable from the edge Traefik container (and from the host) and
+# from nothing else -- it is not bound on the public or tailnet interfaces.
+EnvironmentFile=/home/primemover/primemover-orchestrator/.env
+Environment=PATH=/home/primemover/primemover-orchestrator/venv/bin:/usr/local/bin:/usr/bin:/bin
+Environment=MCP_TRANSPORT=http
+ExecStart=/home/primemover/primemover-orchestrator/venv/bin/python -m orchestrator.mcp_server.server --http --host ${MCP_HOST} --port ${MCP_PORT}
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
