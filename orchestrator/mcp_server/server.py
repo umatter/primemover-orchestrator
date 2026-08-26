@@ -2485,24 +2485,72 @@ def get_current_settings() -> str:
     )
 
 
+def _auth_tokens_from_env() -> dict[str, str]:
+    """Named bearer tokens, ``{name: token}``.
+
+    ``MCP_AUTH_TOKENS`` is ``name:token,name:token`` -- one per person, so a
+    request can be logged against a name and one person can be revoked without
+    rotating everyone. The older single ``MCP_AUTH_TOKEN`` is still honoured as
+    the name ``default``. Malformed entries raise rather than being skipped: a
+    typo that silently drops a token looks, from the outside, like revocation.
+    """
+    tokens: dict[str, str] = {}
+    legacy = os.environ.get("MCP_AUTH_TOKEN", "").strip()
+    if legacy:
+        tokens["default"] = legacy
+
+    for entry in os.environ.get("MCP_AUTH_TOKENS", "").split(","):
+        entry = entry.strip()
+        if not entry:
+            continue
+        name, sep, token = entry.partition(":")
+        name, token = name.strip(), token.strip()
+        if not sep or not name or not token:
+            raise ValueError(f"MCP_AUTH_TOKENS entry is not name:token: {entry[:20]!r}")
+        if len(token) < 16:
+            raise ValueError(f"MCP_AUTH_TOKENS token for {name!r} is too short (min 16 chars)")
+        if name in tokens:
+            raise ValueError(f"MCP_AUTH_TOKENS has duplicate name {name!r}")
+        tokens[name] = token
+
+    return tokens
+
+
 def _auth_token_from_env() -> str | None:
+    """Kept for callers of the single-token form; prefer _auth_tokens_from_env."""
     token = os.environ.get("MCP_AUTH_TOKEN", "").strip()
     return token or None
 
 
-def build_http_app(token: str):
+def build_http_app(tokens: dict[str, str] | str):
     """Wrap the streamable-HTTP ASGI app so every MCP request needs a bearer token.
 
     The server has no notion of users: whoever reaches the port gets every tool,
     including the ``pm_`` writes. Network-level controls (a tailnet allow-list, a
-    tunnel) say who can reach it; the token says who may use it. ``GET /health``
-    stays open so the edge proxy and the boot check can probe liveness.
+    tunnel) say who can reach it; the token says who may use it -- and which
+    name that was is logged per request. ``GET /health`` stays open so the edge
+    proxy and the boot check can probe liveness.
     """
     import hmac
+    import logging
 
     from starlette.responses import JSONResponse, PlainTextResponse
 
+    if isinstance(tokens, str):
+        tokens = {"default": tokens}
+    if not tokens:
+        raise ValueError("build_http_app needs at least one token")
+
+    log = logging.getLogger("orchestrator.mcp.auth")
     inner = mcp.streamable_http_app()
+
+    def _identify(presented: str) -> str | None:
+        # Check every token so timing does not depend on which name matched.
+        matched = None
+        for name, token in tokens.items():
+            if hmac.compare_digest(presented, token):
+                matched = name
+        return matched
 
     async def app(scope, receive, send):
         if scope["type"] != "http":
@@ -2519,7 +2567,10 @@ def build_http_app(token: str):
                 auth = value.decode("latin-1")
                 break
         scheme, _, presented = auth.partition(" ")
-        if scheme.lower() != "bearer" or not hmac.compare_digest(presented.strip(), token):
+        client = (scope.get("client") or ("?", 0))[0]
+        user = _identify(presented.strip()) if scheme.lower() == "bearer" else None
+        if user is None:
+            log.warning("mcp auth rejected client=%s path=%s", client, scope["path"])
             await JSONResponse(
                 {"error": "unauthorized"},
                 status_code=401,
@@ -2527,6 +2578,10 @@ def build_http_app(token: str):
             )(scope, receive, send)
             return
 
+        log.info(
+            "mcp request user=%s client=%s %s %s", user, client, scope["method"], scope["path"]
+        )
+        scope.setdefault("state", {})["mcp_user"] = user
         await inner(scope, receive, send)
 
     return app
@@ -2548,7 +2603,7 @@ def main():
 
     SECURITY NOTE: By default, HTTP mode binds to localhost (127.0.0.1) only.
     Use --host to bind elsewhere (ensure proper network security). HTTP mode
-    always requires MCP_AUTH_TOKEN; requests without the matching bearer token
+    always requires MCP_AUTH_TOKENS (named, one per person); requests without a matching bearer token
     get 401. ``GET /health`` is the only unauthenticated route.
     """
     if _transport == "streamable-http":
@@ -2559,26 +2614,31 @@ def main():
             print("WARNING: Server bound to all interfaces (0.0.0.0).", file=sys.stderr)
             print("         Ensure proper network security is in place.", file=sys.stderr)
 
-        token = _auth_token_from_env()
-        if token is None:
+        try:
+            tokens = _auth_tokens_from_env()
+        except ValueError as exc:
+            print(f"ERROR: {exc}. Refusing to start.", file=sys.stderr)
+            sys.exit(2)
+        if not tokens:
             # Fail closed: an unauthenticated HTTP MCP server hands out the
             # write tools to anyone who can reach the port.
             print(
-                "ERROR: HTTP mode requires MCP_AUTH_TOKEN (e.g. `openssl rand -hex 32`) "
-                "in the environment or .env. Refusing to start.",
+                "ERROR: HTTP mode requires MCP_AUTH_TOKENS (name:token,... ; tokens from "
+                "`openssl rand -hex 32`) in the environment or .env. Refusing to start.",
                 file=sys.stderr,
             )
             sys.exit(2)
+        print(f"MCP bearer tokens loaded for: {', '.join(sorted(tokens))}", file=sys.stderr)
 
         print(
             "Connect with: claude mcp add --transport http primemover "
-            f"http://your-server:{_port}/mcp --header 'Authorization: Bearer <MCP_AUTH_TOKEN>'",
+            f"http://your-server:{_port}/mcp --header 'Authorization: Bearer <your token>'",
             file=sys.stderr,
         )
 
         import uvicorn
 
-        uvicorn.run(build_http_app(token), host=_host, port=_port, log_level="info")
+        uvicorn.run(build_http_app(tokens), host=_host, port=_port, log_level="info")
     else:
         mcp.run(transport="stdio")
 

@@ -364,12 +364,23 @@ MCP_AUTH_TOKEN=$(openssl rand -hex 32) ./scripts/mcp-server.sh --http --port 810
 ```
 
 **HTTP mode is bearer-token protected and fails closed.** The server has no
-users: whoever reaches the port gets every tool, `pm_` writes included. So
-`--http` refuses to start unless `MCP_AUTH_TOKEN` is set (env or `.env`), every
-request to `/mcp` needs `Authorization: Bearer <token>` (else 401), and only
-`GET /health` is open. Network controls say who can *reach* it; the token says
-who may *use* it. Both are required — `tailnet-only` on the edge is not a
-substitute for the token, and the token is not a reason to bind publicly.
+users of its own: whoever reaches the port gets every tool, `pm_` writes
+included. So `--http` refuses to start unless `MCP_AUTH_TOKENS` is set (env or
+`.env`), every request to `/mcp` needs `Authorization: Bearer <token>` (else
+401), and only `GET /health` is open. Network controls say who can *reach* it;
+the token says who may *use* it. Both are required — `tailnet-only` on the edge
+is not a substitute for the token, and the token is not a reason to bind
+publicly.
+
+Tokens are **named, one per person**: `MCP_AUTH_TOKENS=ulrich:<hex>,matthias:<hex>`.
+Every request is logged with the name (`journalctl -u primemover-mcp` →
+`mcp request user=matthias …`), and revoking someone is deleting their entry
+and `systemctl restart primemover-mcp`; nobody else's token changes. To add a
+colleague: they must be on the tailnet first (403 otherwise, before the token
+is even read); mint with `openssl rand -hex 32`, append `name:token`, restart
+the unit, and hand the token over end-to-end encrypted (Proton↔Proton, Signal,
+a password-manager share) — never chat or plain email. A token grants the same
+access as yours, `pm_` writes included; there is no read-only role.
 
 **On ex63 it runs as `primemover-mcp.service`** (`infrastructure/systemd/`,
 installed but not auto-enabled by `install-systemd-services.sh`) and is reached
@@ -379,7 +390,7 @@ and a firewall:
 
 | piece | where | note |
 |---|---|---|
-| `MCP_AUTH_TOKEN`, `MCP_HOST=172.19.0.1`, `MCP_PORT=8100` | this repo's `.env` | `172.19.0.1` is the host's address on the `ex63_internal` bridge: reachable from the edge Traefik container and the host, from nothing else |
+| `MCP_AUTH_TOKENS`, `MCP_HOST=172.19.0.1`, `MCP_PORT=8100` | this repo's `.env` | `172.19.0.1` is the host's address on the `ex63_internal` bridge: reachable from the edge Traefik container and the host, from nothing else |
 | Traefik router + `stripPrefix` + service URL | `ex63-infra/config/traefik/dynamic/mcp.yml` | reference copy: `infrastructure/traefik/mcp.qamelab.org.yml`. File provider, not labels — the server is a host process, not a container |
 | ufw rule | host | `ufw default deny incoming` also drops bridge→host traffic, so Traefik times out until `sudo ufw allow in on br-<ex63_internal id> to 172.19.0.1 port 8100 proto tcp` (`docker network inspect ex63_internal --format '{{.Id}}' \| cut -c1-12` gives the id) |
 | DNS | Cloudflare | `mcp` A record → the tailnet IP, DNS-only |
@@ -388,7 +399,7 @@ Client side, from any tailnet machine:
 
 ```bash
 claude mcp add --scope user --transport http primemover https://mcp.qamelab.org/primemover/mcp \
-  --header "Authorization: Bearer <MCP_AUTH_TOKEN from the ex63 .env>"
+  --header "Authorization: Bearer <your token from MCP_AUTH_TOKENS in the ex63 .env>"
 ```
 
 An SSH tunnel to `127.0.0.1:8100` still works for a one-off and needs the same
