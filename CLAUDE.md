@@ -482,6 +482,21 @@ crawlers:
 
 See `docs/experiment-designer.md` for full documentation.
 
+> **`cookie_pref` is a treatment, and the runner acts on it.** Since
+> `primemover_runner` PR #61 (2026-08-26) the runner answers cookie/GDPR
+> dialogs — the YouTube consent bump first, then OneTrust, Cookiebot, Didomi,
+> Usercentrics, TrustArc, Quantcast, Sourcepoint and a generic banner, in
+> EN/DE/FR/IT/ES — after every visit and lambda-select navigation. Which
+> button it clicks comes from the bot's `cookie_pref` preference
+> (`{"accept_all": true}` → "Accept all", `false` → "Reject all"), overridable
+> per job with the `consent` behaviour (`accept | reject | ignore`), else the
+> runner's `consent.choice` (default `accept`). "Reject all" switches off the
+> signed-out personalisation a study measures, so choose it deliberately.
+> The outcome is in the runner log per job (`consent dialog (youtube)
+> answered: …`). Before PR #61 nothing consumed `cookie_pref`, and no bot had
+> ever seen the dialog because every run egressed from a **US** exit IP; from a
+> CH/EU exit it appears on every session.
+
 ## Testing
 
 - Tests live in `orchestrator/tests/` and `experiment_designer/tests/`
