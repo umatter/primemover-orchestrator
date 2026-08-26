@@ -12,14 +12,17 @@ from starlette.testclient import TestClient
 
 from orchestrator.mcp_server import server
 
-TOKEN = "correct-horse-battery-staple"  # noqa: S105 - test fixture, not a secret
+TOKENS = {
+    "ulrich": "correct-horse-battery-staple",  # noqa: S105 - test fixtures, not secrets
+    "matthias": "another-perfectly-fine-token",  # noqa: S105
+}
 
 
 # One client for the module: the SDK's StreamableHTTPSessionManager can only be
 # started once per FastMCP instance, and the app wraps the module-level `mcp`.
 @pytest.fixture(scope="module")
 def client():
-    with TestClient(server.build_http_app(TOKEN), raise_server_exceptions=True) as c:
+    with TestClient(server.build_http_app(TOKENS), raise_server_exceptions=True) as c:
         yield c
 
 
@@ -46,20 +49,60 @@ def test_wrong_token_is_rejected(client: TestClient) -> None:
 
 
 def test_wrong_scheme_is_rejected(client: TestClient) -> None:
-    assert _mcp_post(client, {"Authorization": f"Basic {TOKEN}"}).status_code == 401
+    assert _mcp_post(client, {"Authorization": f"Basic {TOKENS['ulrich']}"}).status_code == 401
 
 
-def test_correct_token_reaches_the_mcp_layer(client: TestClient) -> None:
+@pytest.mark.parametrize("name", sorted(TOKENS))
+def test_each_named_token_reaches_the_mcp_layer(client: TestClient, name: str, caplog) -> None:
     # Whatever the MCP transport answers to a bare tools/list without a session,
-    # it must not be the gate's 401: the request got through.
-    r = _mcp_post(client, {"Authorization": f"Bearer {TOKEN}"})
+    # it must not be the gate's 401: the request got through -- under that name.
+    with caplog.at_level("INFO", logger="orchestrator.mcp.auth"):
+        r = _mcp_post(client, {"Authorization": f"Bearer {TOKENS[name]}"})
     assert r.status_code != 401
+    assert f"user={name}" in caplog.text
 
 
-def test_http_mode_refuses_to_start_without_a_token(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_single_token_string_still_accepted() -> None:
+    # Older callers pass one token; it becomes the name "default".
+    app = server.build_http_app("a-single-legacy-token-value")
+    assert app is not None
+
+
+def test_no_tokens_is_refused() -> None:
+    with pytest.raises(ValueError):
+        server.build_http_app({})
+
+
+def test_tokens_from_env(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("MCP_AUTH_TOKEN", raising=False)
-    assert server._auth_token_from_env() is None
-    monkeypatch.setenv("MCP_AUTH_TOKEN", "   ")
-    assert server._auth_token_from_env() is None
-    monkeypatch.setenv("MCP_AUTH_TOKEN", " abc ")
-    assert server._auth_token_from_env() == "abc"
+    monkeypatch.delenv("MCP_AUTH_TOKENS", raising=False)
+    assert server._auth_tokens_from_env() == {}
+
+    monkeypatch.setenv(
+        "MCP_AUTH_TOKENS", " ulrich:0123456789abcdef , matthias:fedcba9876543210 ,"
+    )  # pragma: allowlist secret
+    assert server._auth_tokens_from_env() == {
+        "ulrich": "0123456789abcdef",  # pragma: allowlist secret
+        "matthias": "fedcba9876543210",  # pragma: allowlist secret
+    }
+
+    # The single-token variable still works, as "default", alongside named ones.
+    monkeypatch.setenv("MCP_AUTH_TOKEN", "legacy-token-0123456789")
+    assert server._auth_tokens_from_env()["default"] == "legacy-token-0123456789"
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "no-colon-here",
+        ":missing-name-0123456789",
+        "ulrich:",
+        "ulrich:short",
+        "ulrich:0123456789abcdef,ulrich:fedcba9876543210",  # pragma: allowlist secret
+    ],
+)
+def test_malformed_token_entries_raise(monkeypatch: pytest.MonkeyPatch, value: str) -> None:
+    monkeypatch.delenv("MCP_AUTH_TOKEN", raising=False)
+    monkeypatch.setenv("MCP_AUTH_TOKENS", value)
+    with pytest.raises(ValueError):
+        server._auth_tokens_from_env()
