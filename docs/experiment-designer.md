@@ -299,7 +299,7 @@ crawlers:
         - name: location
           value: "US-IL-CHICAGO"
         - name: cookie_pref
-          value: '{"accept_all": true}'
+          value: '{"accept_all": true}'   # consumed by the runner: accept_all true -> "Accept all", false -> "Reject all"
         - name: usage_type
           value: "only_search"
         - name: order

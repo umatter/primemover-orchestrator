@@ -592,3 +592,18 @@ def run_tests():
 
 if __name__ == "__main__":
     sys.exit(run_tests())
+
+
+class TestVisitConsentBehavior:
+    """The visit job advertises the runner's ``consent`` behaviour."""
+
+    def test_visit_lists_consent_behavior(self):
+        from experiment_designer.spec.job_registry import JobRegistry
+
+        schema = JobRegistry.get_schema("visit")
+        assert schema is not None
+        names = {b.name for b in schema.behaviors}
+        assert "consent" in names
+        consent = next(b for b in schema.behaviors if b.name == "consent")
+        assert consent.required is False
+        assert "reject" in consent.description

@@ -111,6 +111,15 @@ JobRegistry.register(
                 default="never",
                 description="Captcha handling: 'never' or 'always'",
             ),
+            BehaviorSchema(
+                "consent",
+                required=False,
+                description=(
+                    "Cookie/GDPR dialog answer for this job: 'accept', 'reject' or 'ignore'. "
+                    "Overrides the crawler's cookie_pref preference and the runner's "
+                    "consent.choice default (runner PR #61)"
+                ),
+            ),
         ],
     )
 )
