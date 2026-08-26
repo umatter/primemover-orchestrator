@@ -94,17 +94,21 @@ orchestrator up        # Start all components
 orchestrator down      # Stop all components
 ```
 
-**Use Claude Code remotely from your laptop:**
+**Use Claude Code remotely from your laptop** (HTTP mode is bearer-token
+protected and refuses to start without a token):
 ```bash
-# On VM: Start MCP server for remote access
-./scripts/mcp-server.sh --http --port 8100
+# On VM, once: a token per person in .env
+echo 'MCP_AUTH_TOKENS=you:'$(openssl rand -hex 32) >> .env
+./scripts/mcp-server.sh --http --port 8100          # binds 127.0.0.1
 
-# On laptop: Create SSH tunnel (secure)
+# On laptop: SSH tunnel, then register with the token
 ssh -L 8100:localhost:8100 user@your-vm
-
-# On laptop: Add MCP server to Claude Code
-claude mcp add --transport http primemover http://localhost:8100/mcp
+claude mcp add --scope user --transport http primemover http://localhost:8100/mcp \
+  --header "Authorization: Bearer <your token>"
 ```
+On ex63 the server runs as a systemd unit behind the tailnet-only edge at
+`https://mcp.qamelab.org/primemover/mcp` — no tunnel needed; see
+[CLAUDE.md → Running the MCP Server](CLAUDE.md#running-the-mcp-server).
 
 See [Prerequisites](#prerequisites) for manual installation or [Remote MCP Access](#remote-mcp-access-cloud-vm--laptop) for more options.
 
@@ -237,6 +241,12 @@ make restart         # or: orchestrator restart
 | API Documentation | http://localhost:8090/api/documentation | - |
 | Grafana | http://localhost:3000 | admin / (set in .env: GRAFANA_ADMIN_PASSWORD) |
 | Prometheus | http://localhost:9090 | - |
+
+On ex63 the same things are reachable from the tailnet, with real certificates:
+`https://primemover.qamelab.org` (GUI; the API under `/api`),
+`https://pm-ops.qamelab.org` (this Grafana, with the PrimeMover Overview
+dashboard) and `https://mcp.qamelab.org/primemover/mcp` (MCP). See
+[CLAUDE.md → Reaching things from off the box](CLAUDE.md#reaching-things-from-off-the-box-ex63-edge).
 
 ## CLI Command Reference
 
@@ -694,47 +704,46 @@ For Claude Desktop, configure the MCP server (`claude_desktop_config.json`):
 
 ### Remote MCP Access (Cloud VM → Laptop)
 
-When PrimeMover is deployed on a cloud VM, you can access the MCP server from Claude Code running on your laptop using HTTP transport:
+The MCP server has no users of its own: whoever reaches the port gets every
+tool, the `pm_` writes included. HTTP mode therefore **fails closed** — it
+refuses to start unless `MCP_AUTH_TOKENS` is set, every request to `/mcp`
+needs `Authorization: Bearer <token>` (401 otherwise), and only `GET /health`
+is open.
 
-**1. Start MCP server in HTTP mode on the VM:**
+**1. Tokens — one per person, in `.env` on the VM:**
 
 ```bash
-# Via script (binds to localhost by default - secure)
+MCP_AUTH_TOKENS=ulrich:<openssl rand -hex 32>,matthias:<openssl rand -hex 32>
+```
+
+Each request is logged with the name; revoking someone is deleting their entry
+and restarting the server. Hand tokens over end-to-end encrypted, never via
+chat or plain email.
+
+**2. Start the server (binds to `127.0.0.1` by default):**
+
+```bash
 ./scripts/mcp-server.sh --http --port 8100
-
-# To allow external connections (use with SSH tunnel or firewall):
-./scripts/mcp-server.sh --http --port 8100 --host 0.0.0.0
-
-# Or via Python directly
-python -m orchestrator.mcp_server.server --http --port 8100
-
-# Or via environment variables
-MCP_TRANSPORT=http MCP_PORT=8100 ./scripts/mcp-server.sh
+# or: MCP_TRANSPORT=http MCP_PORT=8100 ./scripts/mcp-server.sh
 ```
 
-> **Security Note**: By default, HTTP mode binds to `127.0.0.1` (localhost only). Use `--host 0.0.0.0` only when you have proper network security (SSH tunnel or firewall).
-
-**2. Configure firewall (allow MCP port):**
+**3. Reach it from the laptop — pick one:**
 
 ```bash
-# Ubuntu UFW
-sudo ufw allow 8100/tcp
-
-# Or use SSH tunnel for secure access (recommended):
+# a) SSH tunnel (any VM)
 ssh -L 8100:localhost:8100 user@your-vm-host
+claude mcp add --scope user --transport http primemover http://localhost:8100/mcp \
+  --header "Authorization: Bearer <your token>"
+
+# b) ex63: systemd unit + tailnet-only edge, no tunnel
+claude mcp add --scope user --transport http primemover https://mcp.qamelab.org/primemover/mcp \
+  --header "Authorization: Bearer <your token>"
 ```
 
-**3. Add to Claude Code on your laptop:**
-
-```bash
-# If using SSH tunnel (localhost)
-claude mcp add --transport http primemover http://localhost:8100/mcp
-
-# If VM has public IP and firewall configured
-claude mcp add --transport http primemover http://your-vm-ip:8100/mcp
-```
-
-**Security note**: For production deployments, we recommend using an SSH tunnel rather than exposing the MCP port directly to the internet. The SSH tunnel encrypts all traffic and requires authentication.
+Do **not** open the port on a public interface (`--host 0.0.0.0`, `ufw allow
+8100`): the token is a second layer, not a substitute for keeping the port off
+the internet. The ex63 setup (unit, Traefik file, firewall rule, DNS) is in
+[CLAUDE.md](CLAUDE.md#running-the-mcp-server).
 
 ### MCP Tools
 
