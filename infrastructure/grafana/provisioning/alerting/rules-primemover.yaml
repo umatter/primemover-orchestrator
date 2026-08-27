@@ -1,0 +1,662 @@
+# PrimeMover alert rules -- Grafana unified alerting, file provisioning (11.4).
+#
+# Every rule queries the LOKI datasource (uid `loki`, provisioned in
+# ../datasources/datasources.yaml). Nothing here depends on Prometheus: the
+# ecosystem exposes no /metrics endpoint, which is why the older
+# prometheus/rules/primemover-alerts.yml never worked. See alerting/README.md.
+#
+# Shape of every rule: A = Loki instant query -> B = reduce(last) -> C = threshold.
+# `noDataState: OK` throughout, because "no logs in the window" is the normal
+# state of an idle box, not an incident.
+#
+# Each expression below was executed against the live Loki before being
+# committed; the counts are in alerting/README.md.
+
+apiVersion: 1
+
+groups:
+  # ===========================================================================
+  # Decision quality -- the arm-integrity signals. These are the reason this
+  # file exists: a degraded decision returns HTTP 200 and the job is recorded as
+  # a success, so without an alert nothing tells anyone the treatment stopped
+  # being a treatment.
+  # ===========================================================================
+  - orgId: 1
+    name: primemover-decision-quality
+    folder: PrimeMover Alerts
+    interval: 1m
+    rules:
+      # -----------------------------------------------------------------------
+      - uid: pm-lambda-treatment-lost
+        title: Lambda LOST THE TREATMENT (a treated bot produced control-arm data)
+        condition: C
+        for: 0m
+        noDataState: OK
+        execErrState: Error
+        labels:
+          severity: critical
+          component: runner
+          signal: arm-integrity
+        annotations:
+          summary: 'A crawler configured to be treated produced control-arm data'
+          description: >-
+            {{ $values.B.Value }} evidence line(s) in the last 15 minutes reported
+            treatment_lost: the decision degraded AND no requested treatment applied,
+            so those sessions carry no treatment signal whatever the crawler's
+            pi/psi/kappa/tau say. Find them with:
+            orchestrator logs query -c runner -t 1h --search treatment_lost
+            then trace the job ids. Both correlation-id spellings resolve --
+            cr-244|jl-838 from the currently deployed jar, cr-244|q-838 after the
+            redeploy -- so search either. Do not analyse those sessions as treated.
+            This rule is deliberately NOT keyed on selection_mode: a control crawler
+            (pi=psi=kappa=tau=0) requests no LLM rating filter, so it correctly
+            reports selection_mode="random" with degraded=false. See the comment on
+            the query below for what keying on the mode alone would have cost.
+        isPaused: false
+        data:
+          - refId: A
+            datasourceUid: loki
+            relativeTimeRange:
+              from: 1800
+              to: 0
+            model:
+              refId: A
+              datasource:
+                type: loki
+                uid: loki
+              editorMode: code
+              queryType: instant
+              intervalMs: 1000
+              maxDataPoints: 43200
+              # treatment_lost, not selection_mode. The two are not the same thing and
+              # the difference is the whole reason this rule was rewritten before it
+              # ever ran: measured on this host, 295 of the 358 lambda payloads in the
+              # rotated runner logs carry no rating column (a plain `grep -c rating`
+              # over the same 358 says 350), and 236 of the 243 `params` rows in the
+              # live database are control-arm. Keying on selection_mode="random" would
+              # therefore have held a severity=critical alert on permanently over
+              # entirely healthy traffic from the moment the new decision function
+              # deployed -- the exact opposite of what this file is for. (It reads 0
+              # today only because the DEPLOYED decision function emits no
+              # selection_mode at all.)
+              #
+              # Two matchers, on purpose: they cover both deploy orders.
+              #   * `"treatment_lost":true` is in the JSON the runner echoes at INFO
+              #     ("Full Lambda response payload: {...}"), so it works with the OLD
+              #     jar as soon as the decision function is deployed;
+              #   * the runner's own ERROR verdict line works with a LEGACY payload as
+              #     soon as the jar is deployed (LambdaSelectJobResult recomputes the
+              #     two-term gate when the field is absent).
+              # With both deployed one event matches twice; the threshold is >0, so
+              # only the count in the description is affected, never whether it fires.
+              expr: 'sum(count_over_time({component="runner"} |~ `("treatment_lost"\s*:\s*true)|(Lambda decision LOST THE TREATMENT)` [15m]))'
+          - refId: B
+            datasourceUid: __expr__
+            relativeTimeRange:
+              from: 1800
+              to: 0
+            model:
+              refId: B
+              type: reduce
+              expression: A
+              reducer: last
+              settings:
+                mode: dropNN
+              datasource:
+                type: __expr__
+                uid: __expr__
+          - refId: C
+            datasourceUid: __expr__
+            relativeTimeRange:
+              from: 1800
+              to: 0
+            model:
+              refId: C
+              type: threshold
+              expression: B
+              conditions:
+                - type: query
+                  evaluator:
+                    type: gt
+                    params:
+                      - 0
+                  operator:
+                    type: and
+                  query:
+                    params:
+                      - C
+                  reducer:
+                    type: last
+                    params: []
+              datasource:
+                type: __expr__
+                uid: __expr__
+
+      # -----------------------------------------------------------------------
+      - uid: pm-lambda-degraded
+        title: Lambda decision degraded (a requested filter did not apply)
+        condition: C
+        for: 0m
+        noDataState: OK
+        execErrState: Error
+        labels:
+          severity: warning
+          component: runner
+          signal: arm-integrity
+        annotations:
+          summary: 'A decision-function filter was requested but did not run'
+          description: >-
+            {{ $values.B.Value }} lambda response(s) in the last 10 minutes had
+            degraded=true or a non-empty warnings[]. degraded is the contract's
+            "a human should look at this decision" flag: at least one REQUESTED
+            filter (already_watched, mainstream_media, children_entertainment,
+            similar, political, fringe) failed to apply, so part of the treatment
+            did not happen. The `filters` map names which one -- and note that
+            "skipped" there means NOT REQUESTED, which is not a failure and is not
+            counted here. If the same window also fires pm-lambda-treatment-lost,
+            read that one first: it means nothing requested applied at all.
+        isPaused: false
+        data:
+          - refId: A
+            datasourceUid: loki
+            relativeTimeRange:
+              from: 1800
+              to: 0
+            model:
+              refId: A
+              datasource:
+                type: loki
+                uid: loki
+              editorMode: code
+              queryType: instant
+              intervalMs: 1000
+              maxDataPoints: 43200
+              # Matches the new `degraded` flag AND, for payloads written before
+              # it existed, any non-empty `warnings` array. The `[^]\s]` class is
+              # what distinguishes "warnings":[] from "warnings":["..."]. Measured
+              # over the 358 payloads in this host's rotated runner logs: 19 carry a
+              # non-empty warnings[], 339 do not -- a ~5% warning rate, which is what
+              # a warning-severity rule should look like. (Contrast the ~82% a
+              # selection_mode gate would have produced; see pm-lambda-treatment-lost.)
+              # Absence of the whole degradation report still matches NOTHING here,
+              # which is the contract: a legacy payload reads as unknown, not degraded.
+              expr: 'sum(count_over_time({component="runner"} |~ `("degraded"\s*:\s*true)|("warnings"\s*:\s*\[\s*[^]\s])` [10m]))'
+          - refId: B
+            datasourceUid: __expr__
+            relativeTimeRange:
+              from: 1800
+              to: 0
+            model:
+              refId: B
+              type: reduce
+              expression: A
+              reducer: last
+              settings:
+                mode: dropNN
+              datasource:
+                type: __expr__
+                uid: __expr__
+          - refId: C
+            datasourceUid: __expr__
+            relativeTimeRange:
+              from: 1800
+              to: 0
+            model:
+              refId: C
+              type: threshold
+              expression: B
+              conditions:
+                - type: query
+                  evaluator:
+                    type: gt
+                    params:
+                      - 0
+                  operator:
+                    type: and
+                  query:
+                    params:
+                      - C
+                  reducer:
+                    type: last
+                    params: []
+              datasource:
+                type: __expr__
+                uid: __expr__
+
+      # -----------------------------------------------------------------------
+      - uid: pm-lambda-mainstream-media-inert
+        title: Mainstream-media aversion ignored (pi arm silently inert)
+        condition: C
+        for: 0m
+        noDataState: OK
+        execErrState: Error
+        labels:
+          severity: critical
+          component: runner
+          signal: arm-integrity
+        annotations:
+          summary: 'The pi=1 arm ran without the mainstream-media filter'
+          description: >-
+            The decision function returned "Aversion to mainstream media channels
+            ignored" {{ $values.B.Value }} time(s) in 15 minutes. Its read of
+            mainstream_media_channels.csv raised and was swallowed, so pi=1 bots
+            behaved exactly like controls and still returned HTTP 200. Two known
+            causes: the CSV was corrupted (round-tripped through a spreadsheet), or
+            the lambda process cwd is not the decision/ directory so the relative
+            read never resolves. Check both --
+            `cd ../bot-decision-yt && pytest tests/test_mainstream_media_csv.py`
+            and `readlink /proc/$(systemctl show -p MainPID --value primemover-lambda)/cwd`.
+        isPaused: false
+        data:
+          - refId: A
+            datasourceUid: loki
+            relativeTimeRange:
+              from: 1800
+              to: 0
+            model:
+              refId: A
+              datasource:
+                type: loki
+                uid: loki
+              editorMode: code
+              queryType: instant
+              intervalMs: 1000
+              maxDataPoints: 43200
+              expr: 'sum(count_over_time({component="runner"} |= `Aversion to mainstream media channels ignored` [15m]))'
+          - refId: B
+            datasourceUid: __expr__
+            relativeTimeRange:
+              from: 1800
+              to: 0
+            model:
+              refId: B
+              type: reduce
+              expression: A
+              reducer: last
+              settings:
+                mode: dropNN
+              datasource:
+                type: __expr__
+                uid: __expr__
+          - refId: C
+            datasourceUid: __expr__
+            relativeTimeRange:
+              from: 1800
+              to: 0
+            model:
+              refId: C
+              type: threshold
+              expression: B
+              conditions:
+                - type: query
+                  evaluator:
+                    type: gt
+                    params:
+                      - 0
+                  operator:
+                    type: and
+                  query:
+                    params:
+                      - C
+                  reducer:
+                    type: last
+                    params: []
+              datasource:
+                type: __expr__
+                uid: __expr__
+
+  # ===========================================================================
+  # Execution health -- jobs and components.
+  # ===========================================================================
+  - orgId: 1
+    name: primemover-execution
+    folder: PrimeMover Alerts
+    interval: 1m
+    rules:
+      # -----------------------------------------------------------------------
+      - uid: pm-job-failures
+        title: Jobs are failing
+        condition: C
+        for: 5m
+        noDataState: OK
+        execErrState: Error
+        labels:
+          severity: warning
+          component: runner
+          signal: execution
+        annotations:
+          summary: 'More than 5 jobs finished in failure in 15 minutes'
+          description: >-
+            {{ $values.B.Value }} runner lines in the last 15 minutes reported a job
+            ending in failure. Start at `orchestrator logs errors -t 1h`, then
+            `orchestrator debug job <id>`. Remember a failing job normally leaves
+            every later job in the run `skipped`, so the count inflates fast --
+            trace back to the FIRST non-success job.
+        isPaused: false
+        data:
+          - refId: A
+            datasourceUid: loki
+            relativeTimeRange:
+              from: 1800
+              to: 0
+            model:
+              refId: A
+              datasource:
+                type: loki
+                uid: loki
+              editorMode: code
+              queryType: instant
+              intervalMs: 1000
+              maxDataPoints: 43200
+              # Reads the runner's OWN outcome lines, not the PUT body.
+              #
+              # This used to match `sending JSON: {"status_code":"failure"...}` from
+              # primemover.service.JobService, which is logged at DEBUG. Nothing pins
+              # that logger, so it inherits root -- DEBUG only under the
+              # dev/staging/test/local profiles (see the runner's
+              # config/logback-spring.xml). Under `production`, or with no profile at
+              # all, root is INFO and the line does not exist: the rule could never
+              # fire, and a quiet rule reads as "no failures", not as "not measured".
+              # The VM happens to run --spring.profiles.active=local today, which is
+              # the only reason it worked at all.
+              #
+              # The two lines below are WARN and ERROR in TaskOperator
+              # (primemover.runner.*), so they survive every profile:
+              #   WARN  "Done running job with failure <id>"
+              #   ERROR "Exception executing job <id>"
+              # Neither depends on the `level` label either -- promtail's runner regex
+              # only started populating it on 2026-08-27, so 7374 of the `sending JSON`
+              # lines already in Loki carry no level at all.
+              expr: 'sum(count_over_time({component="runner"} |~ `(Done running job with failure)|(Exception executing job)` [15m]))'
+          - refId: B
+            datasourceUid: __expr__
+            relativeTimeRange:
+              from: 1800
+              to: 0
+            model:
+              refId: B
+              type: reduce
+              expression: A
+              reducer: last
+              settings:
+                mode: dropNN
+              datasource:
+                type: __expr__
+                uid: __expr__
+          - refId: C
+            datasourceUid: __expr__
+            relativeTimeRange:
+              from: 1800
+              to: 0
+            model:
+              refId: C
+              type: threshold
+              expression: B
+              conditions:
+                - type: query
+                  evaluator:
+                    type: gt
+                    params:
+                      - 5
+                  operator:
+                    type: and
+                  query:
+                    params:
+                      - C
+                  reducer:
+                    type: last
+                    params: []
+              datasource:
+                type: __expr__
+                uid: __expr__
+
+      # -----------------------------------------------------------------------
+      - uid: pm-job-warnings
+        title: Jobs completed but degraded (status warning)
+        condition: C
+        for: 0m
+        noDataState: OK
+        execErrState: Error
+        labels:
+          severity: warning
+          component: runner
+          signal: execution
+        annotations:
+          summary: 'A job finished with the new `warning` status'
+          description: >-
+            {{ $values.B.Value }} job(s) in 15 minutes finished with
+            status_code="warning": the job ran to completion but something the
+            experiment cares about degraded -- job data was not written, or the
+            decision function reported degraded=true. Before 2026-08-27 these were
+            recorded as plain successes. The reason is in status_message, which now
+            carries a real diagnostic rather than one of seven fixed strings. A
+            control crawler picking a video at random is NOT this: that is
+            degraded=false and finishes `success`.
+        isPaused: false
+        data:
+          - refId: A
+            datasourceUid: loki
+            relativeTimeRange:
+              from: 1800
+              to: 0
+            model:
+              refId: A
+              datasource:
+                type: loki
+                uid: loki
+              editorMode: code
+              queryType: instant
+              intervalMs: 1000
+              maxDataPoints: 43200
+              # Same reasoning as pm-job-failures: the DEBUG `sending JSON` line does
+              # not exist outside the dev/staging/test/local profiles. TaskOperator's
+              # two WARN lines do, in every profile:
+              #   "Done running job with warning (job data not written) <id>"
+              #   "Done running job with warning <id>: <warnings>"
+              # Transitional note: the jar deployed TODAY logs a single
+              # "Done running job with warning <id>" for failures as well as warnings,
+              # so until the runner is redeployed this rule over-counts by whatever
+              # pm-job-failures reports. That is the safe direction -- it never
+              # under-reports -- and it resolves itself on the redeploy.
+              expr: 'sum(count_over_time({component="runner"} |~ `Done running job with warning` [15m]))'
+          - refId: B
+            datasourceUid: __expr__
+            relativeTimeRange:
+              from: 1800
+              to: 0
+            model:
+              refId: B
+              type: reduce
+              expression: A
+              reducer: last
+              settings:
+                mode: dropNN
+              datasource:
+                type: __expr__
+                uid: __expr__
+          - refId: C
+            datasourceUid: __expr__
+            relativeTimeRange:
+              from: 1800
+              to: 0
+            model:
+              refId: C
+              type: threshold
+              expression: B
+              conditions:
+                - type: query
+                  evaluator:
+                    type: gt
+                    params:
+                      - 0
+                  operator:
+                    type: and
+                  query:
+                    params:
+                      - C
+                  reducer:
+                    type: last
+                    params: []
+              datasource:
+                type: __expr__
+                uid: __expr__
+
+      # -----------------------------------------------------------------------
+      - uid: pm-runner-error-rate
+        title: Runner ERROR rate elevated
+        condition: C
+        for: 5m
+        noDataState: OK
+        execErrState: Error
+        labels:
+          severity: warning
+          component: runner
+          signal: execution
+        annotations:
+          summary: 'More than 10 runner ERROR lines in 10 minutes'
+          description: >-
+            {{ $values.B.Value }} ERROR lines from the runner in 10 minutes.
+            `orchestrator logs query -c runner -l error -t 1h`. The matcher is
+            case-insensitive on purpose: promtail lowercases the level label as of
+            2026-08-27, while every runner line older than that is still uppercase
+            ERROR. And the label only exists at all because promtail's runner regex
+            accounts for the MDC block sitting between the timestamp and the level
+            -- if that pattern breaks, every runner line loses its level label and
+            this rule silently reads zero rather than erroring.
+        isPaused: false
+        data:
+          - refId: A
+            datasourceUid: loki
+            relativeTimeRange:
+              from: 1800
+              to: 0
+            model:
+              refId: A
+              datasource:
+                type: loki
+                uid: loki
+              editorMode: code
+              queryType: instant
+              intervalMs: 1000
+              maxDataPoints: 43200
+              expr: 'sum(count_over_time({component="runner", level=~"(?i)error"} [10m]))'
+          - refId: B
+            datasourceUid: __expr__
+            relativeTimeRange:
+              from: 1800
+              to: 0
+            model:
+              refId: B
+              type: reduce
+              expression: A
+              reducer: last
+              settings:
+                mode: dropNN
+              datasource:
+                type: __expr__
+                uid: __expr__
+          - refId: C
+            datasourceUid: __expr__
+            relativeTimeRange:
+              from: 1800
+              to: 0
+            model:
+              refId: C
+              type: threshold
+              expression: B
+              conditions:
+                - type: query
+                  evaluator:
+                    type: gt
+                    params:
+                      - 10
+                  operator:
+                    type: and
+                  query:
+                    params:
+                      - C
+                  reducer:
+                    type: last
+                    params: []
+              datasource:
+                type: __expr__
+                uid: __expr__
+
+      # -----------------------------------------------------------------------
+      - uid: pm-api-error-rate
+        title: API ERROR rate elevated
+        condition: C
+        for: 5m
+        noDataState: OK
+        execErrState: Error
+        labels:
+          severity: warning
+          component: api
+          signal: execution
+        annotations:
+          summary: 'More than 10 Laravel ERROR lines in 10 minutes'
+          description: >-
+            {{ $values.B.Value }} ERROR lines from the API in 10 minutes.
+            `orchestrator logs query -c api -l error -t 1h`. Case-insensitive for the
+            same reason as the runner rule -- promtail lowercases the level label as
+            of 2026-08-27, historical rows are uppercase. Also note the API logs in
+            CET while Loki stores UTC (promtail converts); if this rule and Grafana
+            Explore disagree about when something happened, suspect that.
+        isPaused: false
+        data:
+          - refId: A
+            datasourceUid: loki
+            relativeTimeRange:
+              from: 1800
+              to: 0
+            model:
+              refId: A
+              datasource:
+                type: loki
+                uid: loki
+              editorMode: code
+              queryType: instant
+              intervalMs: 1000
+              maxDataPoints: 43200
+              expr: 'sum(count_over_time({component="api", level=~"(?i)error"} [10m]))'
+          - refId: B
+            datasourceUid: __expr__
+            relativeTimeRange:
+              from: 1800
+              to: 0
+            model:
+              refId: B
+              type: reduce
+              expression: A
+              reducer: last
+              settings:
+                mode: dropNN
+              datasource:
+                type: __expr__
+                uid: __expr__
+          - refId: C
+            datasourceUid: __expr__
+            relativeTimeRange:
+              from: 1800
+              to: 0
+            model:
+              refId: C
+              type: threshold
+              expression: B
+              conditions:
+                - type: query
+                  evaluator:
+                    type: gt
+                    params:
+                      - 10
+                  operator:
+                    type: and
+                  query:
+                    params:
+                      - C
+                  reducer:
+                    type: last
+                    params: []
+              datasource:
+                type: __expr__
+                uid: __expr__

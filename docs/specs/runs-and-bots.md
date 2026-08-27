@@ -48,6 +48,18 @@ Experiment (id, name, description, active, testing)
 Naming map (UI term → entity): **Bot** = Crawler · **Run** = Queue · **Job** = Job ·
 **Behaviour** = Behavior. UI copy uses the researcher term; monospace/IDs may show the raw entity.
 
+> **`status_code` on Queue and Job is a fixed vocabulary, defined elsewhere.** The
+> normative list, the legacy values a reader must still accept (`skpped`, `failed`),
+> the `status_message` format, and the `warning` state added 2026-08-27 are in
+> `primemover-orchestrator/docs/integration-contract.md` §3.4, with the executable
+> copy in `orchestrator/status.py`. It is deliberately **not** duplicated here:
+> five copies of this vocabulary already drifted apart once, which is what §3.4
+> exists to stop. Two things the GUI must get right, though: **`warning` is not
+> success** — a run whose jobs are all `success` and `warning` finished, but
+> something in it degraded and should be visible as such, not rendered green; and
+> an **unrecognised** value must render as unknown rather than defaulting to a
+> success style.
+
 > ⚠ **Terminology collision (resolved 2026-07-21).** The workspace **bot card** labels the
 > bot's **Configuration** as "behavior" (`workspace.bot.behavior` → `bot.configuration?.name`).
 > That is *not* the same thing as the **Behavior entity** in this spec. "Behaviours" in Slice D

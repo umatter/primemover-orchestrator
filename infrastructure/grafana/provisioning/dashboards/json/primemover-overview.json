@@ -17,7 +17,7 @@
         "type": "textbox",
         "query": "",
         "current": { "text": "", "value": "" },
-        "description": "Substring matched against runner + API lines in the bottom panel, e.g. cr-244, jl-838, exp-141, a crawler name, or an exception class."
+        "description": "Substring matched against runner + API lines in the bottom panel, e.g. cr-244, jl-838 (or q-838 after the runner jar is redeployed), exp-141, a crawler name, or an exception class."
       }
     ]
   },
@@ -160,7 +160,7 @@
     },
     {
       "type": "logs", "id": 22, "title": "Search: runner + API lines containing \"$search\"",
-      "description": "Set the 'Search logs for' box at the top. Correlation IDs work: cr-<crawler>, jl-<joblist> in the runner; exp-<experiment>|cr-…|q-…|j-… in the API.",
+      "description": "Set the 'Search logs for' box at the top. Correlation IDs work: cr-<crawler>, and jl-<joblist> from the currently deployed jar (q-<queue> plus j-<job> once it is redeployed); exp-<experiment>|cr-…|q-…|j-… in the API.",
       "gridPos": { "x": 0, "y": 35, "w": 24, "h": 14 },
       "datasource": { "type": "loki", "uid": "loki" },
       "targets": [ { "refId": "A", "expr": "{component=~\"runner|api\"} |= \"$search\" != \"RestTemplate\"" } ],

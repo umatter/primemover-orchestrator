@@ -1,0 +1,67 @@
+# Grafana unified-alerting contact points (file provisioning, Grafana 11.4).
+#
+# Deliberately INERT out of the box: the rules fire and are visible under
+# Alerting -> Alert rules, and nothing is delivered anywhere until someone
+# configures SMTP (or the webhook below) on the Grafana container. That is the
+# gate -- Grafana's email notifier is a no-op while GF_SMTP_ENABLED is false,
+# which is the container default and what docker-compose.yml currently sets.
+#
+# Two facts verified against grafana/grafana:11.4.0 with a throwaway container,
+# both of which shape this file:
+#
+#   1. An EMPTY `addresses` is rejected, and one invalid contact point aborts
+#      the ENTIRE alerting provisioning -- alert rules included -- and Grafana
+#      then exits 1:
+#        "failure to map file contact-points.yaml: failure parsing contact
+#         points: primemover-default: ... could not find addresses in settings"
+#      So this file must be valid with no environment configured at all.
+#   2. Grafana's provisioning expansion understands ${VAR} but NOT the shell
+#      default form ${VAR:-fallback} -- it expands that to the empty string,
+#      hitting (1). Hence a literal placeholder below rather than an inline
+#      default.
+#
+# To arm email delivery:
+#   a) forward SMTP settings into the Grafana container (docker-compose
+#      `environment:`): GF_SMTP_ENABLED=true, GF_SMTP_HOST, GF_SMTP_USER,
+#      GF_SMTP_PASSWORD, GF_SMTP_FROM_ADDRESS -- see .env.example;
+#   b) replace the placeholder address below with the real recipient, or with
+#      ${PM_ALERT_EMAIL_TO} once that variable is forwarded into the container
+#      too. Do not leave it as ${PM_ALERT_EMAIL_TO} while the variable is
+#      unset -- see (1).
+#   c) restart Grafana (provisioning is read at startup only).
+#
+# File-provisioned contact points are read-only in the Grafana UI; edit here.
+
+apiVersion: 1
+
+contactPoints:
+  - orgId: 1
+    name: primemover-default
+    receivers:
+      - uid: pm-contact-email
+        type: email
+        disableResolveMessage: false
+        settings:
+          # Placeholder. Non-deliverable on purpose: if SMTP is later enabled and
+          # this was never changed, Grafana logs a send failure rather than
+          # quietly dropping the alert.
+          addresses: primemover-alerts@localhost
+          singleEmail: true
+          subject: '[PrimeMover] {{ .Status | toUpper }}: {{ .CommonLabels.alertname }}'
+
+  # ---------------------------------------------------------------------------
+  # Optional webhook receiver, commented out ON PURPOSE. Grafana rejects a
+  # webhook with an empty `url`, so uncommenting this before PM_ALERT_WEBHOOK_URL
+  # is set in the Grafana container's environment takes the whole alerting
+  # provisioning down with it (see note 1 above). Set the variable first, then
+  # uncomment, then restart Grafana -- and point the policy at it.
+  # ---------------------------------------------------------------------------
+  # - orgId: 1
+  #   name: primemover-webhook
+  #   receivers:
+  #     - uid: pm-contact-webhook
+  #       type: webhook
+  #       disableResolveMessage: false
+  #       settings:
+  #         url: ${PM_ALERT_WEBHOOK_URL}
+  #         httpMethod: POST

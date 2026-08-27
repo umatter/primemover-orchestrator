@@ -213,19 +213,25 @@ def test_auth_without_access_token_raises(
     assert len(record["calls"]) == 1
 
 
-def test_every_call_re_authenticates(monkeypatch: pytest.MonkeyPatch, api_settings: Any) -> None:
-    """The token is per-call: two _api_request calls perform two logins (no caching)."""
+def test_the_token_is_cached_across_calls(
+    monkeypatch: pytest.MonkeyPatch, api_settings: Any
+) -> None:
+    """Two _api_request calls perform ONE login.
+
+    This previously asserted the opposite ("the token is per-call"). Re-authenticating
+    on every call produced a login storm that both wasted API capacity and polluted the
+    very correlation logs `debug job` and `trace job` read back, so the caching is the
+    fix and this test pins it.
+    """
     handler = scripted(FakeResponse(200, {"data": 1}), FakeResponse(200, {"data": 2}))
     record = install_fake_httpx(monkeypatch, handler)
 
     assert s._api_request("GET", "experiments") == {"data": 1}
     assert s._api_request("GET", "crawlers") == {"data": 2}
 
-    assert record["clients"] == 2
     assert [c["url"] for c in record["calls"]] == [
         LOGIN_URL,
         f"{BASE_URL}/experiments",
-        LOGIN_URL,
         f"{BASE_URL}/crawlers",
     ]
 

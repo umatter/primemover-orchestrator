@@ -18,9 +18,16 @@ from zoneinfo import ZoneInfo
 
 import httpx
 
+from orchestrator import status as status_contract
 from orchestrator.clients.api import APIClient
 from orchestrator.config import get_settings
-from orchestrator.e2e.job_status import job_duration_seconds, job_succeeded
+from orchestrator.e2e.job_status import (
+    job_degraded,
+    job_duration_seconds,
+    job_finished,
+    job_status_message,
+    job_succeeded,
+)
 
 from .reporter import E2EReporter
 
@@ -59,12 +66,12 @@ class QueueExecutionTimeoutError(TimeoutError):
     """The runner claimed the queue, but the jobs did not finish in time."""
 
 
-# Queue-level status codes, as emitted by the runner's JoblistState enum.
-# NOTE: "skpped" is a real typo in the runner's enum (SKIPPED_INACTIVE and
-# SKIPPED_REVIEWED), so both spellings have to be matched.
-QUEUE_SUCCESS_STATUSES = ("completed", "done", "finished", "success")
-QUEUE_FAILURE_STATUSES = ("failed", "error", "failure")
-QUEUE_SKIPPED_STATUSES = ("skipped", "skpped")
+# Queue-level status codes used to live here as three literal tuples matched
+# with ``in`` -- one of the five divergent vocabularies this change collapses.
+# That is how the runner's real "skpped" typo (SKIPPED_INACTIVE /
+# SKIPPED_REVIEWED) was handled for queues but not for jobs. The canonical codes
+# and every legacy spelling now live in ``orchestrator.status``; nothing outside
+# this module imported the tuples.
 
 
 class E2ETestTypeConfig(TypedDict, total=False):
@@ -130,15 +137,45 @@ TEST_TYPES: dict[str, E2ETestTypeConfig] = {
 }
 
 
+def _job_ok(job: dict[str, Any]) -> bool:
+    """Whether one job counts as a pass for the e2e run.
+
+    Best-effort job types (``try*``) may fail without failing the run -- the
+    runner itself continues past them (e.g. the YouTube consent dialog is only
+    sometimes shown, so its tryclickjob times out on profiles that never see
+    it). Jobs the runner skipped in a best-effort job's wake report "skipped".
+
+    This used to compare the raw field against literal spellings, so the
+    runner's real "skpped" typo (SKIPPED_INACTIVE / SKIPPED_REVIEWED) never
+    matched and a legitimately skipped job failed the run. ``status.status_of``
+    folds it in.
+
+    "warning" is terminal and NOT a failure: the job ran to completion with
+    something the experiment cares about degraded. It does not fail the e2e run
+    -- that would change what a green run means -- but every degraded job is
+    reported separately so it cannot pass unnoticed.
+    """
+    code = status_contract.status_of(job)
+    if (
+        status_contract.is_success(code)
+        or status_contract.is_skipped(code)
+        or status_contract.is_warning(code)
+    ):
+        return True
+    return str(job.get("type", "")).startswith("try")
+
+
 def _queue_status(queue: dict[str, Any]) -> str:
-    """Return the queue's status code, or "" when it has none yet.
+    """Return the queue's canonical status code, or "" when it has none yet.
 
     The API returns ``status_code: null`` for a queue no runner has touched, and
     ``dict.get(key, default)`` yields that stored ``None`` rather than the
     default -- which is how a never-picked-up queue used to be reported as
-    ``Last status: None``.
+    ``Last status: None``. ``status.status_of`` returns "" for both, and folds
+    the legacy spellings ("skpped", "failed") onto the canonical vocabulary so
+    the callers below can compare against one set of names.
     """
-    return str(queue.get("status_code") or queue.get("status") or "")
+    return status_contract.status_of(queue)
 
 
 def _queue_picked_up(queue: dict[str, Any]) -> bool:
@@ -278,19 +315,20 @@ class E2ETestRunner:
         # Step 4: Report results
         self.reporter.print_step(4, 4, "Results")
 
-        # Check if all jobs completed successfully. Best-effort job types
-        # (try*) may fail without failing the run — the runner itself continues
-        # past them (e.g. the YouTube consent dialog is only sometimes shown, so
-        # its tryclickjob times out on profiles that never see it). Jobs the
-        # runner skipped in a best-effort job's wake report status "skipped".
-        def _job_ok(job: dict) -> bool:
-            status = job.get("status_code", job.get("status"))
-            if status in ("completed", "done", "success", "skipped"):
-                return True
-            return str(job.get("type", "")).startswith("try")
-
+        # Check if all jobs completed successfully.
         all_completed = bool(jobs) and all(_job_ok(j) for j in jobs)
         failed_jobs = [j for j in jobs if not _job_ok(j)]
+        degraded_jobs = [j for j in jobs if job_degraded(j)]
+
+        if degraded_jobs:
+            self.reporter.console.print(
+                f"  [yellow]⚠[/yellow] {len(degraded_jobs)} job(s) completed in a degraded "
+                f"state — the run passed, but a treatment may have silently become a control:"
+            )
+            for job in degraded_jobs:
+                job_type = job.get("type", job.get("job_type", "unknown"))
+                detail = job_status_message(job) or "no detail reported"
+                self.reporter.console.print(f"      [yellow]•[/yellow] {job_type}: {detail}")
 
         duration = time.time() - start_time
         result = E2EResult(
@@ -625,11 +663,21 @@ class E2ETestRunner:
                     picked_up_at = now
                     picked_up_after = now - wait_started
 
-                completed_jobs = sum(1 for j in jobs if job_succeeded(j))
+                # A degraded job is terminal, so it counts as progress -- else
+                # the "3/4 completed" line would sit one short until the budget
+                # ran out on an already-finished queue.
+                completed_jobs = sum(1 for j in jobs if job_finished(j))
 
                 # --- Terminal states, checked before any deadline so that a
                 # queue which finishes on the very last poll still counts.
-                if queue_status in QUEUE_SUCCESS_STATUSES:
+                #
+                # QueueStatus has no "warning" member, but is_warning is checked
+                # here so that a queue which ever reports one is treated as the
+                # terminal, non-failing state it is rather than being waited out
+                # to a generic timeout.
+                if status_contract.is_success(queue_status) or status_contract.is_warning(
+                    queue_status
+                ):
                     self.reporter.clear_line()
                     # Print individual job results
                     for job in jobs:
@@ -640,18 +688,36 @@ class E2ETestRunner:
 
                         if job_succeeded(job):
                             self.reporter.print_job_completed(job_type, duration)
+                        elif job_degraded(job):
+                            # Ran to completion, degraded. Never a red ✗: it did
+                            # not fail, and calling it a failure trains people to
+                            # ignore it.
+                            detail = job_status_message(job) or "degraded"
+                            self.reporter.console.print(
+                                f"  [yellow]⚠[/yellow] {job_type} - {duration:.1f}s - {detail}"
+                            )
                         else:
-                            error = job.get("error", job.get("message", "Unknown error"))
+                            error = (
+                                job_status_message(job)
+                                or job.get("error")
+                                or job.get("message")
+                                or "Unknown error"
+                            )
                             self.reporter.print_job_failed(job_type, error)
 
                     return jobs
 
-                if queue_status in QUEUE_FAILURE_STATUSES:
+                if status_contract.is_failure(queue_status):
                     self.reporter.clear_line()
-                    error_msg = queue.get("error", queue.get("message", "Queue failed"))
+                    error_msg = (
+                        status_message
+                        or queue.get("error")
+                        or queue.get("message")
+                        or "Queue failed"
+                    )
                     raise RuntimeError(f"Queue failed: {error_msg}")
 
-                if queue_status in QUEUE_SKIPPED_STATUSES:
+                if status_contract.is_skipped(queue_status):
                     # Terminal too: every SKIPPED_* state sets processed=true and
                     # a finish time. Waiting out the budget here would only turn a
                     # precise diagnosis into a generic timeout.

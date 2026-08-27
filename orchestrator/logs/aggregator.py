@@ -15,6 +15,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
+from orchestrator import status
 from orchestrator.clients.loki import LogEntry, LokiClient
 from orchestrator.config import get_settings
 
@@ -22,6 +23,59 @@ logger = logging.getLogger(__name__)
 
 # Maximum bytes to read from log files (100KB)
 MAX_LOG_READ_BYTES = 100_000
+
+# How many of a single decision's ``warnings`` become their own log entries. The
+# rest are counted, never silently dropped: a truncated warning list that does not
+# say it was truncated is how a degraded arm stays invisible.
+MAX_LAMBDA_WARNING_ENTRIES = 5
+
+#: Severity ladder for the file-parsing fallback, ordered least to most severe.
+#:
+#: It has to cover the whole PSR-3 vocabulary because Laravel uses it: ALERT is
+#: in the live index right now, and CRITICAL and EMERGENCY are the two levels
+#: above it. The previous table held only debug/info/warning/warn/error, so an
+#: unlisted level fell to the ``.get(..., 0)`` default and ranked *below debug* --
+#: which meant ``logs errors`` and every ``--level`` filter silently discarded
+#: the three most severe things the API can say. The most severe levels were the
+#: only ones that could not be seen.
+#:
+#: Synonyms share a rank rather than getting their own: ``warn``/``warning`` and
+#: ``err``/``error`` are one level each, spelled differently by Logback and by
+#: syslog-derived sources.
+LOG_LEVEL_SEVERITY: dict[str, int] = {
+    "trace": 0,
+    "debug": 1,
+    "info": 2,
+    "notice": 3,
+    "warn": 4,
+    "warning": 4,
+    "err": 5,
+    "error": 5,
+    "crit": 6,
+    "critical": 6,
+    "fatal": 6,
+    "alert": 7,
+    "emerg": 8,
+    "emergency": 8,
+}
+
+#: Rank given to a level this table does not know. Below everything, so an
+#: unparsed level is not mistaken for a severe one -- but see
+#: :func:`level_at_least`, which never *raises* an unknown level either.
+UNKNOWN_LEVEL_SEVERITY = -1
+
+
+def level_at_least(level: str, minimum: str) -> bool:
+    """True when *level* is at least as severe as *minimum*.
+
+    An unrecognised *minimum* admits everything (the caller asked for something
+    this ladder cannot rank, so filtering on it would be guesswork); an
+    unrecognised *level* is admitted only when no minimum was requested.
+    """
+    floor = LOG_LEVEL_SEVERITY.get(minimum.strip().lower(), UNKNOWN_LEVEL_SEVERITY)
+    if floor == UNKNOWN_LEVEL_SEVERITY:
+        return True
+    return LOG_LEVEL_SEVERITY.get(level.strip().lower(), UNKNOWN_LEVEL_SEVERITY) >= floor
 
 
 def read_file_tail(file_path: Path, max_bytes: int = MAX_LOG_READ_BYTES) -> str:
@@ -147,6 +201,7 @@ class LogAggregator:
         experiment_id: int | None = None,
         crawler_id: int | None = None,
         job_id: int | None = None,
+        queue_id: int | None = None,
         time_range: str = "1h",
         limit: int = 100,
         include_lambda: bool = True,
@@ -162,6 +217,7 @@ class LogAggregator:
             experiment_id: Filter by experiment ID
             crawler_id: Filter by crawler ID
             job_id: Filter by job ID
+            queue_id: Filter by queue (joblist / run) ID
             time_range: Time range (15m, 1h, 24h, 7d)
             limit: Maximum results per source
             include_lambda: Whether to include Lambda HAR extraction
@@ -179,6 +235,7 @@ class LogAggregator:
             "experiment_id": experiment_id,
             "crawler_id": crawler_id,
             "job_id": job_id,
+            "queue_id": queue_id,
             "time_range": time_range,
             "limit": limit,
         }
@@ -197,6 +254,7 @@ class LogAggregator:
                         experiment_id=experiment_id,
                         crawler_id=crawler_id,
                         job_id=job_id,
+                        queue_id=queue_id,
                         time_range=time_range,
                         limit=limit,
                     )
@@ -288,11 +346,11 @@ class LogAggregator:
                 except Exception as e:
                     logger.debug(f"Error parsing {log_file}: {e}")
 
-        # Filter by level
+        # Filter by level. The ladder is LOG_LEVEL_SEVERITY, which -- unlike the
+        # five-entry table this replaced -- ranks Laravel's ALERT / CRITICAL /
+        # EMERGENCY above ERROR instead of below DEBUG.
         if level and level != "all":
-            level_order = {"debug": 0, "info": 1, "warning": 2, "warn": 2, "error": 3}
-            min_level = level_order.get(level.lower(), 0)
-            entries = [e for e in entries if level_order.get(e.level.lower(), 0) >= min_level]
+            entries = [e for e in entries if level_at_least(e.level, level)]
 
         # Filter by search
         if search:
@@ -400,35 +458,187 @@ class LogAggregator:
                             if search.lower() not in json.dumps(data).lower():
                                 continue
 
-                        entry = LogEntry(
-                            timestamp=timestamp,
-                            component="lambda",
-                            level="info",
-                            message=message,
-                            labels={
-                                "xpath": data.get("xpath", "")[:100],
-                                "video_id": selected.get("id", ""),
-                            },
-                            raw=json.dumps(data)[:1000],
-                            job_id=job_id,
-                        )
-                        entries.append(entry)
-
-                        # Add warnings as separate entries
-                        for warning in data.get("warnings", [])[:5]:
-                            warn_entry = LogEntry(
+                        entries.extend(
+                            self._lambda_entries(
+                                data,
+                                message=message,
                                 timestamp=timestamp,
-                                component="lambda",
-                                level="warning",
-                                message=str(warning)[:500],
-                                labels={},
-                                raw=str(warning),
                                 job_id=job_id,
                             )
-                            entries.append(warn_entry)
+                        )
 
                     except (json.JSONDecodeError, KeyError):
                         pass
+
+        return entries
+
+    @staticmethod
+    def _lambda_entries(
+        data: dict,
+        message: str,
+        timestamp: datetime,
+        job_id: int | None,
+    ) -> list[LogEntry]:
+        """Turn one decision-function response into log entries.
+
+        The decision function answers HTTP 200 even when a requested filter has
+        failed, so the status code never reveals a degraded decision. The fields
+        that do are read through ``orchestrator.status``:
+
+        ``degraded``
+            At least one *requested* filter failed, or selection failed
+            outright. "A human should look at this decision."
+        ``treatment_lost``
+            The bot was configured to be treated and produced control-arm data
+            anyway. This is the one alarm condition, and it gets its own
+            ERROR-level entry rather than being one warning string among several.
+        ``selection_mode``
+            A neutral description of how the video was chosen. Nothing here
+            branches on it. ``random`` is the correct answer for a control
+            crawler -- 82% of the decision payloads on this box carry no rating
+            column at all, and 236 of 243 live bot configurations are control-arm,
+            so an ERROR per random selection would have fired on four of every
+            five ``lambda_select`` jobs and buried the real ones.
+        ``filters``
+            Per-filter ``ok`` / ``skipped`` / ``failed: <ExcClass>: <msg>``.
+            ``skipped`` means NOT REQUESTED and is never counted as a failure --
+            on a control crawler five of the six are skipped on every healthy
+            invocation.
+
+        A payload carrying no report at all is a *legacy* payload from the
+        currently deployed decision function. Absence reads as "unknown", never
+        as degraded, so the ``degraded`` label says ``unknown`` rather than
+        ``false``.
+        """
+        selected = data.get("selected", {}) or {}
+        verdict = status.lambda_verdict(data)
+        failed_filters = verdict.failed_filters
+
+        summary = message
+        if verdict.selection_mode:
+            summary += f" [selection_mode={verdict.selection_mode}]"
+        if verdict.treatment_lost:
+            summary += " [TREATMENT LOST]"
+        elif verdict.degraded:
+            summary += " [DEGRADED]"
+        elif not verdict.reported:
+            summary += " [no degradation report]"
+
+        labels = {
+            "xpath": str(data.get("xpath", ""))[:100],
+            "video_id": selected.get("id", ""),
+        }
+        if verdict.selection_mode:
+            labels["selection_mode"] = verdict.selection_mode
+        # Three states, not two: "unknown" is what a payload with no report means,
+        # and collapsing it to "false" is how a blind spot reads as a clean bill
+        # of health.
+        if verdict.degraded:
+            labels["degraded"] = "true"
+        elif verdict.reported:
+            labels["degraded"] = "false"
+        else:
+            labels["degraded"] = "unknown"
+        labels["treatment_lost"] = "true" if verdict.treatment_lost else "false"
+        if failed_filters:
+            labels["failed_filters"] = ",".join(sorted(failed_filters))
+        if verdict.skipped_filters:
+            labels["skipped_filters"] = ",".join(verdict.skipped_filters)
+
+        entries = [
+            LogEntry(
+                timestamp=timestamp,
+                component="lambda",
+                level="warning" if verdict.degraded else "info",
+                message=summary,
+                labels=labels,
+                raw=json.dumps(data)[:1000],
+                job_id=job_id,
+            )
+        ]
+
+        hard_error = verdict.error
+        if hard_error:
+            entries.append(
+                LogEntry(
+                    timestamp=timestamp,
+                    component="lambda",
+                    level="error",
+                    message=f"Lambda decision failed: {hard_error}"[:500],
+                    labels={"degraded": "true"},
+                    raw=str(hard_error),
+                    job_id=job_id,
+                )
+            )
+
+        if verdict.treatment_lost:
+            entries.append(
+                LogEntry(
+                    timestamp=timestamp,
+                    component="lambda",
+                    level="error",
+                    message=(
+                        "Lambda decision lost the treatment: this crawler was "
+                        "configured to be treated but no requested treatment applied, "
+                        "so it produced control-arm data for this job"
+                    ),
+                    labels={
+                        "selection_mode": verdict.selection_mode,
+                        "degraded": "true",
+                        "treatment_lost": "true",
+                    },
+                    raw=json.dumps({"filters": verdict.filters, "llm": data.get("llm")})[:1000],
+                    job_id=job_id,
+                )
+            )
+
+        # Only *requested* filters that failed. A "skipped" filter was never
+        # asked for and must never produce an entry.
+        for name, state in sorted(failed_filters.items()):
+            entries.append(
+                LogEntry(
+                    timestamp=timestamp,
+                    component="lambda",
+                    level="warning",
+                    message=f"Lambda filter '{name}' did not apply: {state}"[:500],
+                    labels={"filter": name, "degraded": "true"},
+                    raw=state,
+                    job_id=job_id,
+                )
+            )
+
+        warnings = verdict.warnings
+        for warning in warnings[:MAX_LAMBDA_WARNING_ENTRIES]:
+            entries.append(
+                LogEntry(
+                    timestamp=timestamp,
+                    component="lambda",
+                    level="warning",
+                    message=str(warning)[:500],
+                    labels={},
+                    raw=str(warning),
+                    job_id=job_id,
+                )
+            )
+
+        # Never truncate silently: say how many were dropped and where to read them.
+        dropped = len(warnings) - MAX_LAMBDA_WARNING_ENTRIES
+        if dropped > 0:
+            entries.append(
+                LogEntry(
+                    timestamp=timestamp,
+                    component="lambda",
+                    level="warning",
+                    message=(
+                        f"... and {dropped} further lambda warning(s) not shown "
+                        f"({len(warnings)} in total); read them all with "
+                        f"LogAggregator.get_lambda_output(job_id)"
+                    ),
+                    labels={"truncated": str(dropped)},
+                    raw="",
+                    job_id=job_id,
+                )
+            )
 
         return entries
 
