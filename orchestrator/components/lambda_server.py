@@ -297,6 +297,14 @@ class LambdaServerComponent(BaseComponent):
         if decision_path.exists() and not lambda_func.exists():
             errors.append(f"lambda_function.py not found in {decision_path}")
 
+        # Check the data file behind the mainstream-media-aversion treatment arm.
+        # A missing or corrupted copy fails nothing at runtime: the decision
+        # function swallows the read error and the treated crawler quietly
+        # behaves like a control. Refusing to start is the only moment this is
+        # visible.
+        if decision_path.exists():
+            errors.extend(self._validate_decision_data(decision_path))
+
         # Check if port is available (only if not already running)
         if not self.is_running():
             import socket
@@ -309,6 +317,33 @@ class LambdaServerComponent(BaseComponent):
                 errors.append(f"Port {self.port} is already in use")
 
         return len(errors) == 0, errors
+
+    def _validate_decision_data(self, decision_path: Path) -> list[str]:
+        """Check the decision function's data files.
+
+        Delegates to ``orchestrator.lambda_service.server.check_mainstream_media_csv``
+        so the server's startup gate and this one apply the same rules (which in
+        turn come from ``bot-decision-yt/tests/test_mainstream_media_csv.py``).
+        The import is lazy and guarded: it pulls in flask, and a missing flask
+        must not turn ``validate()`` into a traceback.
+        """
+        try:
+            from orchestrator.lambda_service.server import check_mainstream_media_csv
+        except Exception:
+            csv_path = decision_path / "mainstream_media_channels.csv"
+            if not csv_path.is_file():
+                return [f"mainstream_media_channels.csv not found in {decision_path}"]
+            return []
+
+        state = check_mainstream_media_csv(decision_path)
+        if state.get("ok"):
+            return []
+
+        problems = "; ".join(str(p) for p in state.get("problems") or ["unknown problem"])
+        return [
+            f"{state.get('path')}: {problems}. This does not fail any job -- it silently "
+            "turns the mainstream-media aversion arm (pi=1) into a second control arm."
+        ]
 
     def _build_env(self) -> dict[str, str]:
         """Build subprocess environment by merging os.environ with .env file."""

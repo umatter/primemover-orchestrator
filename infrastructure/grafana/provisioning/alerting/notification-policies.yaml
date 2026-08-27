@@ -1,0 +1,33 @@
+# Grafana unified-alerting notification policy tree (file provisioning, 11.4).
+#
+# WARNING, and it is not obvious: provisioning `policies` REPLACES the org's
+# root notification policy -- it does not add a sibling. That is acceptable here
+# because this Grafana instance serves only PrimeMover, but it means anything
+# configured in the UI root policy is overwritten on restart. File-provisioned
+# policies are read-only in the UI.
+#
+# Delivery is still gated by the contact point: primemover-default is an email
+# receiver that sends nothing until SMTP is configured (see contact-points.yaml).
+
+apiVersion: 1
+
+policies:
+  - orgId: 1
+    receiver: primemover-default
+    # One notification per alert rule per component, rather than one per bot.
+    group_by:
+      - alertname
+      - component
+    group_wait: 30s
+    group_interval: 5m
+    repeat_interval: 4h
+    routes:
+      # A silently degraded treatment arm is the one thing worth waking someone
+      # for: the run keeps succeeding, so nothing else will ever tell you.
+      - receiver: primemover-default
+        object_matchers:
+          - ['severity', '=', 'critical']
+        group_wait: 10s
+        group_interval: 2m
+        repeat_interval: 1h
+        continue: false

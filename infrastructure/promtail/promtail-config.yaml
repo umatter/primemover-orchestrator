@@ -1,3 +1,29 @@
+# LEVEL LABEL CONTRACT
+# --------------------
+# Every scrape in this file writes the `level` label in ONE spelling per level:
+# lowercase, and `warning` -- never `warn`. Logback says WARN, PHP-FPM says
+# WARNING, Apache says warn, MySQL says Warning; left alone they produce four
+# label values for one severity, and a `level="warning"` query then answers with
+# whichever quarter of the data happened to agree with it. That divergence is the
+# exact class of bug this file's own history is made of, so normalising to
+# lowercase without also folding warn -> warning would only have moved it.
+#
+# The normalising stage is:
+#
+#   - template:
+#       source: level
+#       template: '{{ $level := ToLower .Value }}{{ if eq $level "warn" }}warning{{ else }}{{ $level }}{{ end }}'
+#   - labels:
+#       level:
+#
+# Everything ALREADY INDEXED keeps whatever spelling it was written with -- the
+# live index holds ALERT, DEBUG, INFO, error, ERROR, Error, WARN, WARNING,
+# Warning and warn side by side right now -- so queries must stay
+# case-insensitive and must keep treating warn/warning as one level regardless.
+# See orchestrator/clients/loki.py:LEVEL_SYNONYMS.
+#
+# Changes here need a promtail restart to take effect.
+
 server:
   http_listen_port: 9080
   grpc_listen_port: 0
@@ -30,11 +56,24 @@ scrape_configs:
       - labels:
           level:
           env:
+      # Normalise the level label: lowercase, and warn -> warning, so this scrape
+      # agrees with every other one in this file. Historical data keeps the
+      # uppercase form, so every query must stay case-insensitive regardless of
+      # what is written today. See LEVEL LABEL CONTRACT at the top.
+      - template:
+          source: level
+          template: '{{ $level := ToLower .Value }}{{ if eq $level "warn" }}warning{{ else }}{{ $level }}{{ end }}'
+      - labels:
+          level:
       - timestamp:
           source: timestamp
           format: "2006-01-02 15:04:05"
           location: "Europe/Zurich"  # API logs are in CET timezone
-      # Extract correlation IDs from JSON context if present
+      # Extract correlation IDs from the JSON context into the pipeline's
+      # extracted map. Deliberately NOT followed by a `- labels:` stage: job_id
+      # as a Loki label is a cardinality bomb (one stream per job). Queries filter
+      # on the correlation text in the line instead -- see
+      # orchestrator/clients/loki.py:correlation_line_filters.
       - json:
           source: context
           expressions:
@@ -73,6 +112,17 @@ scrape_configs:
           expression: '^(?P<timestamp>\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}[+-]\d{2}:\d{2})\s+(?P<mdc>.*?)\s*(?P<level>TRACE|DEBUG|INFO|WARN|ERROR)\s+(?P<pid>\d+)\s+---\s+\[(?P<app>[^\]]+)\]\s+\[(?P<thread>[^\]]+)\]\s+(?P<logger>[^\s]+)\s+:\s+(?P<message>.*)$'
       - labels:
           level:
+      # Logback writes WARN/ERROR uppercase, and spells warnings WARN where the
+      # apache/mysql/php scrapes spell them WARNING. Lowercasing alone left the
+      # runner as the one component whose warnings were labelled `warn` -- the
+      # same disagreement in a new spelling -- so the stage folds warn -> warning
+      # too. Historical runner lines keep the old form, so queries must stay
+      # case-insensitive either way. See LEVEL LABEL CONTRACT at the top.
+      - template:
+          source: level
+          template: '{{ $level := ToLower .Value }}{{ if eq $level "warn" }}warning{{ else }}{{ $level }}{{ end }}'
+      - labels:
+          level:
       # The offset MUST be part of the parsed value. Capturing only the local
       # time and parsing it with a zone-less layout made Loki treat 16:06+02:00
       # as 16:06Z -- two hours in the future -- and reject every runner line
@@ -88,9 +138,19 @@ scrape_configs:
       - regex:
           source: mdc
           expression: 'joblist\.id=(?P<queue_id>\d+)'
+      # job.id joined the MDC on 2026-08-27. `job\.id` cannot match inside
+      # `joblist.id`: the character after `job` there is `l`, not `.`.
+      - regex:
+          source: mdc
+          expression: 'job\.id=(?P<job_id>\d+)'
       - regex:
           source: mdc
           expression: 'correlationId=(?P<correlation_id>[^\s,]+)'
+      # None of the four extracted ids becomes a label, on purpose: crawler_id,
+      # queue_id and above all job_id are unbounded, and a Loki label per job is a
+      # cardinality bomb. They stay in the extracted map (available to later
+      # stages); id filtering happens in the query layer as a line filter over the
+      # correlationId text the runner prints.
 
   # ==========================================================================
   # Apache Access Logs
@@ -139,7 +199,7 @@ scrape_configs:
           level:
       - template:
           source: level
-          template: '{{ ToLower .Value }}'
+          template: '{{ $level := ToLower .Value }}{{ if eq $level "warn" }}warning{{ else }}{{ $level }}{{ end }}'
       - labels:
           level:
 
@@ -163,7 +223,7 @@ scrape_configs:
           level:
       - template:
           source: level
-          template: '{{ ToLower .Value }}'
+          template: '{{ $level := ToLower .Value }}{{ if eq $level "warn" }}warning{{ else }}{{ $level }}{{ end }}'
       - labels:
           level:
       - timestamp:
@@ -230,7 +290,7 @@ scrape_configs:
           level:
       - template:
           source: level
-          template: '{{ ToLower .Value }}'
+          template: '{{ $level := ToLower .Value }}{{ if eq $level "warn" }}warning{{ else }}{{ $level }}{{ end }}'
       - labels:
           level:
       - timestamp:
@@ -277,9 +337,14 @@ scrape_configs:
         target_label: 'component'
         replacement: 'memcached'
     pipeline_stages:
-      # Try to extract log level from common patterns
+      # Try to extract log level from common patterns. The regex is
+      # case-insensitive and matches both spellings, so it can capture any of
+      # WARN / Warn / warning -- normalise before labelling, as above.
       - regex:
           expression: '(?i)(?P<level>error|warn(?:ing)?|info|debug)'
+      - template:
+          source: level
+          template: '{{ $level := ToLower .Value }}{{ if eq $level "warn" }}warning{{ else }}{{ $level }}{{ end }}'
       - labels:
           level:
 
@@ -300,9 +365,13 @@ scrape_configs:
       # Redis log format: 12345:M 02 Dec 2025 10:30:00.123 * message
       - regex:
           expression: '^(?P<pid>\d+):(?P<role>\w)\s+(?P<timestamp>\d{2}\s+\w+\s+\d{4}\s+\d{2}:\d{2}:\d{2}\.\d{3})\s+(?P<level_char>[.*#-])\s+(?P<message>.*)$'
+      # The result of a template stage is written back into `source`, so with
+      # `source: level_char` this produced no `level` at all and the labels stage
+      # below silently labelled nothing. Redis already spells its warnings
+      # `warning`, which is the value the rest of this file now agrees on.
       - template:
-          source: level_char
-          template: '{{ if eq .Value "." }}debug{{ else if eq .Value "*" }}info{{ else if eq .Value "#" }}warning{{ else }}error{{ end }}'
+          source: level
+          template: '{{ if eq .level_char "." }}debug{{ else if eq .level_char "*" }}info{{ else if eq .level_char "#" }}warning{{ else }}error{{ end }}'
       - labels:
           level:
 

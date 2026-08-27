@@ -11,10 +11,22 @@ from typing import TYPE_CHECKING
 from rich.console import Console
 from rich.table import Table
 
-from orchestrator.e2e.job_status import job_duration_seconds, job_status, job_succeeded
+from orchestrator import status as status_contract
+from orchestrator.e2e.job_status import job_duration_seconds, job_status
 
 if TYPE_CHECKING:
     from .runner import E2EResult, ValidationResult
+
+
+#: Rich styles per canonical status code (orchestrator.status vocabulary).
+#: Anything unrecognised stays red -- an unknown status must not read as clean.
+_STATUS_STYLES: dict[str, str] = {
+    status_contract.JobStatus.SUCCESS.value: "green",
+    status_contract.JobStatus.WARNING.value: "yellow",
+    status_contract.JobStatus.SKIPPED.value: "dim",
+    status_contract.JobStatus.RUNNING.value: "cyan",
+    status_contract.JobStatus.FAILURE.value: "red",
+}
 
 
 class E2EReporter:
@@ -112,7 +124,11 @@ class E2EReporter:
 
             for job in result.jobs:
                 status = job_status(job)
-                status_style = "green" if job_succeeded(job) else "red"
+                # Not `green if succeeded else red`: that painted a `warning`
+                # and a `skipped` job exactly like a failure, which is the one
+                # thing the warning state exists to prevent. A degraded job ran
+                # to completion -- calling it red trains people to ignore red.
+                status_style = _STATUS_STYLES.get(status, "red")
                 seconds = job_duration_seconds(job)
                 duration = f"{seconds:.1f}s" if seconds is not None else "-"
                 table.add_row(

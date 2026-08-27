@@ -607,17 +607,26 @@ class TestQueryLogs:
 
         s.query_logs(component="api", level="error")
 
-        assert fake.calls[0]["params"]["query"] == '{component="api",level=~"(?i)error"}'
+        assert (
+            fake.calls[0]["params"]["query"]
+            == '{component="api",level=~"(?i)(?:error|err|critical|crit|alert|emergency|emerg|fatal)"}'
+        )
         assert fake.urls == ["http://loki.test:3100/loki/api/v1/query_range"]
 
-    def test_all_component_and_all_level_produce_an_empty_selector(
+    def test_all_component_and_all_level_still_produce_a_valid_selector(
         self, monkeypatch, fake_settings
     ):
+        """``{}`` is not "everything", it is a 400 from Loki.
+
+        Loki rejects a selector whose every matcher can match the empty string, so
+        the "all components" case has to be spelled with a real matcher. The old
+        ``{}`` made every unscoped query fail, which the CLI reported as no results.
+        """
         fake = self._patch_loki(monkeypatch, FakeResponse(200, loki_payload([])))
 
         s.query_logs(component="all", level="all")
 
-        assert fake.calls[0]["params"]["query"] == "{}"
+        assert fake.calls[0]["params"]["query"] == '{component=~".+"}'
 
     def test_search_is_escaped_into_a_line_filter(self, monkeypatch, fake_settings):
         fake = self._patch_loki(monkeypatch, FakeResponse(200, loki_payload([])))
@@ -626,16 +635,58 @@ class TestQueryLogs:
 
         # Quotes must be backslash-escaped or the LogQL string closes early --
         # this is the injection guard, not cosmetics.
-        assert fake.calls[0]["params"]["query"] == '{} |~ "he said \\"boom\\""'
+        assert fake.calls[0]["params"]["query"] == '{component=~".+"} |~ "he said \\"boom\\""'
 
-    def test_id_filters_are_json_stage_filters(self, monkeypatch, fake_settings):
+    def test_id_filters_are_line_filters_over_the_correlation_text(
+        self, monkeypatch, fake_settings
+    ):
+        """``| json`` matched nothing: the log lines are not JSON documents.
+
+        A Logback line is ``... correlationId=cr-7|jl-3 ...`` and a Laravel line is
+        text with a JSON context appended, so the ``json`` stage dropped every entry
+        and every id-filtered query came back empty -- which reads as "no errors".
+        """
         fake = self._patch_loki(monkeypatch, FakeResponse(200, loki_payload([])))
 
-        s.query_logs(experiment_id=15, crawler_id=7)
+        s.query_logs(experiment_id=15, crawler_id=7, queue_id=3, job_id=9)
 
         query = fake.calls[0]["params"]["query"]
-        assert '| json | experiment_id="15"' in query
-        assert '| json | crawler_id="7"' in query
+        assert "| json" not in query
+        # Both textual forms, and the doubled backslash a LogQL string literal needs
+        # for a word boundary.
+        assert '|~ "(?:\\\\bexp-15\\\\b|\\"experiment_id\\": ?15\\\\b)"' in query
+        assert '|~ "(?:\\\\bcr-7\\\\b|\\"crawler_id\\": ?7\\\\b)"' in query
+        # The queue matcher has to accept the runner's historical ``jl-`` spelling
+        # as well as the canonical ``q-``.
+        assert '|~ "(?:\\\\b(?:q|jl)-3\\\\b|\\"queue_id\\": ?3\\\\b)"' in query
+        assert '|~ "(?:\\\\bj-9\\\\b|\\"job_id\\": ?9\\\\b)"' in query
+
+    def test_time_range_is_sent_to_loki_as_an_explicit_window(self, monkeypatch, fake_settings):
+        """Without start/end Loki defaults to the last hour.
+
+        That is how ``find_failed_executions(time_range="24h")`` and
+        ``get_error_summary(time_range="7d")`` both really searched 1h.
+        """
+        fake = self._patch_loki(monkeypatch, FakeResponse(200, loki_payload([])))
+
+        s.query_logs(time_range="7d")
+
+        params = fake.calls[0]["params"]
+        span_seconds = (params["end"] - params["start"]) / 1e9
+        assert abs(span_seconds - 7 * 24 * 3600) < 2
+
+    def test_warning_level_also_matches_the_runners_uppercase_warn(
+        self, monkeypatch, fake_settings
+    ):
+        """Logback writes ``WARN``; the apache/mysql/php scrapes write ``warning``.
+
+        A matcher for the literal word "warning" never matched a single runner line.
+        """
+        fake = self._patch_loki(monkeypatch, FakeResponse(200, loki_payload([])))
+
+        s.query_logs(component="runner", level="warning")
+
+        assert fake.calls[0]["params"]["query"] == '{component="runner",level=~"(?i)warn(ing)?"}'
 
     @pytest.mark.parametrize(
         ("kwargs", "fragment"),
@@ -673,7 +724,10 @@ class TestQueryLogs:
 
         s.query_logs(component="API", level="ERROR", time_range="24H")
 
-        assert fake.calls[0]["params"]["query"] == '{component="api",level=~"(?i)error"}'
+        assert (
+            fake.calls[0]["params"]["query"]
+            == '{component="api",level=~"(?i)(?:error|err|critical|crit|alert|emergency|emerg|fatal)"}'
+        )
 
     def test_non_200_from_loki_reports_the_status_code(self, monkeypatch, fake_settings):
         self._patch_loki(monkeypatch, FakeResponse(503, {}))
@@ -691,6 +745,10 @@ class TestQueryLogs:
 # =============================================================================
 # Aggregators over query_logs
 # =============================================================================
+
+
+#: A timestamp inside every default query window, so scanned rows are "recent".
+NOW_ISO = datetime.now(timezone.utc).isoformat()
 
 
 class FakeQueryLogs:
@@ -784,32 +842,200 @@ class TestGetErrorSummary:
 
 
 class TestFindFailedExecutions:
-    def test_groups_failures_by_component(self, monkeypatch, no_network):
-        entries = [
-            {"component": "runner", "message": "boom 1"},
-            {"component": "runner", "message": "boom 2"},
-            {"component": "lambda", "message": "KeyError"},
+    """The tool now asks the API what actually happened, not the logs.
+
+    The log-only implementation could only ever see runs that logged an ERROR
+    line. A run that failed quietly, and every job that completed while silently
+    degrading (the new ``warning`` state), were invisible -- which is exactly what
+    step 1 of the primemover-debug skill relies on.
+    """
+
+    @staticmethod
+    def _pages(rows_by_endpoint: dict[str, list[dict[str, Any]]]) -> FakeApi:
+        """One page per endpoint, with the ``meta.last_page`` that stops the scan."""
+        return FakeApi(
+            responses={
+                endpoint: {"data": rows, "meta": {"last_page": 1}}
+                for endpoint, rows in rows_by_endpoint.items()
+            },
+            default={"data": [], "meta": {"last_page": 1}},
+        )
+
+    @staticmethod
+    def _job(job_id: int, code: str, message: str = "", crawler_id: int = 5) -> dict[str, Any]:
+        return {
+            "id": job_id,
+            "name": f"job-{job_id}",
+            "type": "lambdasingleselectjob",
+            "queue_id": 800,
+            "queue": {"id": 800, "crawler_id": crawler_id},
+            "status_code": code,
+            "status_message": message,
+            "started_at": NOW_ISO,
+            "finished_at": NOW_ISO,
+            "updated_at": NOW_ISO,
+        }
+
+    @staticmethod
+    def _queue(queue_id: int, code: str, message: str = "", crawler_id: int = 5) -> dict[str, Any]:
+        return {
+            "id": queue_id,
+            "name": f"run-{queue_id}",
+            "crawler_id": crawler_id,
+            "crawler": {"id": crawler_id, "experiment_id": 31},
+            "status_code": code,
+            "status_message": message,
+            "started_at": NOW_ISO,
+            "finished_at": NOW_ISO,
+            "updated_at": NOW_ISO,
+        }
+
+    def test_reports_api_recorded_failures_and_warnings(self, monkeypatch, no_network):
+        api = self._pages(
+            {
+                "jobs": [
+                    self._job(1, "success"),
+                    self._job(2, "failure", "job failed - chrome died"),
+                    self._job(3, "warning", "job finished - selection fell back to random"),
+                    self._job(4, "skipped", "previous task was not executed"),
+                ],
+                "queues": [self._queue(800, "failed")],
+            }
+        )
+        monkeypatch.setattr(s, "_api_request", api)
+        monkeypatch.setattr(s, "query_logs", FakeQueryLogs({"entries": []}))
+
+        out = json.loads(s.find_failed_executions())
+        ex = out["executions"]
+
+        # failure + warning are reported; success and skipped are not.
+        assert ex["total"] == 3
+        assert ex["by_status"] == {"failure": 2, "warning": 1}
+        assert [j["id"] for j in ex["jobs"]] == [2, 3]
+        assert [q["id"] for q in ex["queues"]] == [800]
+
+    def test_the_warning_state_is_reported_not_swallowed(self, monkeypatch, no_network):
+        """The whole reason ``warning`` exists: it used to be reported as success."""
+        api = self._pages(
+            {"jobs": [self._job(7, "warning", "job finished - job data not written")]}
+        )
+        monkeypatch.setattr(s, "_api_request", api)
+        monkeypatch.setattr(s, "query_logs", FakeQueryLogs({"entries": []}))
+
+        out = json.loads(s.find_failed_executions())
+
+        job = out["executions"]["jobs"][0]
+        assert job["status_code"] == "warning"
+        assert job["status_message"] == "job finished - job data not written"
+
+    def test_legacy_status_spellings_are_normalised(self, monkeypatch, no_network):
+        """``failed`` (queues) and ``skpped`` (the runner's typo) are real DB values."""
+        api = self._pages({"queues": [self._queue(801, "failed"), self._queue(802, "skpped")]})
+        monkeypatch.setattr(s, "_api_request", api)
+        monkeypatch.setattr(s, "query_logs", FakeQueryLogs({"entries": []}))
+
+        out = json.loads(s.find_failed_executions())
+        ex = out["executions"]
+
+        assert ex["by_status"] == {"failure": 1}
+        assert [q["id"] for q in ex["queues"]] == [801]
+
+    def test_failures_are_ordered_worst_first(self, monkeypatch, no_network):
+        api = self._pages(
+            {"jobs": [self._job(1, "warning"), self._job(2, "failure"), self._job(3, "warning")]}
+        )
+        monkeypatch.setattr(s, "_api_request", api)
+        monkeypatch.setattr(s, "query_logs", FakeQueryLogs({"entries": []}))
+
+        out = json.loads(s.find_failed_executions())
+
+        assert [j["status_code"] for j in out["executions"]["jobs"]] == [
+            "failure",
+            "warning",
+            "warning",
         ]
-        monkeypatch.setattr(s, "query_logs", FakeQueryLogs({"entries": entries}))
+
+    def test_rows_outside_the_window_are_excluded(self, monkeypatch, no_network):
+        stale = self._job(9, "failure")
+        stale["started_at"] = stale["finished_at"] = "2020-01-01T00:00:00+00:00"
+        # A bulk UPDATE bumps updated_at on rows that last ran years ago; judging the
+        # window on it pulled those into a 24h query.
+        stale["updated_at"] = NOW_ISO
+        api = self._pages({"jobs": [self._job(1, "failure"), stale]})
+        monkeypatch.setattr(s, "_api_request", api)
+        monkeypatch.setattr(s, "query_logs", FakeQueryLogs({"entries": []}))
+
+        out = json.loads(s.find_failed_executions(time_range="24h"))
+
+        assert [j["id"] for j in out["executions"]["jobs"]] == [1]
+
+    def test_experiment_filter_uses_the_experiments_crawlers(self, monkeypatch, no_network):
+        api = FakeApi(
+            responses={
+                "experiments/31": {"data": {"id": 31, "crawlers": [{"id": 5}]}},
+                "jobs": {
+                    "data": [
+                        self._job(1, "failure", crawler_id=5),
+                        self._job(2, "failure", crawler_id=99),
+                    ],
+                    "meta": {"last_page": 1},
+                },
+            },
+            default={"data": [], "meta": {"last_page": 1}},
+        )
+        monkeypatch.setattr(s, "_api_request", api)
+        monkeypatch.setattr(s, "query_logs", FakeQueryLogs({"entries": []}))
+
+        out = json.loads(s.find_failed_executions(experiment_id=31))
+
+        assert [j["id"] for j in out["executions"]["jobs"]] == [1]
+
+    def test_no_failures_is_an_empty_result_not_an_error(self, monkeypatch, no_network):
+        monkeypatch.setattr(s, "_api_request", self._pages({}))
+        monkeypatch.setattr(s, "query_logs", FakeQueryLogs({"count": 0, "entries": []}))
 
         out = json.loads(s.find_failed_executions())
 
-        assert out["total_failures"] == 3
-        assert out["by_component"] == {"runner": 2, "lambda": 1}
-        assert out["recent_failures"] == entries
+        assert out["executions"]["total"] == 0
+        assert out["executions"]["by_status"] == {}
+        assert out["log_signal"]["total_errors"] == 0
 
-    def test_recent_failures_are_capped_at_twenty(self, monkeypatch, no_network):
-        entries = [{"component": "runner", "message": f"e{i}"} for i in range(30)]
-        monkeypatch.setattr(s, "query_logs", FakeQueryLogs({"entries": entries}))
+    def test_an_api_outage_is_surfaced_not_reported_as_clean(self, monkeypatch, no_network):
+        monkeypatch.setattr(s, "_api_request", FakeApi(raises=RuntimeError("API down")))
+        monkeypatch.setattr(s, "query_logs", FakeQueryLogs({"entries": []}))
 
         out = json.loads(s.find_failed_executions())
 
-        assert out["total_failures"] == 30
-        assert len(out["recent_failures"]) == 20
-        assert out["recent_failures"][0]["message"] == "e0"
+        assert "API down" in out["executions"]["error"]
+        assert out["executions"]["total"] is None
+
+    def test_a_log_backend_failure_is_surfaced_in_its_own_section(self, monkeypatch, no_network):
+        """A Loki outage must not read as "no errors" -- and must not hide the API result."""
+        monkeypatch.setattr(s, "_api_request", self._pages({"jobs": [self._job(1, "failure")]}))
+        monkeypatch.setattr(s, "query_logs", FakeQueryLogs({"error": "Loki query failed: 503"}))
+
+        out = json.loads(s.find_failed_executions())
+
+        assert out["log_signal"]["error"] == "Loki query failed: 503"
+        assert out["executions"]["total"] == 1
+
+    def test_the_log_signal_is_labelled_secondary(self, monkeypatch, no_network):
+        monkeypatch.setattr(s, "_api_request", self._pages({}))
+        monkeypatch.setattr(
+            s,
+            "query_logs",
+            FakeQueryLogs({"entries": [{"component": "runner", "message": "boom"}]}),
+        )
+
+        out = json.loads(s.find_failed_executions())
+        log_signal = out["log_signal"]
+
+        assert "SECONDARY" in log_signal["note"]
+        assert log_signal["by_component"] == {"runner": 1}
 
     def test_filters_are_forwarded_to_the_log_query(self, monkeypatch, no_network):
         fake = FakeQueryLogs({"entries": []})
+        monkeypatch.setattr(s, "_api_request", self._pages({}))
         monkeypatch.setattr(s, "query_logs", fake)
 
         s.find_failed_executions(time_range="7d", experiment_id=31)
@@ -818,26 +1044,15 @@ class TestFindFailedExecutions:
             {"level": "error", "time_range": "7d", "experiment_id": 31, "limit": 200}
         ]
 
-    def test_no_failures_is_an_empty_grouping(self, monkeypatch, no_network):
-        monkeypatch.setattr(s, "query_logs", FakeQueryLogs({"count": 0, "entries": []}))
+    def test_logs_can_be_skipped_entirely(self, monkeypatch, no_network):
+        fake = FakeQueryLogs({"entries": []})
+        monkeypatch.setattr(s, "_api_request", self._pages({}))
+        monkeypatch.setattr(s, "query_logs", fake)
 
-        out = json.loads(s.find_failed_executions())
+        out = json.loads(s.find_failed_executions(include_logs=False))
 
-        assert out == {"total_failures": 0, "by_component": {}, "recent_failures": []}
-
-    def test_a_log_backend_failure_is_reported_as_zero_failures(self, monkeypatch, no_network):
-        """Documents a real hazard rather than endorsing it.
-
-        Unlike ``get_error_summary``, this tool never checks for an ``error`` key in the
-        ``query_logs`` result: a Loki outage is indistinguishable from a clean run. If
-        this is ever fixed to surface the error, this test should fail and be updated.
-        """
-        monkeypatch.setattr(s, "query_logs", FakeQueryLogs({"error": "Loki query failed: 503"}))
-
-        out = json.loads(s.find_failed_executions())
-
-        assert out["total_failures"] == 0
-        assert "error" not in out
+        assert "log_signal" not in out
+        assert fake.calls == []
 
 
 # =============================================================================
@@ -1196,8 +1411,13 @@ class TestTraceTools:
         assert lambda_span["component"] == "lambda"
         assert lambda_span["metadata"]["selected_video"] == "Climate explained"
         assert lambda_span["metadata"]["selected_id"] == "vid123"
-        # A warning containing "error" downgrades the span.
-        assert lambda_span["status"] == "failed"
+        # A decision that emitted warnings is DEGRADED, not failed: it answered
+        # HTTP 200 and returned a video, but not the one the arm asked for.
+        # (This used to assert "failed", from a heuristic that looked for the
+        # substring "error" anywhere in a warning string. "failed" is now
+        # reserved for a hard `error` in the payload -- see
+        # orchestrator/status.py and test_status_consumers.py.)
+        assert lambda_span["status"] == "warning"
         assert out["summary"]["total_spans"] == 2
 
     def test_trace_job_without_lambda_output_has_no_children(self, monkeypatch, builder_seams):

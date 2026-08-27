@@ -15,14 +15,50 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 
+from orchestrator import status as status_contract
+
 from .har_parser import HARParser, HARSummary
 
 
 @dataclass
 class LambdaDecision:
-    """Lambda decision output from job report."""
+    """Lambda decision output from job report.
+
+    ``success`` used to mean "the output.json parsed", so a payload carrying a
+    hard ``{"error": ...}`` was reported as a successful decision and
+    ``_generate_error_summary`` never flagged it. The questions are kept apart:
+
+    ``output_parsed``
+        the report contained an output.json and it deserialised.
+    ``success``
+        the decision function actually did what was asked -- it parsed, carried
+        no error, and every *requested* filter applied.
+    ``degraded``
+        at least one requested filter failed, or selection failed outright.
+        "A human should look at this decision."
+    ``treatment_lost``
+        the bot was configured to be treated and produced control-arm data
+        anyway. "This session's data is scientifically void." This is the only
+        alarm-worthy state, and the one to surface first.
+    ``selection_mode``
+        a *neutral* description of how the video was picked. ``"random"`` means
+        no LLM rating informed it -- which is the correct, healthy outcome for a
+        control crawler, and 82% of this box's traffic. Never a finding on its
+        own; see :mod:`orchestrator.status`.
+    ``report_present``
+        whether the payload carried a degradation report at all. ``False`` is
+        *unknown* (a payload from the currently deployed decision function), not
+        "clean" and not "degraded".
+    """
 
     success: bool = False
+    output_parsed: bool = False
+    degraded: bool = False
+    treatment_lost: bool = False
+    report_present: bool = False
+    selection_mode: str = ""
+    filters: dict[str, str] = field(default_factory=dict)
+    llm: dict = field(default_factory=dict)
     selected_title: str = ""
     selected_id: str = ""
     xpath: str = ""
@@ -30,10 +66,46 @@ class LambdaDecision:
     error: str | None = None
     raw_output: dict | None = None
 
+    @property
+    def random_selection(self) -> bool:
+        """True when no LLM rating informed the pick.
+
+        Descriptive only. It is **not** evidence that anything went wrong: a
+        control crawler requests no LLM filter and therefore always selects at
+        random. Use :attr:`treatment_lost` for "this arm produced control-arm
+        data when it was supposed to be treated".
+        """
+        return self.selection_mode == "random"
+
+    @property
+    def failed_filters(self) -> dict[str, str]:
+        """Only the filters that were requested and did not apply.
+
+        ``"skipped"`` means *not requested* and must never be counted here: it
+        is the state of five of the six filters on every healthy control
+        invocation, and counting it made ``debug job`` report filter casualties
+        on clean jobs.
+        """
+        return status_contract.lambda_failed_filters({"filters": self.filters})
+
+    @property
+    def skipped_filters(self) -> list[str]:
+        """Filters that were never requested. Informational, never a finding."""
+        return status_contract.lambda_skipped_filters({"filters": self.filters})
+
     def to_dict(self) -> dict:
         """Convert to dictionary for serialization."""
         return {
             "success": self.success,
+            "output_parsed": self.output_parsed,
+            "degraded": self.degraded,
+            "treatment_lost": self.treatment_lost,
+            "report_present": self.report_present,
+            "selection_mode": self.selection_mode,
+            "filters": self.filters,
+            "failed_filters": self.failed_filters,
+            "skipped_filters": self.skipped_filters,
+            "llm": self.llm,
             "selected_title": self.selected_title,
             "selected_id": self.selected_id,
             "xpath": self.xpath,
@@ -65,19 +137,74 @@ class LogEntry:
 
 @dataclass
 class JobMetadata:
-    """Job metadata from PrimeMover API."""
+    """Job metadata from PrimeMover API.
+
+    ``status`` holds a *canonical* status code (see :mod:`orchestrator.status`),
+    not the raw field: the API sends ``status_code`` and this class used to read
+    ``status``, so it was always "" and every status-based branch downstream was
+    dead.
+    """
 
     job_id: int
     experiment_id: int | None = None
     crawler_id: int | None = None
     queue_id: int | None = None
+    experiment_name: str = ""
+    crawler_name: str = ""
     status: str = ""
+    status_message: str = ""
     job_type: str = ""
     started_at: datetime | None = None
     completed_at: datetime | None = None
     duration_seconds: float | None = None
     error_message: str | None = None
     raw_data: dict | None = None
+
+    @property
+    def is_failure(self) -> bool:
+        return status_contract.is_failure(self.status)
+
+    @property
+    def is_warning(self) -> bool:
+        return status_contract.is_warning(self.status)
+
+    @property
+    def needs_attention(self) -> bool:
+        """A failure *or* a warning -- what "should a human look at this?" means."""
+        return status_contract.is_bad(self.status)
+
+    @property
+    def diagnostic(self) -> str:
+        """The best available human-readable account of what happened."""
+        return self.error_message or self.status_message or ""
+
+    @property
+    def diagnostic_label(self) -> str:
+        """What a renderer should *call* that diagnostic.
+
+        Not always "Error": a ``warning`` job ran to completion and its
+        diagnostic explains a degradation, so labelling it "Error" both
+        overstates it and contradicts the Status row two lines above.
+        """
+        if self.is_failure:
+            return "Error"
+        if self.is_warning:
+            return "Degradation"
+        return "Detail"
+
+    @property
+    def diagnostic_is_duplicate(self) -> bool:
+        """True when :attr:`diagnostic` is verbatim the ``status_message``.
+
+        The usual case: the API sends no ``error_message`` of its own, so the
+        runner's ``status_message`` is promoted into it. A panel that already
+        shows a Status Message row must skip the second one rather than print
+        the same sentence twice under two different labels.
+        """
+        error_message = self.error_message
+        if not error_message:
+            return False
+        return error_message.strip() == self.status_message.strip()
 
     def to_dict(self) -> dict:
         """Convert to dictionary for serialization."""
@@ -86,12 +213,17 @@ class JobMetadata:
             "experiment_id": self.experiment_id,
             "crawler_id": self.crawler_id,
             "queue_id": self.queue_id,
+            "experiment_name": self.experiment_name,
+            "crawler_name": self.crawler_name,
             "status": self.status,
+            "status_message": self.status_message,
             "job_type": self.job_type,
             "started_at": self.started_at.isoformat() if self.started_at else None,
             "completed_at": self.completed_at.isoformat() if self.completed_at else None,
             "duration_seconds": self.duration_seconds,
             "error_message": self.error_message,
+            "diagnostic": self.diagnostic,
+            "diagnostic_label": self.diagnostic_label,
         }
 
 
@@ -103,10 +235,20 @@ class CloudWatchInfo:
     request_id: str = ""
     duration_ms: float = 0
     billed_duration_ms: float = 0
+    init_duration_ms: float = 0
     memory_used_mb: int = 0
     memory_limit_mb: int = 0
     logs: list[LogEntry] = field(default_factory=list)
     error: str | None = None
+
+    @property
+    def error_entries(self) -> list[LogEntry]:
+        """The error-level lines among ``logs``.
+
+        There is no separate ``errors`` list to populate: CloudWatch gives one
+        stream, and the errors in it are simply its error-level entries.
+        """
+        return [log for log in self.logs if log.level.lower() in ("error", "critical", "fatal")]
 
     def to_dict(self) -> dict:
         """Convert to dictionary for serialization."""
@@ -115,9 +257,11 @@ class CloudWatchInfo:
             "request_id": self.request_id,
             "duration_ms": self.duration_ms,
             "billed_duration_ms": self.billed_duration_ms,
+            "init_duration_ms": self.init_duration_ms,
             "memory_used_mb": self.memory_used_mb,
             "memory_limit_mb": self.memory_limit_mb,
             "logs": [log.to_dict() for log in self.logs],
+            "errors": [log.message for log in self.error_entries],
             "error": self.error,
         }
 
@@ -162,12 +306,28 @@ class JobDebugReport:
     # Summary
     has_errors: bool = False
     error_summary: str = ""
+    # "warning" findings are kept apart from errors on purpose: a degraded
+    # decision is not a failure, and folding it into error_summary would either
+    # over-report the job as failed or (as before) not be reported at all.
+    has_warnings: bool = False
+    warning_summary: str = ""
+
+    @property
+    def treatment_lost(self) -> bool:
+        """The one finding that voids a session's data.
+
+        Promoted to the report level so a caller does not have to reach into
+        ``lambda_decision`` (and does not have to know that ``selection_mode``
+        is not the field to look at).
+        """
+        return bool(self.lambda_decision and self.lambda_decision.treatment_lost)
 
     def to_dict(self) -> dict:
         """Convert to dictionary for serialization."""
         return {
             "job_id": self.job_id,
             "generated_at": self.generated_at.isoformat(),
+            "treatment_lost": self.treatment_lost,
             "metadata": self.metadata.to_dict() if self.metadata else None,
             "lambda_decision": self.lambda_decision.to_dict() if self.lambda_decision else None,
             "har_summary": self.har_summary.to_dict() if self.har_summary else None,
@@ -177,6 +337,8 @@ class JobDebugReport:
             "error_logs": [log.to_dict() for log in self.error_logs],
             "has_errors": self.has_errors,
             "error_summary": self.error_summary,
+            "has_warnings": self.has_warnings,
+            "warning_summary": self.warning_summary,
         }
 
     def to_json(self, indent: int = 2) -> str:
@@ -309,44 +471,86 @@ class JobDebugger:
                 )
 
             data = response.json().get("data", response.json())
-
-            # Parse timestamps
-            started_at = None
-            completed_at = None
-            if data.get("started_at"):
-                try:
-                    started_at = datetime.fromisoformat(data["started_at"].replace("Z", "+00:00"))
-                except ValueError:
-                    pass
-            if data.get("completed_at"):
-                try:
-                    completed_at = datetime.fromisoformat(
-                        data["completed_at"].replace("Z", "+00:00")
-                    )
-                except ValueError:
-                    pass
-
-            # Calculate duration
-            duration = None
-            if started_at and completed_at:
-                duration = (completed_at - started_at).total_seconds()
-
-            return JobMetadata(
-                job_id=job_id,
-                experiment_id=data.get("experiment_id"),
-                crawler_id=data.get("crawler_id"),
-                queue_id=data.get("queue_id") or data.get("joblist_id"),
-                status=data.get("status", ""),
-                job_type=data.get("type", ""),
-                started_at=started_at,
-                completed_at=completed_at,
-                duration_seconds=duration,
-                error_message=data.get("error_message"),
-                raw_data=data,
-            )
+            return self._metadata_from_payload(job_id, data)
 
         except Exception as e:
             return JobMetadata(job_id=job_id, error_message=str(e))
+
+    @staticmethod
+    def _parse_timestamp(value: object) -> datetime | None:
+        """Parse one API timestamp, or None. The API mixes offset spellings."""
+        if not isinstance(value, str) or not value:
+            return None
+        text = value.strip()
+        if text.endswith(("Z", "z")):
+            text = text[:-1] + "+00:00"
+        # +0200 -> +02:00; fromisoformat only learned the colon-less form in 3.11.
+        if len(text) >= 5 and text[-5] in "+-" and text[-4:].isdigit():
+            text = text[:-2] + ":" + text[-2:]
+        try:
+            return datetime.fromisoformat(text)
+        except ValueError:
+            return None
+
+    def _metadata_from_payload(self, job_id: int, data: dict) -> JobMetadata:
+        """Build JobMetadata from a ``GET /jobs/{id}`` payload.
+
+        Split out from the HTTP call so the field-name handling -- the part that
+        was wrong -- is testable without a live API.
+        """
+        # ``status_code``/``finished_at`` are what the API sends. This used to
+        # read ``status`` and ``completed_at``, neither of which exists on the
+        # wire, so the status was always "" and the duration always None.
+        started_at = self._parse_timestamp(data.get("started_at"))
+        completed_at = self._parse_timestamp(status_contract.finished_at_of(data))
+
+        duration = None
+        if started_at and completed_at:
+            seconds = (completed_at - started_at).total_seconds()
+            duration = seconds if seconds >= 0 else None
+
+        status_code = status_contract.status_of(data)
+        status_message = str(data.get("status_message") or "")
+
+        def _nested(key: str) -> dict:
+            value = data.get(key)
+            return value if isinstance(value, dict) else {}
+
+        queue = _nested("queue")
+        crawler = _nested("crawler")
+        experiment = _nested("experiment")
+
+        crawler_id = data.get("crawler_id") or queue.get("crawler_id") or crawler.get("id")
+        experiment_id = (
+            data.get("experiment_id") or crawler.get("experiment_id") or experiment.get("id")
+        )
+        queue_id = data.get("queue_id") or data.get("joblist_id") or queue.get("id")
+
+        return JobMetadata(
+            job_id=job_id,
+            experiment_id=experiment_id,
+            crawler_id=crawler_id,
+            queue_id=queue_id,
+            experiment_name=str(data.get("experiment_name") or experiment.get("name") or ""),
+            crawler_name=str(data.get("crawler_name") or crawler.get("name") or ""),
+            status=status_code,
+            status_message=status_message,
+            job_type=str(data.get("type") or data.get("job_type") or ""),
+            started_at=started_at,
+            completed_at=completed_at,
+            duration_seconds=duration,
+            # status_message is the field the runner now puts a real diagnostic
+            # in, and it was dropped on the floor everywhere in this codebase.
+            # Only promote it to error_message when the job actually went wrong:
+            # on a green job it reads "successfully finished job", which must
+            # not render as an error.
+            error_message=(
+                data.get("error_message")
+                or (status_message if status_contract.is_bad(status_code) else None)
+                or None
+            ),
+            raw_data=data,
+        )
 
     def _find_artifacts(self, job_id: int) -> Artifacts:
         """Find job artifacts in the output directory."""
@@ -383,24 +587,48 @@ class JobDebugger:
                     if "output" in name.lower() and name.endswith(".json"):
                         with zf.open(name) as f:
                             data = json.load(f)
-                            decision.raw_output = data
-                            decision.success = True
-
-                            # Extract selected video info
-                            selected = data.get("selected", {})
-                            decision.selected_title = selected.get("title", "")
-                            decision.selected_id = selected.get("id", "")
-                            decision.xpath = data.get("xpath", "")
-
-                            # Extract warnings
-                            decision.warnings = data.get("warnings", [])
-
-                            break
+                        return self.decision_from_payload(data)
 
         except Exception as e:
+            decision.output_parsed = False
             decision.success = False
             decision.error = str(e)
 
+        return decision
+
+    @staticmethod
+    def decision_from_payload(data: dict) -> LambdaDecision:
+        """Interpret one decision-function response.
+
+        The response is HTTP 200 even when every LLM-driven filter failed, so
+        "did this decision succeed?" can only be answered from the body. See the
+        ``lambda_*`` helpers in :mod:`orchestrator.status`.
+        """
+        decision = LambdaDecision(raw_output=data, output_parsed=True)
+
+        raw_selected = data.get("selected")
+        selected: dict = raw_selected if isinstance(raw_selected, dict) else {}
+        decision.selected_title = str(selected.get("title") or "")
+        decision.selected_id = str(selected.get("id") or "")
+        decision.xpath = str(data.get("xpath") or "")
+
+        verdict = status_contract.lambda_verdict(data)
+        decision.warnings = verdict.warnings
+        decision.error = verdict.error
+        decision.degraded = verdict.degraded
+        decision.treatment_lost = verdict.treatment_lost
+        decision.report_present = verdict.reported
+        decision.selection_mode = verdict.selection_mode
+        decision.filters = verdict.filters
+
+        llm = data.get("llm")
+        decision.llm = dict(llm) if isinstance(llm, dict) else {}
+
+        # "The output parsed" is decision.output_parsed. THIS is "the decision
+        # function did what was asked": no hard error, and every *requested*
+        # filter applied. A control crawler that skipped five filters and picked
+        # at random is a success -- that is what it was configured to do.
+        decision.success = not decision.error and not decision.degraded
         return decision
 
     def _get_cloudwatch_info(self, job_id: int, time_range: str) -> CloudWatchInfo:
@@ -442,6 +670,9 @@ class JobDebugger:
 
                     duration_match = re.search(r"Duration:\s*([\d.]+)\s*ms", msg)
                     billed_match = re.search(r"Billed Duration:\s*([\d.]+)\s*ms", msg)
+                    # Present only on a cold start; the renderer showed it long
+                    # before anything parsed it.
+                    init_match = re.search(r"Init Duration:\s*([\d.]+)\s*ms", msg)
                     memory_match = re.search(r"Memory Size:\s*(\d+)\s*MB", msg)
                     used_match = re.search(r"Max Memory Used:\s*(\d+)\s*MB", msg)
 
@@ -449,6 +680,8 @@ class JobDebugger:
                         info.duration_ms = float(duration_match.group(1))
                     if billed_match:
                         info.billed_duration_ms = float(billed_match.group(1))
+                    if init_match:
+                        info.init_duration_ms = float(init_match.group(1))
                     if memory_match:
                         info.memory_limit_mb = int(memory_match.group(1))
                     if used_match:
@@ -527,23 +760,61 @@ class JobDebugger:
         return all_logs, error_logs
 
     def _generate_error_summary(self, report: JobDebugReport) -> None:
-        """Generate a summary of errors found."""
-        errors = []
+        """Split the findings into hard errors and degradation warnings.
 
-        # Check job status
-        if report.metadata:
-            if report.metadata.status in ("failed", "error"):
-                errors.append(f"Job status: {report.metadata.status}")
-                if report.metadata.error_message:
-                    errors.append(f"Job error: {report.metadata.error_message}")
+        The status check used to compare against ``("failed", "error")`` while
+        ``metadata.status`` was always "" (it read a field the API does not
+        send), so this branch had never fired once.
+        """
+        errors: list[str] = []
+        warnings: list[str] = []
 
-        # Check Lambda decision
-        if report.lambda_decision:
-            if not report.lambda_decision.success:
-                errors.append(f"Lambda failed: {report.lambda_decision.error}")
-            elif report.lambda_decision.warnings:
-                for warning in report.lambda_decision.warnings[:3]:
-                    errors.append(f"Lambda warning: {warning[:100]}")
+        # Check job status. is_bad, not is_failure: a "warning" job ran to
+        # completion with something the experiment cares about degraded, which
+        # is the whole reason the state exists.
+        meta = report.metadata
+        if meta:
+            if meta.is_failure:
+                errors.append(f"Job status: {meta.status}")
+                if meta.error_message:
+                    errors.append(f"Job error: {meta.error_message}")
+            elif meta.is_warning:
+                warnings.append(f"Job status: {meta.status}")
+                if meta.status_message:
+                    warnings.append(f"Job detail: {meta.status_message}")
+
+        # Check Lambda decision. A hard error is a failure; a degraded decision
+        # is a warning -- and TREATMENT LOST is the loudest of them, because a
+        # bot that was configured to be treated produced control-arm data.
+        #
+        # What is deliberately absent: any finding derived from
+        # ``selection_mode`` alone. Random selection is the correct mode for a
+        # control crawler (82% of real payloads on this box), and a filter
+        # reported as "skipped" was never requested. Both used to be counted as
+        # casualties here, which put warnings on clean jobs.
+        ld = report.lambda_decision
+        if ld:
+            if not ld.output_parsed:
+                errors.append(f"Lambda output could not be read: {ld.error}")
+            elif ld.error:
+                errors.append(f"Lambda failed: {ld.error}")
+            else:
+                if ld.treatment_lost:
+                    # insert, not append: this is the most consequential thing
+                    # this report can say, and a reader who stops after the
+                    # first line must not miss it behind "Job status: warning".
+                    warnings.insert(
+                        0,
+                        "TREATMENT LOST: this bot was configured to be treated but "
+                        "produced control-arm data - no requested treatment applied, "
+                        "so this session is scientifically void",
+                    )
+                elif ld.degraded:
+                    warnings.append("Lambda decision degraded: a requested filter did not apply")
+                for name, state in list(ld.failed_filters.items())[:6]:
+                    warnings.append(f"Lambda filter {name}: {state}")
+                for warning in ld.warnings[:3]:
+                    warnings.append(f"Lambda warning: {warning[:100]}")
 
         # Check HAR for failed requests
         if report.har_summary and report.har_summary.failed_requests:
@@ -561,3 +832,5 @@ class JobDebugger:
 
         report.has_errors = len(errors) > 0
         report.error_summary = "\n".join(errors) if errors else "No errors found"
+        report.has_warnings = len(warnings) > 0
+        report.warning_summary = "\n".join(warnings) if warnings else "No warnings found"

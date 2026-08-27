@@ -8,8 +8,13 @@ import json
 import os
 import re as _re
 import sys
+import threading
+import time
+from collections.abc import Callable
+from datetime import datetime, timezone
 from typing import Any
 
+from orchestrator import status
 from orchestrator.config import get_settings
 
 
@@ -172,6 +177,8 @@ def query_logs(
     search: str = "",
     experiment_id: int | None = None,
     crawler_id: int | None = None,
+    queue_id: int | None = None,
+    job_id: int | None = None,
     limit: int = 100,
 ) -> str:
     """
@@ -180,10 +187,14 @@ def query_logs(
     Args:
         component: Filter by component - 'all', 'api', 'runner', or 'lambda'
         time_range: Time range to search - '15m', '1h', '24h', '7d'
-        level: Minimum log level - 'all', 'debug', 'info', 'warning', 'error'
+        level: Log level - 'all', 'debug', 'info', 'warning', 'error'. Matched on
+               the promtail-set label, case-insensitively; 'warning' also matches
+               the runner's Logback 'WARN'.
         search: Text pattern to search for in log messages
         experiment_id: Filter by experiment ID
         crawler_id: Filter by crawler ID
+        queue_id: Filter by queue (joblist / run) ID
+        job_id: Filter by job ID
         limit: Maximum number of results to return
 
     Returns:
@@ -191,7 +202,13 @@ def query_logs(
     """
     import httpx
 
-    from orchestrator.clients.loki import escape_logql_string
+    from orchestrator.clients.loki import (
+        build_label_selector,
+        correlation_line_filters,
+        escape_logql_string,
+        level_label_matcher,
+        range_query_params,
+    )
 
     # Validate inputs
     try:
@@ -201,37 +218,56 @@ def query_logs(
         search = _validate_search(search)
         experiment_id = _validate_id(experiment_id, "experiment_id")
         crawler_id = _validate_id(crawler_id, "crawler_id")
+        queue_id = _validate_id(queue_id, "queue_id")
+        job_id = _validate_id(job_id, "job_id")
         limit = _validate_limit(limit)
     except ValueError as e:
         return json.dumps({"error": f"Validation error: {e}"})
 
     settings = get_settings()
 
-    # Build LogQL query with proper escaping
+    # Build LogQL query with proper escaping. The query-building primitives live in
+    # orchestrator.clients.loki so this tool and LokiClient cannot drift apart --
+    # they already had, and only one of them matched any rows.
     label_selectors = []
     if component != "all":
         label_selectors.append(f'component="{component}"')
-    if level != "all":
-        label_selectors.append(f'level=~"(?i){level}"')
+    level_matcher = level_label_matcher(level)
+    if level_matcher:
+        label_selectors.append(level_matcher)
 
-    labels = "{" + ",".join(label_selectors) + "}" if label_selectors else "{}"
-    query = labels
+    query = build_label_selector(label_selectors)
 
     # Add filters with proper escaping
     filters = []
     if search:
         escaped_search = escape_logql_string(search)
         filters.append(f'|~ "{escaped_search}"')
-    if experiment_id:
-        filters.append(f'| json | experiment_id="{experiment_id}"')
-    if crawler_id:
-        filters.append(f'| json | crawler_id="{crawler_id}"')
+    # Correlation ids are line filters over the text the components print. The old
+    # `| json | crawler_id="N"` stage dropped every entry, because the log lines are
+    # plain text -- so every id-filtered query returned nothing, which reads as
+    # "no errors found".
+    filters.extend(
+        correlation_line_filters(
+            experiment_id=experiment_id,
+            crawler_id=crawler_id,
+            queue_id=queue_id,
+            job_id=job_id,
+        )
+    )
 
     if filters:
         query += " " + " ".join(filters)
 
     try:
-        params: dict[str, str | int] = {"query": query, "limit": limit}
+        # Without explicit start/end Loki defaults to the last hour, which silently
+        # ignored every time_range this tool was given (find_failed_executions("24h")
+        # and get_error_summary("7d") both really searched 1h).
+        params: dict[str, str | int] = {
+            "query": query,
+            "limit": limit,
+            **range_query_params(time_range),
+        }
         response = httpx.get(
             f"{settings.loki_url}/loki/api/v1/query_range",
             params=params,
@@ -395,6 +431,75 @@ def system_status() -> str:
 # =============================================================================
 
 
+#: How long a cached access token is reused before a fresh login. The API issues
+#: JWTs that outlive this comfortably; the point of the ceiling is that a token
+#: revoked server-side stops being replayed within the hour, not that we know the
+#: exact expiry.
+_TOKEN_TTL_SECONDS = 45 * 60
+
+#: The cached access token: ``(settings, token, monotonic deadline)``, or ``None``.
+#:
+#: Deliberately a single slot keyed on the *identity* of the ``Settings`` instance
+#: rather than on its values. A token is derived from the credentials in Settings,
+#: so its lifetime is exactly that object's: ``get_settings`` is ``lru_cache``d, so
+#: in a live server there is one instance and one token; anything that clears that
+#: cache (a config reload, and the autouse fixture in the test suite) hands out a
+#: new instance, and the next call re-authenticates instead of replaying a token
+#: minted from credentials that may no longer be the ones in force.
+_TOKEN_CACHE: tuple[Any, str, float] | None = None
+_TOKEN_LOCK = threading.Lock()
+
+
+def _clear_token_cache() -> None:
+    """Forget the cached token. Used by the 401 retry path and by tests."""
+    global _TOKEN_CACHE
+    with _TOKEN_LOCK:
+        _TOKEN_CACHE = None
+
+
+def _api_token(client: Any, settings: Any, force: bool = False) -> str:
+    """Return an access token, logging in only when there is no usable one.
+
+    Every ``_api_request`` used to POST ``/login`` first. One ``trace experiment``
+    or ``pm_compose_run`` is dozens of API calls, so a single MCP tool call meant
+    dozens of logins -- each one burning a bcrypt verification on the API and
+    writing two more ``Throttling request with IP`` lines into the log stream that
+    ``trace job`` then has to filter back out. The login storm was polluting the
+    very evidence it was being used to fetch.
+    """
+    global _TOKEN_CACHE
+    now = time.monotonic()
+
+    if not force:
+        with _TOKEN_LOCK:
+            cached = _TOKEN_CACHE
+            if cached is not None and cached[0] is settings and cached[2] > now:
+                return cached[1]
+
+    # NOTE: the auth route is `/login` (not `/auth/login`).
+    auth_response = client.post(
+        f"{settings.pm_api_base_url}/login",
+        headers={"Accept": "application/json"},
+        json={
+            "email": settings.pm_api_email,
+            "password": settings.pm_api_password,
+        },
+    )
+
+    if auth_response.status_code != 200:
+        _clear_token_cache()
+        raise Exception(f"API authentication failed ({auth_response.status_code})")
+
+    token = auth_response.json().get("access_token")
+    if not token:
+        _clear_token_cache()
+        raise Exception("API authentication returned no access_token")
+
+    with _TOKEN_LOCK:
+        _TOKEN_CACHE = (settings, str(token), time.monotonic() + _TOKEN_TTL_SECONDS)
+    return str(token)
+
+
 def _api_request(
     method: str,
     endpoint: str,
@@ -405,44 +510,44 @@ def _api_request(
     Make an authenticated API request.
 
     Uses httpx.Client context manager to ensure connections are properly closed.
+    The access token is cached across calls (see :func:`_api_token`) and refreshed
+    once on a 401, so a token revoked or expired server-side self-heals rather
+    than failing every tool until the process restarts.
     """
     import httpx
 
     settings = get_settings()
 
+    url = f"{settings.pm_api_base_url}/{endpoint}"
+
     # Use context manager to ensure connections are closed
     with httpx.Client(timeout=30.0) as client:
-        # Authenticate. NOTE: the auth route is `/login` (not `/auth/login`).
-        auth_response = client.post(
-            f"{settings.pm_api_base_url}/login",
-            headers={"Accept": "application/json"},
-            json={
-                "email": settings.pm_api_email,
-                "password": settings.pm_api_password,
-            },
-        )
+        response = None
+        for attempt in range(2):
+            token = _api_token(client, settings, force=attempt > 0)
+            headers = {"Authorization": f"Bearer {token}", "Accept": "application/json"}
 
-        if auth_response.status_code != 200:
-            raise Exception(f"API authentication failed ({auth_response.status_code})")
+            if method == "GET":
+                response = client.get(url, headers=headers, params=params)
+            elif method == "POST":
+                response = client.post(url, headers=headers, json=data)
+            elif method == "PUT":
+                response = client.put(url, headers=headers, json=data)
+            elif method == "DELETE":
+                response = client.delete(url, headers=headers, params=params)
+            else:
+                raise Exception(f"Unsupported method: {method}")
 
-        token = auth_response.json().get("access_token")
-        if not token:
-            raise Exception("API authentication returned no access_token")
-        headers = {"Authorization": f"Bearer {token}", "Accept": "application/json"}
+            # A 401 means the cached token is no longer good. Drop it and log in
+            # again -- once. Retrying further would turn a wrong password into the
+            # login storm this cache exists to prevent.
+            if response.status_code == 401 and attempt == 0:
+                _clear_token_cache()
+                continue
+            break
 
-        # Make request
-        url = f"{settings.pm_api_base_url}/{endpoint}"
-
-        if method == "GET":
-            response = client.get(url, headers=headers, params=params)
-        elif method == "POST":
-            response = client.post(url, headers=headers, json=data)
-        elif method == "PUT":
-            response = client.put(url, headers=headers, json=data)
-        elif method == "DELETE":
-            response = client.delete(url, headers=headers, params=params)
-        else:
-            raise Exception(f"Unsupported method: {method}")
+        if response is None:  # unreachable: the loop assigns before it can break
+            raise Exception("API request produced no response")
 
         if response.status_code >= 400:
             # Include the body so validation errors (422) are actionable.
@@ -1291,47 +1396,263 @@ def trace_job(job_id: int, time_range: str = "7d") -> str:
         return json.dumps({"error": str(e)})
 
 
-@mcp.tool()
-def find_failed_executions(time_range: str = "24h", experiment_id: int | None = None) -> str:
+# How far the API scan walks back through the id-ordered jobs/queues listings
+# before giving up. 20 x 100 covers roughly a fortnight of a busy run at the
+# observed job rate; the scan also stops as soon as it walks past the window.
+_MAX_STATUS_SCAN_PAGES = 20
+_STATUS_SCAN_PAGE_SIZE = 100
+
+
+def _parse_api_datetime(value: Any) -> datetime | None:
+    """Parse the several timestamp spellings the API emits.
+
+    ``updated_at`` is ``2026-08-27T07:54:03+02:00`` but ``finished_at`` is
+    ``2026-08-27T07:54:03.008+0200`` -- no colon in the offset, which
+    ``datetime.fromisoformat`` rejects before Python 3.11.
     """
-    Find all failed job executions with error details.
+    if not value or not isinstance(value, str):
+        return None
+    text = value.strip().replace("Z", "+00:00")
+    text = _re.sub(r"([+-]\d{2})(\d{2})$", r"\1:\2", text)
+    try:
+        parsed = datetime.fromisoformat(text)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed
+
+
+def _experiment_crawler_ids(experiment_id: int) -> set[int]:
+    """Crawler ids belonging to an experiment (``GET experiments/{id}`` embeds them)."""
+    result = _api_request("GET", f"experiments/{experiment_id}")
+    data = result.get("data", result) if isinstance(result, dict) else {}
+    crawlers = data.get("crawlers") or [] if isinstance(data, dict) else []
+    return {c["id"] for c in crawlers if isinstance(c, dict) and c.get("id") is not None}
+
+
+def _scan_bad_executions(
+    endpoint: str,
+    cutoff: datetime,
+    crawler_ids: set[int] | None,
+    row_to_record: Callable[[dict[str, Any]], dict[str, Any]],
+) -> tuple[list[dict[str, Any]], int, bool]:
+    """Walk the newest-first API listing for jobs/queues in a bad terminal state.
+
+    Returns (records, rows_scanned, hit_page_cap). Rows are kept when
+    ``status.is_bad`` holds -- i.e. failure *or* the new ``warning`` state, which
+    is the whole point: a warning job is one that "succeeded" while silently
+    degrading, and ``is_failure`` alone hides exactly those.
+
+    The window is judged on when the row *ran* -- ``finished_at``, else
+    ``started_at``, else (via ``status.started_at_of``) ``created_at``. Never on
+    ``updated_at``: a bulk update bumps that on rows which last executed weeks
+    ago, which both pulled a 2026-08-18 queue into a 24h window and stopped the
+    scan from ever recognising that it had walked past the window. Scanning stops
+    once a whole page falls outside the window -- per page, not per row, because
+    creation order and execution order are not the same.
+    """
+    records: list[dict[str, Any]] = []
+    scanned = 0
+    page = 1
+    hit_cap = False
+
+    while page <= _MAX_STATUS_SCAN_PAGES:
+        result = _api_request(
+            "GET", endpoint, params={"page": page, "per_page": _STATUS_SCAN_PAGE_SIZE}
+        )
+        rows = result.get("data", []) if isinstance(result, dict) else []
+        if not rows:
+            break
+
+        page_latest: datetime | None = None
+        for row in rows:
+            scanned += 1
+            occurred = _parse_api_datetime(status.finished_at_of(row) or status.started_at_of(row))
+            if occurred is not None and (page_latest is None or occurred > page_latest):
+                page_latest = occurred
+            if occurred is not None and occurred < cutoff:
+                continue
+            if not status.is_bad(status.status_of(row)):
+                continue
+            record = row_to_record(row)
+            if crawler_ids is not None and record.get("crawler_id") not in crawler_ids:
+                continue
+            records.append(record)
+
+        meta = result.get("meta", {}) if isinstance(result, dict) else {}
+        last_page = meta.get("last_page")
+        page_entirely_old = page_latest is not None and page_latest < cutoff
+        if page_entirely_old or (isinstance(last_page, int) and page >= last_page):
+            break
+        page += 1
+    else:
+        hit_cap = True
+
+    return records, scanned, hit_cap
+
+
+def _job_record(row: dict[str, Any]) -> dict[str, Any]:
+    queue = row.get("queue") or {}
+    return {
+        "kind": "job",
+        "id": row.get("id"),
+        "name": row.get("name"),
+        "type": row.get("type"),
+        "queue_id": row.get("queue_id"),
+        "crawler_id": queue.get("crawler_id") if isinstance(queue, dict) else None,
+        "status_code": status.status_of(row),
+        "status_message": status.message_of(row) or None,
+        "started_at": status.started_at_of(row),
+        "finished_at": status.finished_at_of(row),
+    }
+
+
+def _queue_record(row: dict[str, Any]) -> dict[str, Any]:
+    crawler = row.get("crawler") or {}
+    return {
+        "kind": "queue",
+        "id": row.get("id"),
+        "name": row.get("name"),
+        "crawler_id": row.get("crawler_id"),
+        "experiment_id": crawler.get("experiment_id") if isinstance(crawler, dict) else None,
+        "status_code": status.status_of(row),
+        "status_message": status.message_of(row) or None,
+        "started_at": status.started_at_of(row),
+        "finished_at": status.finished_at_of(row),
+        "processing": row.get("processing"),
+        "processed": row.get("processed"),
+    }
+
+
+@mcp.tool()
+def find_failed_executions(
+    time_range: str = "24h",
+    experiment_id: int | None = None,
+    limit: int = 50,
+    include_logs: bool = True,
+) -> str:
+    """
+    Find jobs and runs that ended badly -- status_code 'failure' OR 'warning'.
+
+    This asks the API for the recorded outcome of every recent job and queue. It
+    used to only grep the logs for ERROR lines, so a run that failed without
+    logging an ERROR was invisible, and a job that completed while silently
+    degrading (job data not written, or the decision function falling back to
+    RANDOM video selection) was reported as a success.
 
     Args:
-        time_range: Time range to search
+        time_range: How far back to look - '1h', '24h', '7d'
         experiment_id: Optional experiment ID filter
+        limit: Maximum executions to return per kind (jobs, queues)
+        include_logs: Also attach the secondary, log-derived ERROR signal
 
     Returns:
-        JSON with failed executions grouped by error type
+        JSON with the API-recorded bad executions (primary) and, separately
+        labelled, the ERROR log lines in the same window (secondary).
     """
-    # Query for error logs
-    result = query_logs(
-        level="error",
-        time_range=time_range,
-        experiment_id=experiment_id,
-        limit=200,
-    )
+    from orchestrator.clients.loki import time_range_bounds
 
     try:
-        data = json.loads(result)
-        entries = data.get("entries", [])
+        time_range = _validate_time_range(time_range)
+        experiment_id = _validate_id(experiment_id, "experiment_id")
+        limit = _validate_limit(limit)
+    except ValueError as e:
+        return json.dumps({"error": f"Validation error: {e}"})
 
-        # Group by component
-        failures: dict[str, list] = {}
-        for entry in entries:
-            comp = entry.get("component", "unknown")
-            if comp not in failures:
-                failures[comp] = []
-            failures[comp].append(entry)
+    cutoff, _ = time_range_bounds(time_range)
 
-        return json.dumps(
-            {
-                "total_failures": len(entries),
-                "by_component": {k: len(v) for k, v in failures.items()},
-                "recent_failures": entries[:20],
-            }
+    out: dict[str, Any] = {
+        "time_range": time_range,
+        "experiment_id": experiment_id,
+        "status_contract": (
+            "status_code is one of running|success|warning|failure|skipped; "
+            "'warning' means the job completed but something the experiment cares "
+            "about degraded. See orchestrator/status.py."
+        ),
+    }
+
+    executions: dict[str, Any] = {}
+    try:
+        crawler_ids = _experiment_crawler_ids(experiment_id) if experiment_id else None
+
+        jobs, jobs_scanned, jobs_capped = _scan_bad_executions(
+            "jobs", cutoff, crawler_ids, _job_record
         )
+        queues, queues_scanned, queues_capped = _scan_bad_executions(
+            "queues", cutoff, crawler_ids, _queue_record
+        )
+
+        def _worst_first(record: dict[str, Any]) -> tuple[int, Any]:
+            severity = status.SEVERITY.get(record.get("status_code", ""), 0)
+            return (-severity, -(record.get("id") or 0))
+
+        jobs.sort(key=_worst_first)
+        queues.sort(key=_worst_first)
+
+        by_status: dict[str, int] = {}
+        for record in jobs + queues:
+            code = record.get("status_code", "unknown")
+            by_status[code] = by_status.get(code, 0) + 1
+
+        executions = {
+            "total": len(jobs) + len(queues),
+            "by_status": by_status,
+            "jobs": jobs[:limit],
+            "queues": queues[:limit],
+            "truncated": len(jobs) > limit or len(queues) > limit,
+            "scanned": {
+                "jobs": jobs_scanned,
+                "queues": queues_scanned,
+                "page_cap_reached": jobs_capped or queues_capped,
+                "note": (
+                    "The API listings are ordered newest-id-first and the scan stops "
+                    "at the first row older than the window, so a very old row touched "
+                    "recently can be missed."
+                ),
+            },
+        }
     except Exception as e:
-        return json.dumps({"error": str(e)})
+        # An API outage must not look like a clean run.
+        executions = {"error": f"API query failed: {e}", "total": None}
+
+    out["executions"] = executions
+
+    if include_logs:
+        log_signal: dict[str, Any] = {
+            "note": (
+                "SECONDARY signal only. These are ERROR log lines in the window, not "
+                "recorded outcomes: a run can fail with no ERROR line, and a degraded "
+                "'warning' job usually logs none. Trust 'executions' first. WARN-level "
+                "lines are not included here -- use query_logs(level='warning')."
+            )
+        }
+        try:
+            data = json.loads(
+                query_logs(
+                    level="error",
+                    time_range=time_range,
+                    experiment_id=experiment_id,
+                    limit=200,
+                )
+            )
+            if "error" in data:
+                log_signal["error"] = data["error"]
+            else:
+                entries = data.get("entries", [])
+                by_component: dict[str, int] = {}
+                for entry in entries:
+                    comp = entry.get("component", "unknown")
+                    by_component[comp] = by_component.get(comp, 0) + 1
+                log_signal["total_errors"] = len(entries)
+                log_signal["by_component"] = by_component
+                log_signal["recent_errors"] = entries[:20]
+        except Exception as e:
+            log_signal["error"] = str(e)
+
+        out["log_signal"] = log_signal
+
+    return json.dumps(out)
 
 
 # =============================================================================

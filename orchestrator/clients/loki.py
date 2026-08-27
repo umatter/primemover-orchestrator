@@ -98,6 +98,17 @@ class LogLevel(str, Enum):
             return cls.INFO
 
 
+#: Runner lines carry the correlation ids as Logback MDC keys in the line prefix
+#: (``crawler.id=250, joblist.id=844, job.id=525``), not as ``crawler_id=250``.
+#: ``job\.id`` cannot match inside ``joblist.id``: the character after ``job``
+#: there is ``l``, not ``.``.
+MDC_KEY_ALIASES: dict[str, tuple[str, ...]] = {
+    "crawler_id": (r"crawler\.id",),
+    "queue_id": (r"joblist\.id",),
+    "job_id": (r"job\.id",),
+}
+
+
 @dataclass
 class LogEntry:
     """A single log entry from Loki."""
@@ -116,16 +127,26 @@ class LogEntry:
     job_id: int | None = None
 
     def __post_init__(self):
-        """Extract correlation IDs from message or labels."""
-        # Try to extract from labels first
-        self.experiment_id = self._extract_id("experiment_id")
-        self.crawler_id = self._extract_id("crawler_id")
-        self.queue_id = self._extract_id("queue_id") or self._extract_id("joblist_id")
-        self.job_id = self._extract_id("job_id")
+        """Extract correlation IDs from message or labels.
 
-        # Try to extract from correlation_id pattern
-        if not self.experiment_id:
-            self._extract_from_correlation_id()
+        Ids passed explicitly by the caller win. They used to be overwritten
+        unconditionally, so every entry the CloudWatch and HAR paths built with a
+        known ``job_id`` lost it again before it was ever read.
+        """
+        # Try to extract from labels first
+        if self.experiment_id is None:
+            self.experiment_id = self._extract_id("experiment_id")
+        if self.crawler_id is None:
+            self.crawler_id = self._extract_id("crawler_id")
+        if self.queue_id is None:
+            self.queue_id = self._extract_id("queue_id") or self._extract_id("joblist_id")
+        if self.job_id is None:
+            self.job_id = self._extract_id("job_id")
+
+        # Try to extract from correlation_id pattern. Run unconditionally: it only
+        # fills fields still unset, and gating it on ``experiment_id`` meant a line
+        # that carried an experiment id but no crawler/queue/job id lost all three.
+        self._extract_from_correlation_id()
 
     def _extract_id(self, key: str) -> int | None:
         """Extract an ID from labels or message."""
@@ -136,11 +157,13 @@ class LogEntry:
             except (ValueError, TypeError):
                 pass
 
-        # From message using pattern key=value
-        pattern = rf"{key}[=:]?\s*(\d+)"
-        match = re.search(pattern, self.message, re.IGNORECASE)
-        if match:
-            return int(match.group(1))
+        # From message using pattern key=value (or the runner's dotted MDC key).
+        # The separator class also swallows the ``":`` of a Laravel JSON context,
+        # so ``"job_id":525`` resolves as well as ``job_id=525``.
+        for name in (key, *MDC_KEY_ALIASES.get(key, ())):
+            match = re.search(rf'{name}[=:"\s]*(\d+)', self.message, re.IGNORECASE)
+            if match:
+                return int(match.group(1))
 
         return None
 
@@ -148,10 +171,14 @@ class LogEntry:
         """Extract IDs from correlation_id format: exp-15|cr-42|q-123|j-456"""
         corr_id = self.labels.get("correlation_id", "") or self.labels.get("correlationId", "")
         if not corr_id:
-            # Try to find in message
-            match = re.search(r"correlationId=([^\s,]+)", self.message)
-            if match:
-                corr_id = match.group(1)
+            # Try to find in message: the runner prints the MDC form
+            # ``correlationId=cr-250|jl-844``, Laravel the JSON context form
+            # ``"correlation_id":"cr-250"``.
+            for pattern in (r"correlationId=([^\s,]+)", r'"correlation_id"\s*:\s*"([^"]+)"'):
+                match = re.search(pattern, self.message)
+                if match:
+                    corr_id = match.group(1)
+                    break
 
         if corr_id:
             # Parse exp-N|cr-N|q-N|j-N format
@@ -240,6 +267,206 @@ def escape_logql_string(value: str) -> str:
     escaped = escaped.replace("\t", "\\t")
 
     return escaped
+
+
+#: Log-level synonyms. Promtail labels runner lines with Logback's ``WARN`` while
+#: the apache/mysql/php scrapes lowercase theirs, and historical data keeps the
+#: uppercase form regardless of what promtail does today -- so every level match
+#: has to be case-insensitive AND has to treat ``warn``/``warning`` as one level.
+#: Before this, ``level="warning"`` never matched a single runner line.
+#:
+#: ``error`` additionally covers the PSR-3 levels *above* it. Laravel writes
+#: ``production.ALERT:`` / ``.CRITICAL:`` / ``.EMERGENCY:`` and promtail labels
+#: them verbatim -- ``ALERT`` is in the live index right now -- so a plain
+#: ``level=~"(?i)error"`` hid the three most severe things the API can say.
+#: Anything a query at ``error`` should see has to be spelled out here; the label
+#: matcher is an equality test against one label value, not a severity ordering.
+LEVEL_SYNONYMS: dict[str, str] = {
+    "warn": "warn(ing)?",
+    "warning": "warn(ing)?",
+    "error": "(?:error|err|critical|crit|alert|emergency|emerg|fatal)",
+    "critical": "(?:critical|crit|alert|emergency|emerg|fatal)",
+    "alert": "(?:alert|emergency|emerg)",
+    "fatal": "(?:fatal|critical|crit|emergency|emerg)",
+}
+
+
+#: Loki rejects a stream selector in which every matcher can match the empty
+#: string, so "all components" cannot be spelled ``{}`` -- that is a 400, which
+#: ``LogAggregator`` swallowed into ``sources["loki_error"]`` and the CLI showed
+#: as "no results". Every PrimeMover scrape sets ``component``.
+ANY_COMPONENT_MATCHER = 'component=~".+"'
+
+
+def build_label_selector(matchers: list[str]) -> str:
+    """Join label matchers into a valid LogQL stream selector."""
+    if not matchers:
+        matchers = [ANY_COMPONENT_MATCHER]
+    return "{" + ",".join(matchers) + "}"
+
+
+def level_label_matcher(level: str | None) -> str | None:
+    """Return a LogQL ``level=~...`` label matcher for *level*, or ``None``.
+
+    The level lives in a promtail-set **label**, not in the log line: Laravel
+    lines read ``production.ERROR:`` and runner lines read ``... ERROR 3546872
+    ---``, so the old line filter ``|~ "(?i)(level|lvl)[=:]*\\s*error"`` matched
+    exactly zero rows in either component.
+    """
+    if not level or level == "all":
+        return None
+    normalized = level.strip().lower()
+    if not re.match(r"^[a-z]+$", normalized):
+        return None
+    pattern = LEVEL_SYNONYMS.get(normalized, normalized)
+    return f'level=~"(?i){pattern}"'
+
+
+def logql_regex_filter(pattern: str) -> str:
+    """Wrap a regex in a LogQL line filter, escaped for the string literal.
+
+    LogQL string literals use Go escapes, so a bare ``\\b`` in the query text is
+    read as a backspace character rather than a word boundary -- it has to be
+    doubled. Quotes have to be escaped or the literal closes early.
+    """
+    return f'|~ "{_escape_logql_literal(pattern)}"'
+
+
+def logql_regex_exclusion(pattern: str) -> str:
+    """Wrap a regex in a *negative* LogQL line filter (``!~``)."""
+    return f'!~ "{_escape_logql_literal(pattern)}"'
+
+
+def _escape_logql_literal(pattern: str) -> str:
+    """Escape a regex for embedding in a LogQL double-quoted string literal."""
+    return pattern.replace("\\", "\\\\").replace('"', '\\"')
+
+
+#: Messages the API logs on *every* HTTP request it serves, regardless of what the
+#: request was for.
+#:
+#: ``AddCorrelationContext`` stamps the ids it can read off the route onto every
+#: line logged during that request, so ``GET /api/v1/jobs/3943`` makes
+#: ``ThrottleRequestsWithIp`` emit
+#:
+#:     production.DEBUG: 1649254282: Throttling request with IP
+#:     {"...","job_id":3943,"correlation_id":"j-3943",...}
+#:
+#: which the job-3943 correlation filter then matches. The result was that
+#: ``trace job`` and ``debug job`` reported the debugging tool's own HTTP traffic
+#: as the job's related logs -- and, because every observation logged two more
+#: such lines, the "related log" count and the log-derived time span *grew every
+#: time the job was looked at*. Measured over one week on this box: 4,994 of the
+#: 5,000 ``component="api"`` lines carrying a ``job_id`` were these two messages;
+#: the six real ones were ``runner reported job failure`` / ``... degraded job``.
+#:
+#: Excluding the messages (rather than dropping ``component="api"`` wholesale)
+#: keeps those six, which are exactly the lines a job trace wants.
+#:
+#: **Criterion for adding to this list**, because a deny-list rots otherwise: the
+#: message must be emitted on *every* request regardless of what the request was,
+#: and must say nothing about the entity. That is what makes its correlation to a
+#: job purely an artefact of the route. A message that is merely *usually*
+#: irrelevant does not qualify -- ``The resource owner or authorization server
+#: denied the request`` is spurious under a job filter when the orchestrator
+#: causes it, but is the real answer when the runner's own
+#: ``PUT /runner/jobs/{id}`` is what got the 401, so it stays visible.
+API_REQUEST_PLUMBING_MESSAGES: tuple[str, ...] = (
+    "Throttling request with IP",
+    "IP is whitelisted",
+)
+
+
+#: RE2 metacharacters. ``re.escape`` cannot be used to build a filter for Loki:
+#: it also escapes spaces (``Throttling\\ request``), and ``\\ `` is a hard
+#: "invalid escape sequence" parse error in Go's RE2 -- the whole query 400s.
+_RE2_METACHARACTERS = r"\.+*?()|[]{}^$"
+
+
+def _escape_re2(text: str) -> str:
+    """Escape *text* for literal matching by Go's RE2, and only where RE2 needs it."""
+    return "".join("\\" + char if char in _RE2_METACHARACTERS else char for char in text)
+
+
+def api_request_plumbing_exclusion() -> str:
+    """A ``!~`` line filter dropping the API's own per-request plumbing lines."""
+    alternatives = "|".join(_escape_re2(message) for message in API_REQUEST_PLUMBING_MESSAGES)
+    return logql_regex_exclusion(f"(?i)(?:{alternatives})")
+
+
+def correlation_line_filters(
+    experiment_id: int | None = None,
+    crawler_id: int | None = None,
+    queue_id: int | None = None,
+    job_id: int | None = None,
+) -> list[str]:
+    """Build line filters that actually match the correlation text in the logs.
+
+    The previous implementation used ``| json | crawler_id="250"``. The log
+    *lines* are plain text -- a Logback line with an MDC prefix, or a Laravel
+    line with a JSON context appended -- so LogQL's ``json`` stage dropped every
+    entry and every id filter returned nothing, which reads as "no errors found".
+
+    Two textual forms have to match, because both exist in the same index:
+
+    * the runner's correlation id, historically ``cr-250|jl-844`` and, since the
+      2026-08-27 change, the canonical ``exp-42|cr-250|q-844|j-525``;
+    * the Laravel context object, ``{"crawler_id":250,"queue_id":844,...}``.
+
+    Word boundaries keep ``cr-25`` from matching ``cr-250``. Ids are integers, so
+    no injection is possible through this path.
+
+    Whenever at least one id is filtered on, a negative filter for
+    :data:`API_REQUEST_PLUMBING_MESSAGES` is appended: the API stamps route-derived
+    ids onto every line of the request that carries them, so without it a job
+    trace is dominated by the observer's own HTTP traffic. See that constant.
+    """
+    filters: list[str] = []
+    specs: list[tuple[int | None, str, str]] = [
+        (experiment_id, r"exp-", "experiment_id"),
+        (crawler_id, r"cr-", "crawler_id"),
+        (queue_id, r"(?:q|jl)-", "queue_id"),
+        (job_id, r"j-", "job_id"),
+    ]
+    for value, token, json_key in specs:
+        if value is None or not isinstance(value, int) or isinstance(value, bool):
+            continue
+        pattern = rf'(?:\b{token}{value}\b|"{json_key}": ?{value}\b)'
+        filters.append(logql_regex_filter(pattern))
+    if filters:
+        filters.append(api_request_plumbing_exclusion())
+    return filters
+
+
+def time_range_bounds(
+    time_range: str = "1h",
+    start: datetime | None = None,
+    end: datetime | None = None,
+) -> tuple[datetime, datetime]:
+    """Resolve a ``time_range`` string (plus optional overrides) to (start, end)."""
+    if end is None:
+        end = datetime.now(timezone.utc)
+    if start is None:
+        start = end - parse_time_range(time_range)
+    return start, end
+
+
+def range_query_params(
+    time_range: str = "1h",
+    start: datetime | None = None,
+    end: datetime | None = None,
+) -> dict[str, int]:
+    """Loki ``query_range`` ``start``/``end`` parameters, in nanoseconds.
+
+    Omitting these makes Loki default to the last hour, which is how
+    ``time_range="7d"`` used to be silently ignored by every caller that built
+    its own params dict.
+    """
+    resolved_start, resolved_end = time_range_bounds(time_range, start, end)
+    return {
+        "start": int(resolved_start.timestamp() * 1e9),
+        "end": int(resolved_end.timestamp() * 1e9),
+    }
 
 
 def validate_logql_label(value: str) -> str:
@@ -351,22 +578,13 @@ class LokiClient:
         start_time = time.time()
 
         # Calculate time range
-        if end is None:
-            end = datetime.now(timezone.utc)
-        if start is None:
-            delta = parse_time_range(time_range)
-            start = end - delta
+        start, end = time_range_bounds(time_range, start, end)
 
-        # Convert to nanoseconds for Loki
-        start_ns = int(start.timestamp() * 1e9)
-        end_ns = int(end.timestamp() * 1e9)
-
-        params = {
+        params: dict[str, str | int] = {
             "query": query,
             "limit": limit,
             "direction": direction,
-            "start": start_ns,
-            "end": end_ns,
+            **range_query_params(start=start, end=end),
         }
 
         response = self._get_with_retry("/loki/api/v1/query_range", params=params)
@@ -391,6 +609,7 @@ class LokiClient:
         experiment_id: int | None = None,
         crawler_id: int | None = None,
         job_id: int | None = None,
+        queue_id: int | None = None,
         time_range: str = "1h",
         limit: int = 100,
     ) -> QueryResult:
@@ -399,11 +618,13 @@ class LokiClient:
 
         Args:
             component: Filter by component (api, runner, lambda)
-            level: Minimum log level
+            level: Log level (matched on the promtail-set label, case-insensitively;
+                   ``warning`` and ``warn`` are the same level)
             search: Text search pattern
             experiment_id: Filter by experiment ID
             crawler_id: Filter by crawler ID
             job_id: Filter by job ID
+            queue_id: Filter by queue (joblist) ID
             time_range: Time range
             limit: Maximum results
 
@@ -417,6 +638,7 @@ class LokiClient:
             experiment_id=experiment_id,
             crawler_id=crawler_id,
             job_id=job_id,
+            queue_id=queue_id,
         )
 
         return self.query(query, time_range=time_range, limit=limit)
@@ -429,6 +651,7 @@ class LokiClient:
         experiment_id: int | None = None,
         crawler_id: int | None = None,
         job_id: int | None = None,
+        queue_id: int | None = None,
     ) -> str:
         """Build a LogQL query from filters with proper escaping."""
         # Label selectors - validate component names
@@ -441,9 +664,15 @@ class LokiClient:
                 # Skip invalid component names
                 pass
 
-        label_selector = "{" + ",".join(labels) + "}" if labels else "{}"
+        # The level is a promtail-set label, not text in the line. Matching it as
+        # a line filter is what made `orchestrator logs errors` return nothing.
+        level_matcher = level_label_matcher(level)
+        if level_matcher:
+            labels.append(level_matcher)
 
-        # Line filters and JSON parsing
+        label_selector = build_label_selector(labels)
+
+        # Line filters
         filters = []
 
         if search:
@@ -453,22 +682,16 @@ class LokiClient:
             escaped = re.escape(escaped)
             filters.append(f'|~ "(?i){escaped}"')
 
-        if level and level != "all":
-            # Validate level is alphanumeric only
-            if re.match(r"^[a-zA-Z]+$", level):
-                filters.append(f'|~ "(?i)(level|lvl)[=:]*\\s*{level}"')
-
-        # Parse JSON for correlation IDs - IDs are validated as integers
-        if experiment_id or crawler_id or job_id:
-            filters.append("| json")
-
-            # Integer IDs are safe - no injection possible
-            if experiment_id is not None and isinstance(experiment_id, int):
-                filters.append(f'| experiment_id="{experiment_id}"')
-            if crawler_id is not None and isinstance(crawler_id, int):
-                filters.append(f'| crawler_id="{crawler_id}"')
-            if job_id is not None and isinstance(job_id, int):
-                filters.append(f'| job_id="{job_id}"')
+        # Correlation ids are matched against the text the components actually
+        # print. `| json` never worked here: the lines are not JSON documents.
+        filters.extend(
+            correlation_line_filters(
+                experiment_id=experiment_id,
+                crawler_id=crawler_id,
+                queue_id=queue_id,
+                job_id=job_id,
+            )
+        )
 
         query = label_selector
         if filters:

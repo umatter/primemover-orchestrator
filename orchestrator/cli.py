@@ -2398,6 +2398,8 @@ def _print_trace_tree(trace, indent: int = 0, show_logs: bool = False) -> None:
     def _status_style(status: str) -> str:
         return {
             "success": "green",
+            "warning": "yellow",
+            "skipped": "dim",
             "failed": "red",
             "running": "yellow",
             "pending": "dim",
@@ -2407,6 +2409,11 @@ def _print_trace_tree(trace, indent: int = 0, show_logs: bool = False) -> None:
     def _add_span_to_tree(tree, span) -> None:
         status_icon = {
             "success": "[green]✓[/green]",
+            # A warning span ran to completion with something degraded -- never
+            # a red ✗ (it did not fail) and never a green ✓ (it is exactly the
+            # silent degradation this state exists to make visible).
+            "warning": "[yellow]⚠[/yellow]",
+            "skipped": "[dim]⊘[/dim]",
             "failed": "[red]✗[/red]",
             "running": "[yellow]⋯[/yellow]",
             "pending": "[dim]○[/dim]",
@@ -2434,10 +2441,16 @@ def _print_trace_tree(trace, indent: int = 0, show_logs: bool = False) -> None:
 
         branch = tree.add(label)
 
-        # Show errors
+        # Show errors. On a warning span these are degradation notes, not
+        # errors -- labelling them ERROR is how people learn to ignore them.
         if span.errors:
-            for err in span.errors[:3]:
-                branch.add(f"[red]ERROR: {err[:80]}...[/red]")
+            span_status = span.status.value if hasattr(span.status, "value") else span.status
+            if span_status == "warning":
+                for err in span.errors[:3]:
+                    branch.add(f"[yellow]DEGRADED: {err[:80]}[/yellow]")
+            else:
+                for err in span.errors[:3]:
+                    branch.add(f"[red]ERROR: {err[:80]}...[/red]")
 
         # Show logs if requested
         if show_logs and span.logs:
@@ -3639,34 +3652,64 @@ def debug_job(
 
 
 def _print_debug_report(report, verbose: bool = False) -> None:
-    """Print formatted debug report to console."""
+    """Print formatted debug report to console.
+
+    Every attribute read here must exist on the debug dataclasses. Until
+    2026-08-27 this renderer referenced four that did not (``experiment_name``,
+    ``LambdaDecision.scoring``, ``CloudWatchInfo.errors``,
+    ``Artifacts.screenshots``), so ``debug job`` raised AttributeError while
+    ``--format json`` worked -- the default path was the broken one.
+    """
     from rich.panel import Panel
 
+    from orchestrator import status as status_contract
     from orchestrator.debug.har_parser import format_bytes, format_ms
+
+    def _id_with_name(entity_id, name: str) -> str:
+        """Render an id with its name when there is one -- GET /jobs/{id} does
+        not carry the crawler or experiment name, so "42" is the honest answer
+        there rather than "42 ()"."""
+        if entity_id is None:
+            return "N/A"
+        return f"{entity_id} ({name})" if name else str(entity_id)
 
     # Job Metadata Section
     if report.metadata:
         meta = report.metadata
-        status_color = "green" if meta.status == "completed" else "red"
+        status_color = {
+            "success": "green",
+            "warning": "yellow",
+            "failure": "red",
+            "skipped": "dim",
+            "running": "cyan",
+        }.get(meta.status, "dim")
+        status_text = meta.status or "unknown"
 
         meta_table = Table(show_header=False, box=None, padding=(0, 2))
         meta_table.add_column("Key", style="dim")
         meta_table.add_column("Value")
 
-        meta_table.add_row("Status", f"[{status_color}]{meta.status}[/{status_color}]")
-        meta_table.add_row("Experiment", f"{meta.experiment_id} ({meta.experiment_name})")
-        meta_table.add_row("Crawler", f"{meta.crawler_id} ({meta.crawler_name})")
+        meta_table.add_row("Status", f"[{status_color}]{status_text}[/{status_color}]")
+        # The runner's own diagnostic. It used to be dropped everywhere, and it
+        # is the field most likely to say why.
+        if meta.status_message:
+            meta_table.add_row("Status Message", meta.status_message)
+        meta_table.add_row("Experiment", _id_with_name(meta.experiment_id, meta.experiment_name))
+        meta_table.add_row("Crawler", _id_with_name(meta.crawler_id, meta.crawler_name))
         meta_table.add_row("Queue ID", str(meta.queue_id) if meta.queue_id else "N/A")
+        if meta.job_type:
+            meta_table.add_row("Type", meta.job_type)
 
         if meta.started_at:
             meta_table.add_row("Started", meta.started_at.strftime("%Y-%m-%d %H:%M:%S"))
         if meta.completed_at:
-            meta_table.add_row("Completed", meta.completed_at.strftime("%Y-%m-%d %H:%M:%S"))
+            meta_table.add_row("Finished", meta.completed_at.strftime("%Y-%m-%d %H:%M:%S"))
         if meta.duration_seconds:
             meta_table.add_row("Duration", f"{meta.duration_seconds:.1f}s")
 
-        if meta.error_message:
-            meta_table.add_row("Error", f"[red]{meta.error_message}[/red]")
+        if meta.diagnostic and not meta.diagnostic_is_duplicate:
+            colour = "red" if meta.is_failure else "yellow"
+            meta_table.add_row(meta.diagnostic_label, f"[{colour}]{meta.diagnostic}[/{colour}]")
 
         console.print(Panel(meta_table, title="[bold]Job Metadata[/bold]", border_style="blue"))
     else:
@@ -3680,19 +3723,45 @@ def _print_debug_report(report, verbose: bool = False) -> None:
         lambda_table.add_column("Key", style="dim")
         lambda_table.add_column("Value")
 
+        # The headline: a random selection means no LLM filter succeeded, so the
+        # treatment arm silently ran as a control arm. It is the first row on
+        # purpose -- it is the most consequential thing this command can report.
+        if ld.random_selection:
+            lambda_table.add_row(
+                "Selection Mode",
+                "[bold yellow]RANDOM — no LLM filter succeeded, this arm "
+                "behaved as a CONTROL arm[/bold yellow]",
+            )
+        elif ld.selection_mode:
+            lambda_table.add_row("Selection Mode", ld.selection_mode)
+
+        if ld.error:
+            lambda_table.add_row("Error", f"[red]{str(ld.error)[:120]}[/red]")
+        lambda_table.add_row(
+            "Decision",
+            "[green]ok[/green]" if ld.success else "[yellow]degraded[/yellow]",
+        )
         lambda_table.add_row(
             "Selected Video", ld.selected_title[:60] if ld.selected_title else "N/A"
         )
         lambda_table.add_row("Video ID", ld.selected_id or "N/A")
         lambda_table.add_row("XPath", ld.xpath[:80] if ld.xpath else "N/A")
 
-        if ld.scoring:
-            scores = ", ".join(f"{k}: {v:.2f}" for k, v in list(ld.scoring.items())[:3])
-            lambda_table.add_row("Top Scores", scores)
+        if ld.llm and ld.llm.get("available") is False:
+            llm_error = ld.llm.get("error") or ld.llm.get("error_type") or "unavailable"
+            lambda_table.add_row("LLM", f"[yellow]{str(llm_error)[:80]}[/yellow]")
 
+        border = "green" if ld.success else "yellow"
         console.print(
-            Panel(lambda_table, title="[bold]Lambda Decision[/bold]", border_style="green")
+            Panel(lambda_table, title="[bold]Lambda Decision[/bold]", border_style=border)
         )
+
+        failed_filters = ld.failed_filters
+        if failed_filters:
+            console.print("[yellow]Filters that did not apply:[/yellow]")
+            for name, state in list(failed_filters.items())[:8]:
+                console.print(f"  [yellow]⚠[/yellow] {name}: {str(state)[:100]}")
+            console.print()
 
         if ld.warnings:
             console.print("[yellow]Warnings:[/yellow]")
@@ -3772,15 +3841,20 @@ def _print_debug_report(report, verbose: bool = False) -> None:
             cw_table.add_row("Memory Used", f"{cw.memory_used_mb:.0f}MB")
         if cw.init_duration_ms:
             cw_table.add_row("Cold Start", f"{cw.init_duration_ms:.0f}ms")
+        if cw.error:
+            cw_table.add_row("Collector", f"[yellow]{str(cw.error)[:80]}[/yellow]")
 
         console.print(
             Panel(cw_table, title="[bold]CloudWatch Metrics[/bold]", border_style="magenta")
         )
 
-        if cw.errors:
+        # There is no `cw.errors` list: CloudWatch gives one stream, and its
+        # errors are the error-level entries in it.
+        cw_errors = cw.error_entries
+        if cw_errors:
             console.print("[red]Lambda Errors:[/red]")
-            for err in cw.errors[:3]:
-                console.print(f"  [red]✗[/red] {err[:150]}")
+            for entry in cw_errors[:3]:
+                console.print(f"  [red]✗[/red] {entry.message[:150]}")
             console.print()
 
     # Logs Section
@@ -3822,31 +3896,70 @@ def _print_debug_report(report, verbose: bool = False) -> None:
             console.print(f"  [dim]HAR File:[/dim] {art.har_file}")
         if art.lambda_zip:
             console.print(f"  [dim]Lambda Output:[/dim] {art.lambda_zip}")
-        if art.screenshots:
-            console.print(f"  [dim]Screenshots:[/dim] {len(art.screenshots)} files")
+        if art.screenshot_files:
+            console.print(f"  [dim]Screenshots:[/dim] {len(art.screenshot_files)} files")
             if verbose:
-                for ss in art.screenshots[:3]:
+                for ss in art.screenshot_files[:3]:
                     console.print(f"    - {ss}")
         console.print()
 
-    # Summary
-    issues = []
-    if report.metadata and report.metadata.status != "completed":
-        issues.append(f"Job status: {report.metadata.status}")
-    if report.metadata and report.metadata.error_message:
-        issues.append(f"Error: {report.metadata.error_message[:50]}")
+    # Summary.
+    #
+    # Split into failures and degradations. The old version compared the status
+    # against "completed" -- a value the API never sends -- so every job,
+    # including a perfectly green one, was listed as an issue, which is the
+    # fastest way to teach someone to skip this section.
+    issues: list[str] = []
+    degradations: list[str] = []
+
+    meta = report.metadata
+    if meta:
+        detail = meta.status_message or meta.error_message
+        if status_contract.is_failure(meta.status):
+            issues.append(f"Job status: {meta.status}")
+            if detail:
+                issues.append(f"Runner said: {detail[:120]}")
+        elif status_contract.is_warning(meta.status):
+            degradations.append(f"Job status: {meta.status}")
+            if detail:
+                degradations.append(f"Runner said: {detail[:120]}")
+        elif meta.error_message:
+            issues.append(f"Error: {meta.error_message[:50]}")
+
     if report.har_summary and report.har_summary.failed_count > 0:
         issues.append(f"{report.har_summary.failed_count} failed HTTP requests")
-    if report.lambda_decision and report.lambda_decision.warnings:
-        issues.append(f"{len(report.lambda_decision.warnings)} Lambda warnings")
-    if report.cloudwatch and report.cloudwatch.errors:
-        issues.append(f"{len(report.cloudwatch.errors)} CloudWatch errors")
+
+    ld = report.lambda_decision
+    if ld:
+        if ld.error:
+            issues.append(f"Lambda error: {str(ld.error)[:80]}")
+        if ld.random_selection:
+            degradations.append(
+                "Lambda selected the video at RANDOM — this arm behaved as a control arm"
+            )
+        elif ld.degraded:
+            degradations.append("Lambda decision degraded: not every filter applied")
+        if ld.failed_filters:
+            degradations.append(f"{len(ld.failed_filters)} Lambda filter(s) did not apply")
+        if ld.warnings:
+            degradations.append(f"{len(ld.warnings)} Lambda warnings")
+
+    if report.cloudwatch:
+        cw_error_count = len(report.cloudwatch.error_entries)
+        if cw_error_count:
+            issues.append(f"{cw_error_count} CloudWatch errors")
 
     if issues:
         console.print("[bold red]Issues Found:[/bold red]")
         for issue in issues:
             console.print(f"  [red]•[/red] {issue}")
-    else:
+
+    if degradations:
+        console.print("[bold yellow]Degraded (ran, but not as designed):[/bold yellow]")
+        for item in degradations:
+            console.print(f"  [yellow]•[/yellow] {item}")
+
+    if not issues and not degradations:
         console.print("[bold green]No obvious issues found[/bold green]")
 
 

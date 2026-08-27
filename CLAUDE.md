@@ -158,6 +158,7 @@ applies.
 ### Key Source Locations
 
 - `orchestrator/cli.py` - Click CLI entry point, all subcommands
+- `orchestrator/status.py` - **canonical** job/queue status vocabulary + the decision-function degradation helpers; the executable copy of the contract in `docs/integration-contract.md` §3.4/§7.3
 - `orchestrator/config/settings.py` - Pydantic Settings, loaded from `.env` with `get_settings()` (lru_cached)
 - `orchestrator/components/manager.py` - Orchestrates API (Docker), Runner (native Java), Monitoring (Docker)
 - `orchestrator/components/lambda_server.py` - Local Lambda server lifecycle (subprocess)
@@ -175,6 +176,7 @@ applies.
 - `scripts/reap-orphan-browsers.sh` - kill Mimic browsers older than a session could be (orphan sweep)
 - `scripts/churn-soak.py` - drive many short session lifecycles to expose slow leaks over churn
 - `infrastructure/systemd/` - VM service units (lambda, multilogin, health-check, har-drain)
+- `infrastructure/grafana/provisioning/alerting/` - the **only** working alerting: Grafana unified-alerting rules over Loki, plus a README on what is deliberately not wired
 
 ### Proxies / exit IPs
 
@@ -228,6 +230,90 @@ All components use a hierarchical correlation ID format for cross-component trac
 exp-{experiment_id}|cr-{crawler_id}|q-{queue_id}|j-{job_id}
 ```
 
+### Error & warning handling
+
+The status vocabulary is **normative** and lives in `orchestrator/status.py`
+(executable) and `docs/integration-contract.md` §3.4 (prose). Read one of them
+before writing any status check.
+
+```
+job    status_code: running | success | warning | failure | skipped
+queue  status_code: running | success | failure | skipped
+```
+
+The field is `status_code`. **There is no `status` field on the wire** — code
+that reads `status` is reading a fixture. Legacy rows are real and must be
+accepted: `failed` == `failure`, `skpped` (a runner typo) == `skipped`. That is
+not pedantry — the `jobs` table currently holds **256 `failed` rows beside 170
+`failure` rows**, so `WHERE status_code = 'failure'` under-reports historical
+failures by more than half. An unrecognised value is *unknown*, never success.
+
+**`warning` is new (2026-08-27): completed, but degraded.** The job ran to the
+end and something the experiment cares about did not happen — job data was not
+written, or the decision function reported a **degraded** decision. Both were
+previously reported as `success`, because the runner's `JobState` enum mapped
+`WARNING` and `WARNING_JOBDATA` onto the code `"success"`.
+That single mapping is what hid silent treatment-arm degradation for as long as
+it existed: the run finished green and the affected bots had quietly produced
+control-arm data. The predicate for "a human should look at this" is
+`failure OR warning` (`status.is_bad`), never `is_failure` alone.
+
+**`status_message` now carries a real diagnostic** — `"<state text> - <detail>"`,
+single-line and truncated. Until this change it was always one of about seven
+fixed enum strings; the entire `jobs` table contains only six distinct values,
+which is why diagnosing anything always meant leaving the API for the logs.
+
+**The decision function's degradation is invisible from HTTP.** It returns
+**200** even when every requested filter failed. `docs/integration-contract.md`
+§7.3 has the full response contract; three fields carry it, and each answers
+exactly one question:
+
+| field | meaning | gate on it for |
+|---|---|---|
+| `degraded` | a **requested** filter failed to apply, or nothing could be selected | "a human should look at this decision" |
+| `treatment_lost` | `degraded` **and** nothing requested applied — a bot configured to be treated produced control-arm data | "this session's data is void": the alarm, `pm-lambda-treatment-lost`, critical |
+| `selection_mode` | *description only* — `"random"` means no LLM rating informed the pick | **nothing. Never alert on it.** |
+
+Plus `filters: {name: "ok" | "skipped" | "failed: …"}` for the six filters, where
+`"skipped"` means **not requested** and must never be counted as a failure, and
+`llm: {available, error_type, error}`.
+
+**`selection_mode == "random"` is not an error, and an earlier version of this
+file said it was.** A control crawler (`pi=psi=kappa=tau=0`) requests no LLM
+filter, so `random` is its *correct* output. Measured before shipping: 295 of the
+358 lambda payloads in this box's rotated runner logs carry no rating column, and
+**236 of the 243 `params` rows in the live database are control-arm** (7 treated).
+Gating on the mode alone would have marked ~82% of every `lambdaselect` job
+`warning` and pinned a `severity=critical` alert on permanently — the precise
+opposite of the point of the change. `treatment_lost` exists so that two-term
+gate (`degraded` AND nothing applied) is computed **once, at the source**, and no
+consumer can get it wrong.
+
+A payload with **no** degradation report is a legacy payload from the currently
+deployed decision function: absence reads as *unknown*, never as degraded. All
+358 payloads on this box today are that shape.
+
+Note the shape of the real failure: valid xpath, real video clicked, job
+finished, run completed. Every other indicator says fine.
+
+**None of this is deployed.** The runner jar is not rebuilt, `primemover-lambda`
+is not restarted, the GUI image is not rebuilt, promtail and Grafana are not
+restarted — so the five components will run mixed versions. The order, and the
+one pairing that records *false* data rather than merely incomplete data (new
+decision function + old jar → `treatment_lost: true` in the payload and
+`success` in the database, which is what every analysis joins on), is
+`docs/integration-contract.md` **§0**. Read it before restarting anything.
+
+**Alerting** is Grafana unified alerting, provisioned from
+`infrastructure/grafana/provisioning/alerting/` over the **Loki** datasource, and
+it takes effect only on `docker compose restart grafana`. Rules fire and are
+visible in the UI with nothing configured; delivery stays inert until SMTP is set
+up. Read that directory's `README.md` before touching it — in particular:
+`prometheus/rules/primemover-alerts.yml` is **dead code** that has never been
+loaded by anything (`rule_files: []`, never mounted, no Alertmanager, and its
+expressions reference metrics no component exports), and an invalid contact point
+takes the *whole* alerting provisioning down with it, rules included.
+
 ### Log Aggregation
 
 `LogAggregator` unifies four log sources: Loki (primary), direct file parsing (fallback), HAR files (Lambda outputs from runner), and CloudWatch (Lambda execution logs).
@@ -251,9 +337,25 @@ invocation contract. This is **on by default** (`orchestrator up`); pass
   Note this points at `bot-decision-EN` specifically. The sibling
   `bot-decision-EN-arm` and `bot-decision-DE` directories are stale forks that
   still contain the pre-`364beae` xpath bug; never repoint the symlink at them.
-- **cwd matters**: the server runs with cwd set to the `decision/` directory so
-  relative file reads (e.g. `mainstream_media_channels.csv`) resolve the same
-  way they do under the AWS Lambda task root.
+- **cwd decides whether the `pi` treatment arm works at all — and it was wrong
+  on this VM, verified 2026-08-27.** `lambda_function.py` reads its data files
+  by bare relative path (`pandas.read_csv('mainstream_media_channels.csv')`), so
+  the process cwd is load-bearing. `LambdaServerComponent` always passed
+  `cwd=…/lambda_service/decision` to `Popen`; **`primemover-lambda.service` did
+  not** — its `WorkingDirectory` is the repo root, where no such CSV exists. On
+  a box where systemd owns the process (the VM default) the read therefore
+  raised, the decision function's `except Exception` swallowed it, and the
+  `pi=1` mainstream-media arm ran as a **second control arm**: HTTP 200,
+  plausible recommendations, no failed job, nothing at error level. Two
+  supervisors, two different sciences, from the same code.
+  `server.py` now calls `ensure_decision_cwd()` and chdirs itself rather than
+  trusting its launcher, which closes the hole for good — but **the fix only
+  applies to a process started after it**, and the unit file is unchanged. Until
+  `primemover-lambda` is restarted, the running server still has the wrong cwd.
+  Check, don't assume:
+  `readlink /proc/$(systemctl show -p MainPID --value primemover-lambda)/cwd`
+  — it must end in `/decision`; `GET :5001/health` now reports the resolved cwd
+  and the CSV's integrity for the same reason.
 - **Data files are load-bearing**: `mainstream_media_channels.csv` must keep its
   `channel,verified` header — `lambda_function.py` does
   `drop_duplicates(subset=['channel', 'verified'])`. Never round-trip it through
@@ -697,7 +799,12 @@ grep -nE '127\.0\.0\.1:.*(3307|8889)|ALLOW_EMPTY' ../primemover_api/docker-compo
   up as a failure: `pi=1` crawlers keep returning 200 and behave like controls,
   and the only trace is `Aversion to mainstream media channels ignored` in the
   returned `warnings` list. Check with
-  `cd ../bot-decision-yt && pytest tests/test_mainstream_media_csv.py`
+  `cd ../bot-decision-yt && pytest tests/test_mainstream_media_csv.py` — and if
+  that passes, check the **cwd**, which is the actual cause on this VM: the file
+  is read by bare relative path and `primemover-lambda.service` runs from the
+  repo root, not from `decision/`. `readlink /proc/$(systemctl show -p MainPID
+  --value primemover-lambda)/cwd`. A passing CSV test plus a wrong cwd looks
+  exactly like a healthy system.
 - Port 5001 in use: stop the stale process (`.lambda_server.pid`) or check the
   `primemover-lambda` systemd unit isn't already running it
 
