@@ -251,11 +251,43 @@ the writers and normalised by the readers.
 
 #### Queue `status_code`
 
-`running` | `success` | `failure` | `skipped`. A queue has no `warning` state: a
-run containing a degraded job is still a run that finished, and the degradation
-is recorded per job where it can be acted on.
+| value | terminal | meaning |
+|---|---|---|
+| `running` | no | in progress |
+| `success` | yes | every job finished cleanly |
+| `warning` | yes | **completed, but lost jobs along the way** |
+| `failure` | yes | nothing usable came out of the run |
+| `skipped` | yes | never attempted (inactive, already reviewed, or timed out) |
 
-#### `warning` (new 2026-08-27)
+#### Queue `warning` (new 2026-08-28)
+
+A run that lost jobs is neither a success nor a total failure, and calling it
+either one is what hid five truncated sessions on 2026-08-27 and two more on
+2026-08-28. `TaskOperator` used to set the joblist result unconditionally after
+the job loop, so **the queue reported `success` however many of its jobs had
+died**. Measured on experiment 145:
+
+```
+q849  status_code=success  status_message="done"   ok=8/204 (4%)  fail=49 skip=147
+q850  status_code=success  status_message="done"   ok=8/204 (4%)  fail=49 skip=147
+```
+
+Anything filtering on queue status alone ingested those as clean sessions.
+
+The runner now counts per-job outcomes (`JobListOutcome`) and reports
+`DONE_JOBSWARNING` when the run completed but lost work, with the counts in
+`status_message`:
+
+```
+status_code=warning  status_message="8/204 jobs succeeded (0 warning, 49 failed, 147 skipped)"
+```
+
+`failure` is reserved for a run that produced nothing at all. Note the queue's
+own status and its per-job rollup (`jobs_succeeded_count` and friends) answer
+different questions: the status says whether the *run* is trustworthy, the rollup
+says how much of it survived.
+
+#### Job `warning` (new 2026-08-27)
 
 The job ran to completion, but either
 
