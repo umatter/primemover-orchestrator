@@ -14,11 +14,29 @@ run would reproduce the original bug exactly.
 
 from __future__ import annotations
 
+import re
 from unittest.mock import patch
 
 import pytest
 
 from orchestrator.cli import cli
+
+_ANSI = re.compile(r"\x1b\[[0-9;]*m")
+
+
+def plain(result) -> str:
+    """The command's output with styling removed.
+
+    Assertions must not be made against the raw output. rich highlights numbers,
+    which inserts escape codes *inside* a token -- ``vncserver@1`` is emitted as
+    ``vncserver@\x1b[1;36m1\x1b[0m`` -- so a substring check for the token fails
+    even though the token is on screen. Whether that happens depends on whether
+    rich detects a terminal, so the same test passed in CI (no TTY, no colour)
+    and failed on the VM (TERM=xterm-256color). That is not a real difference in
+    behaviour, and a test that is sensitive to it is testing the wrong thing.
+    """
+    return _ANSI.sub("", result.output)
+
 
 UNITS = {
     "primemover-lambda": ("enabled", "active"),
@@ -79,29 +97,29 @@ class TestFailedUnitIsSurfaced:
         states = dict(UNITS, **{"primemover-health-check": ("enabled", "failed")})
         result = _run_doctor(cli_runner, states)
 
-        assert "primemover-health-check" in result.output
-        assert "FAILED" in result.output
+        assert "primemover-health-check" in plain(result)
+        assert "FAILED" in plain(result)
 
     def test_a_failed_unit_makes_doctor_report_failure(self, cli_runner):
         """The important half: it must not find the problem and still say OK."""
         states = dict(UNITS, **{"primemover-health-check": ("enabled", "failed")})
         result = _run_doctor(cli_runner, states)
 
-        assert "Some checks failed" in result.output
-        assert "All checks passed" not in result.output
+        assert "Some checks failed" in plain(result)
+        assert "All checks passed" not in plain(result)
 
     def test_the_failure_carries_a_timestamp(self, cli_runner):
         """A one-shot that failed at boot weeks ago reads like a fresh failure without it."""
         states = dict(UNITS, **{"primemover-health-check": ("enabled", "failed")})
         result = _run_doctor(cli_runner, states)
 
-        assert "2026-08-13" in result.output
+        assert "2026-08-13" in plain(result)
 
     def test_the_failure_tells_you_where_to_look(self, cli_runner):
         states = dict(UNITS, **{"primemover-runner": ("enabled", "failed")})
         result = _run_doctor(cli_runner, states)
 
-        assert "journalctl -u primemover-runner" in result.output
+        assert "journalctl -u primemover-runner" in plain(result)
 
     @pytest.mark.parametrize("unit", sorted(UNITS))
     def test_every_known_unit_is_checked(self, cli_runner, unit):
@@ -109,35 +127,35 @@ class TestFailedUnitIsSurfaced:
         states = dict(UNITS, **{unit: ("enabled", "failed")})
         result = _run_doctor(cli_runner, states)
 
-        assert unit in result.output
-        assert "Some checks failed" in result.output
+        assert unit in plain(result)
+        assert "Some checks failed" in plain(result)
 
 
 class TestHealthyAndAbsentCases:
     def test_all_units_active_is_not_reported_as_a_failure(self, cli_runner):
         result = _run_doctor(cli_runner, UNITS)
 
-        assert "FAILED" not in result.output
-        assert "primemover-lambda" in result.output
+        assert "FAILED" not in plain(result)
+        assert "primemover-lambda" in plain(result)
 
     def test_units_that_are_not_installed_are_skipped_silently(self, cli_runner):
         """A dev laptop has none of these; that is not an error."""
         result = _run_doctor(cli_runner, {})
 
-        assert "FAILED" not in result.output
-        assert "no PrimeMover units installed" in result.output
+        assert "FAILED" not in plain(result)
+        assert "no PrimeMover units installed" in plain(result)
 
     def test_a_disabled_unit_is_a_note_not_a_failure(self, cli_runner):
         """multilogin-agent is deliberately disabled on v12; it must not go red."""
         states = dict(UNITS, **{"multilogin-desktop": ("disabled", "inactive")})
         result = _run_doctor(cli_runner, states)
 
-        assert "not enabled" in result.output
-        assert "FAILED" not in result.output
+        assert "not enabled" in plain(result)
+        assert "FAILED" not in plain(result)
 
     def test_without_systemd_the_section_is_skipped_cleanly(self, cli_runner):
         """Most contributors are not on the VM; doctor must stay usable there."""
         result = _run_doctor(cli_runner, UNITS, systemctl_present=False)
 
-        assert "systemd not present" in result.output
-        assert "FAILED" not in result.output
+        assert "systemd not present" in plain(result)
+        assert "FAILED" not in plain(result)

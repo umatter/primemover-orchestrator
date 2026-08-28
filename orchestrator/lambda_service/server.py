@@ -56,6 +56,7 @@ import os
 import sys
 import time
 import uuid
+from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from typing import Any
 
@@ -63,12 +64,39 @@ from flask import Flask, jsonify, request
 
 from orchestrator.status import lambda_verdict
 
-# Configure logging
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-)
+# Configure logging.
+#
+# stderr stays the primary sink, so `journalctl -u primemover-lambda` keeps
+# working under systemd and `orchestrator up` keeps showing output. A rotating
+# file is added alongside it because promtail scrapes files, not journald: until
+# now the service's own account of a degraded decision -- the WARNING on
+# `degraded` and the ERROR on `treatment_lost`, the two most important signals
+# this system produces -- never reached Loki at all, so no Grafana rule could be
+# written against them. The lambda alerts had to key off the *runner's* log
+# lines instead, which only see a degradation once a job consumes it.
+LOG_FORMAT = "%(asctime)s [%(levelname)s] %(name)s: %(message)s"
+LOG_FILE = Path(__file__).resolve().parents[2] / "log" / "lambda-server.log"
+
+logging.basicConfig(level=logging.INFO, format=LOG_FORMAT)
 logger = logging.getLogger("lambda_service")
+
+
+def _add_file_handler() -> None:
+    """Mirror the log to ``log/lambda-server.log`` for promtail to scrape.
+
+    Best-effort: a service that cannot open its log file should still serve
+    decisions, so any failure here is reported once and otherwise ignored.
+    """
+    try:
+        LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
+        handler = RotatingFileHandler(LOG_FILE, maxBytes=20 * 1024 * 1024, backupCount=5)
+        handler.setFormatter(logging.Formatter(LOG_FORMAT))
+        logging.getLogger().addHandler(handler)
+    except OSError as exc:  # pragma: no cover - depends on the filesystem
+        logger.warning("could not open %s for logging: %s", LOG_FILE, exc)
+
+
+_add_file_handler()
 
 app = Flask(__name__)
 

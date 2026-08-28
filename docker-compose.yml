@@ -85,6 +85,8 @@ services:
       # PrimeMover application logs
       - ${PM_API_LOG_PATH:-../primemover_api/storage/logs}:/var/log/primemover-api:ro
       - ${PM_RUNNER_LOG_PATH:-../primemover_runner/primemover-runner/log}:/var/log/primemover-runner:ro
+      # The local lambda server writes here; promtail scrapes files, not journald.
+      - ./log:/var/log/primemover-lambda:ro
       # Infrastructure logs (from API stack)
       - ${PM_MYSQL_LOG_PATH:-../primemover_api/storage/logs/mysql}:/var/log/mysql:ro
       - ${PM_APACHE_LOG_PATH:-../primemover_api/storage/logs/apache}:/var/log/apache:ro
