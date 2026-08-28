@@ -166,7 +166,12 @@ scrape_configs:
         labels:
           component: lambda
           environment: development
-          __path__: /var/log/primemover-lambda/*.log
+          # Only the lambda server's own log. The directory is the orchestrator's
+          # log/, which also holds boot-health-check.log and memory-monitor.log --
+          # a `*.log` glob labelled those `component: lambda` too, so any lambda
+          # alert or dashboard was reading unrelated files. Not a glob over the
+          # rotated .log.1-.5 either: promtail would re-ingest each on rotation.
+          __path__: /var/log/primemover-lambda/lambda-server.log
     pipeline_stages:
       # logging.basicConfig format: "2026-08-28 13:19:05,663 [INFO] name: msg"
       - regex:
@@ -188,6 +193,12 @@ scrape_configs:
       - regex:
           source: message
           expression: '\[req (?P<correlation_id>[^\]]+)\]'
+      # Structured metadata, not a label: the id is per-job, so promoting it to
+      # a label would create one stream per job. A `regex` stage on its own only
+      # fills promtail's extracted map -- without this stage the id is discarded
+      # and the join it exists for is not possible.
+      - structured_metadata:
+          correlation_id:
 
   # ==========================================================================
   # Apache Access Logs
