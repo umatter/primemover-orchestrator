@@ -817,8 +817,26 @@ grep -nE '127\.0\.0\.1:.*(3307|8889)|ALLOW_EMPTY' ../primemover_api/docker-compo
   hardware decode works as of 2026-08-22 (iHD driver + `render`/`video` group
   membership for `primemover`; groups are read at process start, so restart
   `primemover-runner` and `multilogin-desktop` after changing them)
-- The V8 heap cap (`--max-old-space-size=512`, `ProfileService.java`) guards a
-  ChromeDriver leak and is hardware-independent — keep it on any host
+- The V8 heap cap (`ProfileService.java`) guards a ChromeDriver leak and is
+  hardware-independent — keep it on any host. **It is 2048 since 2026-08-28, not
+  512, and the renderer is now recycled every 25 navigations**
+  (`runner.RendererRecycleAfterNavigations`, `primemover.util.RendererRecycler`).
+  Both were needed, and the reason is the unit: the leak is **per navigation**
+  (~14 MB of old-space per same-site SPA navigation, Selenium #13510/#13533), not
+  per minute. Five 113-job runs died on 2026-08-27 at 27/32/33/36/37
+  navigations — tight — but anywhere between 34 and 69 *minutes* — not tight.
+  Nothing had regressed: the same workflow at 8-13 navigations per session ran
+  1828 jobs on 2026-08-24 with zero crashes. The queues simply got long enough
+  (55 navigations) to cross a threshold that was always there, and 512 MB
+  tolerates about 36.
+  A bigger cap only rescales that ceiling; the recycle removes it, because
+  navigating cross-origin (`chrome://version` — **not** `about:blank`, which can
+  inherit the SiteInstance and leave the leaking renderer alive) makes Chrome
+  tear the renderer down and reclaim the whole heap. Peak heap becomes O(1) in
+  queue length instead of O(navigations), for ~2-3 s and no Multilogin API call.
+  Verified in production 2026-08-28: renderer PIDs appear at exactly the recycle
+  timestamps, and bots passed 38 navigations with zero crashes where 5 of 5 had
+  died by 37 the day before.
 - **Never add GL flags (`--use-gl=egl` …) to the MLX profile**: Chrome 151 only
   allows `(gl=egl-angle, angle=default)`; anything else kills the GPU process
 - `scripts/monitor-memory.sh` watches renderer RSS to catch regressions
