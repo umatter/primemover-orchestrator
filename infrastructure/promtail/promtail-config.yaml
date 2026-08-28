@@ -153,6 +153,43 @@ scrape_configs:
       # correlationId text the runner prints.
 
   # ==========================================================================
+  # Local Lambda server (the decision function's own account of a decision)
+  # ==========================================================================
+  # Without this the service's WARNING on `degraded` and ERROR on
+  # `treatment_lost` -- the two signals that say a bot's data is suspect --
+  # never reached Loki, so no Grafana rule could be written against them and the
+  # lambda alerts had to key off the runner's log lines instead.
+  - job_name: lambda
+    static_configs:
+      - targets:
+          - localhost
+        labels:
+          component: lambda
+          environment: development
+          __path__: /var/log/primemover-lambda/*.log
+    pipeline_stages:
+      # logging.basicConfig format: "2026-08-28 13:19:05,663 [INFO] name: msg"
+      - regex:
+          expression: '^(?P<timestamp>\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}),(?P<ms>\d{3}) \[(?P<level>[A-Z]+)\] (?P<logger>[^:]+): (?P<message>.*)$'
+      - template:
+          source: level
+          template: '{{ ToLower .Value }}'
+      - template:
+          source: level
+          template: '{{ if eq .Value "warn" }}warning{{ else }}{{ .Value }}{{ end }}'
+      - labels:
+          level:
+      - timestamp:
+          source: timestamp
+          format: "2006-01-02 15:04:05"
+          location: "Europe/Zurich"
+      # The correlation id the runner sends as X-Correlation-Id, so a decision
+      # can be joined to the job that asked for it.
+      - regex:
+          source: message
+          expression: '\[req (?P<correlation_id>[^\]]+)\]'
+
+  # ==========================================================================
   # Apache Access Logs
   # ==========================================================================
   - job_name: apache-access
