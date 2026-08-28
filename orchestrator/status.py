@@ -116,10 +116,19 @@ class JobStatus(str, Enum):
 
 
 class QueueStatus(str, Enum):
-    """States a *queue* (run / joblist) can report."""
+    """States a *queue* (run / joblist) can report.
+
+    ``warning`` was added 2026-08-28 for the same reason it exists on jobs: a run
+    that lost work is neither a success nor a total failure. Before it, the
+    runner set the joblist result unconditionally, so a queue reported
+    ``success`` however many of its jobs had died -- observed live on experiment
+    145, where two runs completed **8 of 204 jobs (4%)** and both recorded
+    ``status_code = success, status_message = "done"``.
+    """
 
     RUNNING = "running"
     SUCCESS = "success"
+    WARNING = "warning"
     FAILURE = "failure"
     SKIPPED = "skipped"
 
