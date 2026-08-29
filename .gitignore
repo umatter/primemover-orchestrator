@@ -63,7 +63,11 @@ dmypy.json
 
 # Logs
 *.log
-logs/
+# Anchored: an unanchored `logs/` also matches the SOURCE package
+# orchestrator/logs/, so new modules there were silently untracked --
+# jobdata_s3.py was written, staged and simply absent from the commit.
+# The runtime log directory here is log/ (singular), covered above.
+/logs/
 
 # Docker
 docker-compose.override.yml

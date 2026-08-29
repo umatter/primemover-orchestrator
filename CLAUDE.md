@@ -170,7 +170,7 @@ applies.
 - `experiment_designer/spec/converter.py` - YAML-to-JSON conversion pipeline
 - `experiment_designer/spec/design_expander.py` - Factorial design expansion
 - `experiment_designer/spec/job_registry.py` - Job type definitions and validation
-- `scripts/har-drain.sh` - HAR/job-data spool-and-drain sidecar (buffer → Nextcloud)
+- `scripts/har-drain.sh` - job-data archiver (MinIO → Nextcloud); copies, never deletes
 - `scripts/mlx-proxy-gen.py` - generate N Multilogin sticky-session proxy records (one exit IP per bot)
 - `scripts/monitor-memory.sh` - per-component **PSS** memory + browser-instance count + disk; `--json` for a sampler. Uses PSS (shared pages counted once), not summed RSS, which over-counted the browser total ~5x at 19 concurrent browsers. `system.used_mb`/`available_mb` from `free` are the box-level ground truth.
 - `scripts/reap-orphan-browsers.sh` - kill Mimic browsers older than a session could be (orphan sweep)
@@ -317,6 +317,64 @@ takes the *whole* alerting provisioning down with it, rules included.
 ### Log Aggregation
 
 `LogAggregator` unifies four log sources: Loki (primary), direct file parsing (fallback), HAR files (Lambda outputs from runner), and CloudWatch (Lambda execution logs).
+
+### Where job data goes — MinIO, local disk, Nextcloud, AWS
+
+Every job's HAR, final page source, cookies and lambda payload is written as a
+zip. There are four possible destinations and only one of them is live; the
+confusion is worth stating plainly, because the config keys are misleading.
+
+| destination | state | what it is for |
+|---|---|---|
+| **MinIO** (`s3.qamelab.org`) | **live — the system of record** | everything the runner captures |
+| local disk (`out/har/<jobId>/`) | **off** | historical buffer; only re-enable to debug the writer itself |
+| Nextcloud (via `har-drain.sh`) | off-host **archive** of MinIO | disaster recovery, long-term retention |
+| AWS S3 | **never used** | only if data must leave the box |
+
+**The runner's `awsS3.*` settings are not AWS.** `awsS3.endpoint` in
+`config/secrets.properties` is `https://s3.qamelab.org`, which resolves to this
+box and terminates at the local MinIO (bucket `primemoverrunner`). No AWS
+account, key or cost is involved — do not go looking for one, and do not
+"fix" an apparently-empty `awsS3.endpoint` in `application.properties`: the
+value in `secrets.properties` overrides it.
+
+**Local disk is off by design.** `primemover_runner` `cadb15e` set
+`storage.local.enabled=false` ("run S3-only on the VM"), which stops
+`Config.java`'s `@ConditionalOnProperty` from ever constructing
+`FileStorageService`. So `out/har` is never created. That was deliberate — it
+also stops the empty-captcha writer's local failure flipping jobs to
+`WARNING_JOBDATA`. Re-enabling it duplicates every object and reopens that bug.
+
+**The layout is flat, not a directory per job.** Two prefixes, job id as the
+trailing token:
+
+```
+reports/lambda-jobdata-<jobtype>-<task>-<jobId>      the decision payload
+reports/static-jobdata-<jobtype>-<task>-<jobId>      the HAR
+reports/static-captcha-<jobtype>-<task>-<jobId>
+finalsource/<ts>-page-finalsource-<jobtype>-<task>-<jobId>   rendered HTML
+```
+
+The API's `reports` table holds one pointer row per object
+(`mimetype = primemover/s3`, `filecontent` NULL) — the bytes are in MinIO.
+
+**Reading it.** `LogAggregator` reads MinIO through
+`orchestrator/logs/jobdata_s3.py` when `JOBDATA_S3_ACCESS_KEY` /
+`JOBDATA_S3_SECRET_KEY` are set, and falls back to `PM_RUNNER_HAR_PATH`
+otherwise. Use a **scoped, read-only** MinIO access key, not the root
+credentials. Without those settings every HAR-backed reader returns an empty
+list — which is exactly the trap that hid this for a month: the writer moved to
+MinIO in July and no reader followed, so `orchestrator debug job`,
+`lambda invocations` and the HAR log source answered "nothing" instead of
+failing. An unreachable store is missing evidence about a job, never evidence
+that the job was fine.
+
+In a pinch the objects are readable straight off the MinIO filesystem with no
+credentials — small ones are inlined in `xl.meta` as a zip:
+
+```bash
+docker exec ex63-minio-1 sh -c 'ls -d /data/primemoverrunner/*/*<jobId>'
+```
 
 ### Local Lambda Server
 
@@ -732,8 +790,10 @@ Helper scripts in `scripts/`:
   `primemover-runner.service` sends stdout to the journal instead; logback's own
   rotated `log/primemover-runner.log` is unaffected either way, and that is the
   file promtail scrapes.
-- `har-drain.sh [--dry-run]` — the spool-and-drain sidecar; tars settled job
-  folders and uploads via rclone WebDAV (see `docs/har-spool-drain.md`)
+- `har-drain.sh [--dry-run]` — off-host archival; copies a time window of
+  objects out of MinIO, tars them and uploads via rclone WebDAV. It is an
+  archiver, not a drain: the source is the system of record and is never
+  deleted (see `docs/har-spool-drain.md`)
 - `multilogin-login.py` — authenticates the Multilogin agent
 - `boot-health-check.sh` / `monitor-memory.sh` — health and memory monitoring
 
@@ -848,13 +908,17 @@ grep -nE '127\.0\.0\.1:.*(3307|8889)|ALLOW_EMPTY' ../primemover_api/docker-compo
   When on, the MITM recorder chains through the residential proxy and impersonates
   TLS per host — verified working; mind the recorder cert (`cert/2024/ca-cert.p12`)
   shelf life.
-- Job data (incl. HAR) is written by the runner's storage backends
-  (`FileStorageService` → `export.FileTargetFolder`, plus `AwsS3StorageService`).
-  A single failing backend used to short-circuit the rest (dead AWS key → 403 →
-  local write skipped); fixed in `primemover_runner` commit `82d6e72`. If jobs
-  still land in `WARNING_JOBDATA` ("problems writing jobresult"), the AWS S3 beans
-  are 403-ing — remove/repoint them, or run the spool-and-drain sidecar to
-  Nextcloud instead (`docs/har-spool-drain.md`).
+- **`out/har` being absent is normal and not the bug.** `storage.local.enabled=false`
+  means the local writer bean is never constructed; job data goes to MinIO. See
+  "Where job data goes" above before chasing this. If a *reader* is empty, the
+  fix is `JOBDATA_S3_ACCESS_KEY` / `JOBDATA_S3_SECRET_KEY`, not re-enabling the
+  local write.
+- Job data is written by `AwsS3StorageService` (to MinIO, despite the name) and,
+  when `storage.local.enabled=true`, `FileStorageService` → `export.FileTargetFolder`.
+  A single failing backend used to short-circuit the rest (dead key → 403 → local
+  write skipped); fixed in `primemover_runner` commit `82d6e72`. If jobs land in
+  `WARNING_JOBDATA` ("problems writing jobresult"), check the MinIO endpoint and
+  the bucket's credentials.
 
 ## Related Repositories
 

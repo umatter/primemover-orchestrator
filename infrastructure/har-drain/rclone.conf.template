@@ -1,4 +1,6 @@
-# rclone remote for the institute Nextcloud, over WebDAV.
+# rclone remotes for job-data archival: the MinIO source and the Nextcloud
+# destination. Both are needed — the source is where the runner actually
+# writes job data, the destination is the off-host copy.
 #
 # Copy to rclone.conf (gitignored) and fill in. Do NOT commit the real file —
 # it contains an obscured credential.
@@ -21,3 +23,22 @@ user = USERNAME
 pass = OBSCURED_APP_PASSWORD
 # Nextcloud supports chunked uploads for large archives:
 # nextcloud_chunk_size = 10M
+
+# ---------------------------------------------------------------------------
+# Source: the MinIO on this box. The runner writes here via awsS3.endpoint =
+# https://s3.qamelab.org (which resolves to this host — it is not AWS).
+#
+# Use a scoped MinIO access key, not the root credentials: in the MinIO console,
+# Access Keys -> Create, and restrict it to read on the primemoverrunner bucket.
+# This script only ever reads.
+#
+# Verify:  rclone --config infrastructure/har-drain/rclone.conf lsd minio:primemoverrunner
+
+[minio]
+type = s3
+provider = Minio
+endpoint = https://s3.qamelab.org
+access_key_id = MINIO_ACCESS_KEY
+secret_access_key = MINIO_SECRET_KEY
+# MinIO needs path-style addressing; virtual-host style will 404.
+force_path_style = true

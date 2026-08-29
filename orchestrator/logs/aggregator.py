@@ -14,6 +14,7 @@ from collections.abc import Iterator
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import IO
 
 from orchestrator import status
 from orchestrator.clients.loki import LogEntry, LokiClient
@@ -157,6 +158,13 @@ class LogAggregator:
         self.har_path = Path(har_path or settings.pm_runner_har_path)
         self.api_log_path = Path(api_log_path or settings.pm_api_log_path)
         self.runner_log_path = Path(runner_log_path or settings.pm_runner_log_path)
+
+        # Job data lives in MinIO since primemover_runner cadb15e stopped the
+        # local disk copy; har_path stays as the fallback for hosts that still
+        # write locally (storage.local.enabled=true).
+        from orchestrator.logs.jobdata_s3 import store_from_settings
+
+        self.jobdata_store = store_from_settings(settings)
 
         self._loki_client: LokiClient | None = None
 
@@ -372,6 +380,9 @@ class LogAggregator:
         """Extract Lambda decision outputs from job report zip files."""
         entries: list[LogEntry] = []
 
+        if self.jobdata_store.configured:
+            return self._query_lambda_output_s3(job_id=job_id, search=search, limit=limit)
+
         if not self.har_path.exists():
             return entries
 
@@ -407,12 +418,63 @@ class LogAggregator:
         entries.sort(key=lambda e: e.timestamp, reverse=True)
         return entries[:limit]
 
+    def _query_lambda_output_s3(
+        self,
+        job_id: int | None = None,
+        search: str | None = None,
+        limit: int = 100,
+    ) -> list[LogEntry]:
+        """Extract Lambda decision outputs from the MinIO job-data store.
+
+        The store is flat, so a job's objects are found by matching the id in
+        the key rather than by opening a directory. Only ``lambda-jobdata``
+        objects carry the decision payload; the HAR and the page source live
+        beside them under the same job id and are not parsed here.
+
+        A store that cannot be reached is reported and yields nothing, rather
+        than raising: an unreachable archive is missing evidence about a job,
+        not evidence that the job was fine.
+        """
+        import io
+
+        entries: list[LogEntry] = []
+        try:
+            job_ids = (
+                [job_id] if job_id is not None else self.jobdata_store.recent_job_ids(limit=50)
+            )
+        except Exception as exc:
+            logger.warning("job data store unavailable at %s: %s", self.jobdata_store.endpoint, exc)
+            return entries
+
+        for jid in job_ids:
+            for obj in self.jobdata_store.objects_for_job(jid):
+                if obj.kind != "lambda-jobdata":
+                    continue
+                try:
+                    payload = self.jobdata_store.read(obj.key)
+                except Exception as exc:
+                    logger.debug("could not read %s: %s", obj.key, exc)
+                    continue
+                entries.extend(
+                    self._extract_lambda_from_zip(io.BytesIO(payload), search=search, job_id=jid)
+                )
+
+        entries.sort(key=lambda e: e.timestamp, reverse=True)
+        return entries[:limit]
+
     def _extract_lambda_from_zip(
         self,
-        zip_path: Path,
+        zip_path: Path | IO[bytes],
         search: str | None = None,
+        job_id: int | None = None,
     ) -> list[LogEntry]:
-        """Extract Lambda decision output from a job report zip file."""
+        """Extract Lambda decision output from a job report zip file.
+
+        ``zip_path`` may be a local path or an open binary stream, so one parser
+        serves both the on-disk layout and objects fetched from MinIO. ``job_id``
+        is supplied by the object-store caller, whose keys are flat and carry the
+        id in the object name rather than in a parent directory.
+        """
         entries: list[LogEntry] = []
 
         with zipfile.ZipFile(zip_path) as zf:
@@ -422,13 +484,14 @@ class LogAggregator:
                         with zf.open(name) as f:
                             data = json.load(f)
 
-                        # Extract job ID from filename
-                        job_id = None
-                        import re
+                        # Job id comes from the caller for object-store reads;
+                        # for a local zip it is still in the parent directory.
+                        if job_id is None and isinstance(zip_path, Path):
+                            import re
 
-                        match = re.search(r"(\d+)", zip_path.parent.name)
-                        if match:
-                            job_id = int(match.group(1))
+                            match = re.search(r"(\d+)", zip_path.parent.name)
+                            if match:
+                                job_id = int(match.group(1))
 
                         # Create entry for the Lambda execution
                         timestamp = datetime.now(timezone.utc)
