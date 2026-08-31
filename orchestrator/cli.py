@@ -3797,7 +3797,24 @@ def _print_debug_report(report, verbose: bool = False) -> None:
         har_table.add_row(
             "Slow Requests", f"[yellow]{har.slow_count}[/yellow]" if har.slow_count else "0"
         )
-        har_table.add_row("Total Time", format_ms(har.total_time_ms))
+        # Say what the total covers. A request the recorder could not time is
+        # not a zero-length request, and quietly leaving it out of the total
+        # while counting it in "Total Requests" would overstate how complete
+        # the picture is.
+        if har.untimed_count:
+            har_table.add_row(
+                "Total Time",
+                f"{format_ms(har.total_time_ms)} "
+                f"[dim](over {har.total_requests - har.untimed_count} of "
+                f"{har.total_requests} requests)[/dim]",
+            )
+            har_table.add_row(
+                "Untimed Requests",
+                f"[yellow]{har.untimed_count}[/yellow] [dim](no response received; "
+                f"the recorder reports no usable duration)[/dim]",
+            )
+        else:
+            har_table.add_row("Total Time", format_ms(har.total_time_ms))
         har_table.add_row("Total Transfer", format_bytes(har.total_transfer_bytes))
 
         console.print(Panel(har_table, title="[bold]HAR Analysis[/bold]", border_style="cyan"))
