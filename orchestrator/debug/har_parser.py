@@ -54,9 +54,25 @@ class HARRequest:
         return self.status >= 400
 
     @property
+    def has_timing(self) -> bool:
+        """Whether this entry carries a usable duration.
+
+        The HAR spec uses ``-1`` for "not available", and the runner's recorder
+        goes further: a request that never received a response (``status: 0``)
+        gets its ``wait`` timing computed against an unset response time, so
+        ``time`` comes out around -1.3e9 ms -- about minus fifteen days. Summing
+        those produced a total of -18246271267ms on a real job.
+
+        A negative duration is not a slow request, a fast one, or a zero: it is
+        the absence of a measurement, and it is excluded from every total rather
+        than being clamped to zero, which would misreport it as instantaneous.
+        """
+        return self.time_ms >= 0
+
+    @property
     def is_slow(self) -> bool:
         """Check if request is slow (default: >5000ms)."""
-        return self.time_ms > 5000
+        return self.has_timing and self.time_ms > 5000
 
     def to_dict(self) -> dict:
         """Convert to dictionary for serialization."""
@@ -85,13 +101,14 @@ class DomainStats:
     failed_count: int = 0
     total_time_ms: float = 0
     total_size: int = 0
+    timed_count: int = 0
 
     @property
     def avg_time_ms(self) -> float:
-        """Average request time in milliseconds."""
-        if self.request_count == 0:
+        """Mean over the requests that actually carry a timing."""
+        if self.timed_count == 0:
             return 0
-        return self.total_time_ms / self.request_count
+        return self.total_time_ms / self.timed_count
 
 
 @dataclass
@@ -110,6 +127,10 @@ class HARSummary:
     # Counts
     failed_count: int = 0
     slow_count: int = 0
+    # Requests whose duration the recorder could not measure -- reported rather
+    # than hidden, because "we do not know how long 14 of 53 requests took" is a
+    # different statement from "they took no time".
+    untimed_count: int = 0
 
     # Detailed lists
     failed_requests: list[HARRequest] = field(default_factory=list)
@@ -133,6 +154,7 @@ class HARSummary:
             "total_transfer_bytes": self.total_transfer_bytes,
             "failed_count": self.failed_count,
             "slow_count": self.slow_count,
+            "untimed_count": self.untimed_count,
             "failed_requests": [r.to_dict() for r in self.failed_requests],
             "slow_requests": [r.to_dict() for r in self.slow_requests],
             "domain_stats": {
@@ -257,8 +279,11 @@ class HARParser:
 
             # Update summary
             summary.total_requests += 1
-            summary.total_time_ms += request.time_ms
             summary.total_transfer_bytes += request.response_size
+            if request.has_timing:
+                summary.total_time_ms += request.time_ms
+            else:
+                summary.untimed_count += 1
 
             # Track domain stats
             if request.domain not in summary.domain_stats:
@@ -266,8 +291,10 @@ class HARParser:
 
             domain_stat = summary.domain_stats[request.domain]
             domain_stat.request_count += 1
-            domain_stat.total_time_ms += request.time_ms
             domain_stat.total_size += request.response_size
+            if request.has_timing:
+                domain_stat.total_time_ms += request.time_ms
+                domain_stat.timed_count += 1
 
             # Track failed requests
             if request.is_failed:
