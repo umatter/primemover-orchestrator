@@ -3723,17 +3723,28 @@ def _print_debug_report(report, verbose: bool = False) -> None:
         lambda_table.add_column("Key", style="dim")
         lambda_table.add_column("Value")
 
-        # The headline: a random selection means no LLM filter succeeded, so the
-        # treatment arm silently ran as a control arm. It is the first row on
-        # purpose -- it is the most consequential thing this command can report.
-        if ld.random_selection:
+        # `selection_mode` is a description, not a verdict. A control crawler
+        # requests no LLM filter, draws uniformly, and correctly reports
+        # "random": 236 of the 243 live crawler configurations on this box are
+        # control-arm. Shouting "this arm behaved as a CONTROL arm" at every one
+        # of them is the exact false alarm docs/integration-contract.md §7.3
+        # warns against, and it trains people to ignore the row.
+        #
+        # `degraded` is the field that means "a human should look at this", so
+        # the alarming wording is shown only when the decision itself says so.
+        if ld.random_selection and ld.degraded:
             lambda_table.add_row(
                 "Selection Mode",
-                "[bold yellow]RANDOM — no LLM filter succeeded, this arm "
-                "behaved as a CONTROL arm[/bold yellow]",
+                "[bold yellow]RANDOM — and this decision is degraded: no "
+                "requested filter applied, so this arm behaved as a CONTROL "
+                "arm[/bold yellow]",
             )
         elif ld.selection_mode:
-            lambda_table.add_row("Selection Mode", ld.selection_mode)
+            lambda_table.add_row(
+                "Selection Mode",
+                f"{ld.selection_mode}"
+                + (" (expected for a control crawler)" if ld.random_selection else ""),
+            )
 
         if ld.error:
             lambda_table.add_row("Error", f"[red]{str(ld.error)[:120]}[/red]")

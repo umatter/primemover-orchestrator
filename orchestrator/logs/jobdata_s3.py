@@ -164,12 +164,19 @@ class JobDataStore:
 
 
 def store_from_settings(settings: Any) -> JobDataStore:
-    """Build a store from a Settings instance."""
-    prefixes = tuple(p.strip() for p in settings.jobdata_s3_prefixes.split(",") if p.strip())
+    """Build a store from a Settings instance.
+
+    Read with ``getattr`` defaults rather than attribute access: callers pass
+    lightweight settings stand-ins (a ``SimpleNamespace`` carrying only the few
+    fields a test needs), and a store that is merely unconfigured must not
+    become an ``AttributeError`` in code that never touches job data.
+    """
+    raw_prefixes = getattr(settings, "jobdata_s3_prefixes", "") or ""
+    prefixes = tuple(p.strip() for p in raw_prefixes.split(",") if p.strip())
     return JobDataStore(
-        endpoint=settings.jobdata_s3_endpoint,
-        bucket=settings.jobdata_s3_bucket,
-        access_key=settings.jobdata_s3_access_key,
-        secret_key=settings.jobdata_s3_secret_key,
+        endpoint=getattr(settings, "jobdata_s3_endpoint", "https://s3.qamelab.org"),
+        bucket=getattr(settings, "jobdata_s3_bucket", "primemoverrunner"),
+        access_key=getattr(settings, "jobdata_s3_access_key", None),
+        secret_key=getattr(settings, "jobdata_s3_secret_key", None),
         prefixes=prefixes or ("reports/", "finalsource/"),
     )

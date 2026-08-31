@@ -541,9 +541,32 @@ class TestDebugJobRichRendererDoesNotCrash:
         assert "Domain Breakdown" in text
 
     def test_the_random_selection_is_impossible_to_miss(self):
+        # This report IS degraded, so the alarming wording belongs here.
         text = self._render(_fully_populated_report())
         assert "RANDOM" in text
         assert "CONTROL" in text
+
+    def test_a_healthy_control_crawler_is_not_alarmed_about(self):
+        """`selection_mode` is a description, not a verdict.
+
+        A control crawler requests no LLM filter, draws uniformly and correctly
+        reports "random": 236 of the 243 live crawler configurations on this box
+        are control-arm. The renderer used to shout "this arm behaved as a
+        CONTROL arm" at every one of them, which is the false alarm
+        docs/integration-contract.md 7.3 warns against -- it trains people to
+        ignore the row that matters when a treatment really is lost.
+        """
+        report = _fully_populated_report()
+        ld = report.lambda_decision
+        # A clean control decision: drew at random, nothing requested failed.
+        ld.degraded = False
+        ld.treatment_lost = False
+        ld.filters = {}
+        ld.warnings = []
+
+        text = self._render(report)
+        assert "random" in text.lower(), "the mode should still be reported"
+        assert "CONTROL arm" not in text, "a clean control decision must not be alarmed about"
 
     def test_the_runners_diagnostic_is_shown(self):
         text = self._render(_fully_populated_report())

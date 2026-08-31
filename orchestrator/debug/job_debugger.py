@@ -9,7 +9,10 @@ Aggregates:
 - CloudWatch Lambda execution logs
 """
 
+import io
 import json
+import logging
+import os
 import zipfile
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -18,6 +21,8 @@ from pathlib import Path
 from orchestrator import status as status_contract
 
 from .har_parser import HARParser, HARSummary
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -381,6 +386,18 @@ class JobDebugger:
         self.har_path = Path(har_path or settings.pm_runner_har_path)
         self.slow_threshold_ms = slow_threshold_ms
 
+        # Job data has gone only to MinIO since primemover_runner cadb15e; the
+        # local directory this used to read is never created any more. See
+        # orchestrator/logs/jobdata_s3.py.
+        from orchestrator.logs.jobdata_s3 import store_from_settings
+
+        self.jobdata_store = store_from_settings(settings)
+        self.jobdata_cache = (
+            Path(os.environ.get("XDG_CACHE_HOME", Path.home() / ".cache"))
+            / "primemover-orchestrator"
+            / "jobdata"
+        )
+
         self._token: str | None = None
         self._har_parser = HARParser(slow_threshold_ms=slow_threshold_ms)
 
@@ -556,8 +573,11 @@ class JobDebugger:
         """Find job artifacts in the output directory."""
         artifacts = Artifacts()
 
-        job_dir = self.har_path / str(job_id)
-        if not job_dir.exists():
+        job_dir: Path | None = self.har_path / str(job_id)
+        if job_dir is None or not job_dir.exists():
+            # Nothing on local disk is the normal case now, not an error.
+            job_dir = self._materialise_from_store(job_id)
+        if job_dir is None:
             return artifacts
 
         artifacts.job_dir = job_dir
@@ -577,6 +597,112 @@ class JobDebugger:
 
         return artifacts
 
+    def _materialise_from_store(self, job_id: int) -> Path | None:
+        """Lay a job's stored objects out on disk the way the parsers expect.
+
+        The object store is flat and its objects are zips; every reader below
+        wants files -- ``*lambda*.zip``, ``*.har``, ``*.png``. Rather than
+        rewrite three parsers around byte streams, one job's objects are written
+        into a cache directory in that shape. Cheap (a few hundred KB per job),
+        reusable across runs, and it keeps the exported report's paths valid
+        after the command exits, which a temporary directory would not.
+
+        Returns None when the store is unconfigured or holds nothing for the job
+        -- the caller then reports no artifacts, exactly as before.
+        """
+        if not self.jobdata_store.configured:
+            return None
+
+        try:
+            objects = self.jobdata_store.objects_for_job(job_id)
+        except Exception as e:
+            # An unreachable store is missing evidence about a job, never
+            # evidence that the job was fine -- so say so rather than returning
+            # a confident empty result.
+            logger.warning("job data store unreachable for job %s: %s", job_id, e)
+            return None
+
+        if not objects:
+            return None
+
+        job_dir = self.jobdata_cache / str(job_id)
+        job_dir.mkdir(parents=True, exist_ok=True)
+
+        for obj in objects:
+            try:
+                payload = self.jobdata_store.read(obj.key)
+            except Exception as e:
+                logger.debug("could not read %s: %s", obj.key, e)
+                continue
+
+            if not payload:
+                continue  # static-captcha is routinely zero bytes
+
+            if obj.kind == "lambda-jobdata":
+                # Kept zipped: _extract_lambda_decision opens it as a zip, and
+                # the *lambda*.zip glob is what finds it.
+                (job_dir / f"{obj.key.rsplit('/', 1)[-1]}.zip").write_bytes(payload)
+                continue
+
+            if obj.kind == "static-jobdata":
+                # Unpacked: the HAR and the screenshot are inside, and the
+                # parsers want them as standalone files.
+                try:
+                    with zipfile.ZipFile(io.BytesIO(payload)) as zf:
+                        for name in zf.namelist():
+                            lowered = name.lower()
+                            if "har" in lowered:
+                                # Stored as .json; the glob looks for .har.
+                                target = job_dir / f"{Path(name).stem}.har"
+                            elif lowered.endswith((".png", ".jpg")):
+                                target = job_dir / Path(name).name
+                            else:
+                                target = job_dir / Path(name).name
+                            target.write_bytes(zf.read(name))
+                except zipfile.BadZipFile:
+                    logger.debug("%s is not a zip; skipped", obj.key)
+                continue
+
+            if obj.kind == "page-finalsource":
+                try:
+                    with zipfile.ZipFile(io.BytesIO(payload)) as zf:
+                        for name in zf.namelist():
+                            (job_dir / Path(name).name).write_bytes(zf.read(name))
+                except zipfile.BadZipFile:
+                    logger.debug("%s is not a zip; skipped", obj.key)
+
+        return job_dir
+
+    @staticmethod
+    def unwrap_invocation(data: dict) -> dict:
+        """Return the decision body from the runner's invocation envelope.
+
+        The stored object is what ``LambdaCaller`` recorded, not what the
+        decision function returned::
+
+            {"success": true, "statusCode": 200, "functionError": null,
+             "payload": "{\\"xpath\\": \\"\\", \\"degraded\\": true, ...}"}
+
+        ``success`` and ``statusCode`` describe the HTTP call, which is 200 even
+        when every requested filter failed. Reading them as the decision's own
+        verdict reported ``degraded: true, xpath: ""`` as "ok" -- precisely the
+        silent success the degradation report exists to prevent, in the tool
+        meant to diagnose it.
+
+        A body that is already bare is returned unchanged, so older payloads and
+        anything written by a different producer still parse.
+        """
+        if "payload" not in data:
+            return data
+
+        inner = data["payload"]
+        if isinstance(inner, str):
+            try:
+                inner = json.loads(inner)
+            except (TypeError, ValueError):
+                return data
+        return inner if isinstance(inner, dict) else data
+
     def _extract_lambda_decision(self, zip_path: Path) -> LambdaDecision:
         """Extract Lambda decision from zip file."""
         decision = LambdaDecision()
@@ -587,7 +713,7 @@ class JobDebugger:
                     if "output" in name.lower() and name.endswith(".json"):
                         with zf.open(name) as f:
                             data = json.load(f)
-                        return self.decision_from_payload(data)
+                        return self.decision_from_payload(self.unwrap_invocation(data))
 
         except Exception as e:
             decision.output_parsed = False
