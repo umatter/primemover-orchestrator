@@ -1,5 +1,5 @@
 [Unit]
-Description=PrimeMover HAR spool-and-drain (buffer -> Nextcloud)
+Description=PrimeMover job-data archival (MinIO -> Nextcloud)
 After=network-online.target
 Wants=network-online.target
 
@@ -25,7 +25,12 @@ TasksMax=64
 # Read-only except the buffer, staging, and log dirs.
 ProtectSystem=strict
 ProtectHome=read-only
-ReadWritePaths=/home/primemover/primemover_runner/primemover-runner/out/har /home/primemover/primemover-orchestrator/log
+# The script no longer touches the runner's directory at all: it reads from
+# MinIO over the network and writes only its staging area and log. Listing
+# out/har here was also a startup hazard -- systemd refuses to start a unit
+# whose ReadWritePaths does not exist, and that directory stopped being
+# created when the runner went S3-only (primemover_runner cadb15e).
+ReadWritePaths=/home/primemover/primemover-orchestrator/log
 PrivateTmp=true
 NoNewPrivileges=true
 

@@ -119,6 +119,29 @@ class Settings(BaseSettings):
     )
 
     # ==========================================================================
+    # Job data object store (MinIO)
+    # ==========================================================================
+    # The runner stopped writing job data to local disk in primemover_runner
+    # cadb15e (storage.local.enabled=false) and writes only to the object store
+    # its config still calls "awsS3" -- which is not AWS: awsS3.endpoint points
+    # at s3.qamelab.org, the MinIO on this box. Nothing followed it, so every
+    # HAR-backed reader here silently returned nothing. These settings let the
+    # aggregator read job data where it actually lives; leave the credentials
+    # unset and it falls back to pm_runner_har_path.
+    jobdata_s3_endpoint: str = Field(
+        default="https://s3.qamelab.org",
+        alias="JOBDATA_S3_ENDPOINT",
+    )
+    jobdata_s3_bucket: str = Field(default="primemoverrunner", alias="JOBDATA_S3_BUCKET")
+    jobdata_s3_access_key: str | None = Field(default=None, alias="JOBDATA_S3_ACCESS_KEY")
+    jobdata_s3_secret_key: str | None = Field(default=None, alias="JOBDATA_S3_SECRET_KEY")
+    # Job data is spread over two flat prefixes, not a directory per job.
+    jobdata_s3_prefixes: str = Field(
+        default="reports/,finalsource/",
+        alias="JOBDATA_S3_PREFIXES",
+    )
+
+    # ==========================================================================
     # PrimeMover API Credentials
     # ==========================================================================
     pm_api_base_url: str = Field(

@@ -87,7 +87,7 @@ repos:
           - '--baseline'
           - '.secrets.baseline'
           - '--exclude-secrets'
-          - '^(password|pass|testpass|s3cret|secret123|your-password|rotated|PROXY_PASSWORD_PLACEHOLDER)$'
+          - '^(password|pass|testpass|s3cret|secret123|your-password|rotated|PROXY_PASSWORD_PLACEHOLDER|secret|key|MINIO_ACCESS_KEY|MINIO_SECRET_KEY)$'
         exclude: (package\.lock\.json|^\.secrets\.baseline$)
 
   # Full test suite, on push only.
