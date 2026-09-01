@@ -504,6 +504,39 @@ def _report_decision(request_id: str, result: Any, elapsed_ms: float) -> None:
 # ---------------------------------------------------------------------------
 
 
+def _fd_stats() -> dict[str, Any]:
+    """Open file descriptors and the soft limit the process runs under.
+
+    This is here because a file-descriptor leak in the decision function's
+    OpenAI client (fixed in bot-decision-yt) went undiagnosed for an hour: the
+    process silently crossed its 1024 fd ceiling mid-run, after which every
+    OpenAI call failed with APIConnectionError and the children/entertainment
+    filter stopped applying -- with nothing in the API, the job status, or the
+    health check to show it. Surfacing the count here turns that from forensics
+    into a glance: ``near_limit`` is the thing to watch.
+
+    Best-effort: never raises, because /health must answer even if these cannot
+    be read (a non-Linux host has no /proc/self/fd).
+    """
+    stats: dict[str, Any] = {"open": None, "soft_limit": None, "near_limit": None}
+    try:
+        stats["open"] = len(os.listdir("/proc/self/fd"))
+    except OSError:
+        pass
+    try:
+        import resource
+
+        stats["soft_limit"] = resource.getrlimit(resource.RLIMIT_NOFILE)[0]
+    except (ImportError, ValueError, OSError):
+        pass
+
+    open_n, limit = stats["open"], stats["soft_limit"]
+    if isinstance(open_n, int) and isinstance(limit, int) and limit > 0:
+        # 80% is early enough to act before calls start failing.
+        stats["near_limit"] = open_n >= 0.8 * limit
+    return stats
+
+
 @app.route("/health", methods=["GET"])
 def health():
     """Health check.
@@ -515,16 +548,20 @@ def health():
     csv_state = check_mainstream_media_csv()
     cwd = os.getcwd()
     expected_cwd = str(DECISION_DIR.resolve()) if DECISION_DIR.exists() else None
+    fds = _fd_stats()
+
+    healthy = csv_state.get("ok") and cwd == expected_cwd and not fds.get("near_limit")
 
     return jsonify(
         {
-            "status": "healthy" if csv_state.get("ok") and cwd == expected_cwd else "degraded",
+            "status": "healthy" if healthy else "degraded",
             "service": "lambda_service",
             "cwd": cwd,
             "expected_cwd": expected_cwd,
             "cwd_ok": cwd == expected_cwd,
             "decision_dir": str(DECISION_DIR),
             "mainstream_media_csv": csv_state,
+            "open_files": fds,
         }
     )
 

@@ -607,3 +607,50 @@ def test_component_validate_accepts_a_healthy_csv(tmp_path: Path, monkeypatch: p
     decision = _decision_dir(tmp_path)
 
     assert LambdaServerComponent()._validate_decision_data(decision) == []
+
+
+# ---------------------------------------------------------------------------
+# /health surfaces the file-descriptor count (round 7 fd-leak forensics)
+# ---------------------------------------------------------------------------
+#
+# A socket leak in the decision function crossed the process's 1024 fd ceiling
+# mid-run, after which every OpenAI call failed and the children/entertainment
+# filter silently stopped applying -- with nothing observable to show it.
+# /health now reports the count so the next occurrence is a glance.
+
+
+def test_health_reports_open_file_descriptors(client):
+    body = client.get("/health").get_json()
+    assert "open_files" in body
+    fds = body["open_files"]
+    # On this Linux host both are real numbers; the count is well under the limit.
+    assert isinstance(fds["open"], int) and fds["open"] > 0
+    assert isinstance(fds["soft_limit"], int) and fds["soft_limit"] > 0
+    assert fds["near_limit"] is False
+
+
+def test_health_goes_degraded_near_the_fd_ceiling(client, monkeypatch):
+    # Simulate a process about to hit the wall: near_limit must flip status,
+    # which is the whole point -- it warns before calls start failing.
+    monkeypatch.setattr(
+        server,
+        "_fd_stats",
+        lambda: {
+            "open": 1000,
+            "soft_limit": 1024,
+            "near_limit": True,
+        },
+    )
+    body = client.get("/health").get_json()
+    assert body["status"] == "degraded"
+    assert body["open_files"]["near_limit"] is True
+
+
+def test_fd_stats_never_raises(monkeypatch):
+    # /health must answer even if the fd counters cannot be read (e.g. no
+    # /proc). Force the read to fail and confirm a shaped result, not an
+    # exception.
+    monkeypatch.setattr(server.os, "listdir", lambda p: (_ for _ in ()).throw(OSError("no /proc")))
+    stats = server._fd_stats()
+    assert stats["open"] is None
+    assert stats["near_limit"] is None
