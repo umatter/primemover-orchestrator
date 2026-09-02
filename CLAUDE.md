@@ -165,10 +165,13 @@ applies.
 - `orchestrator/components/manager.py` - Orchestrates API (Docker), Runner (native Java), Monitoring (Docker)
 - `orchestrator/components/lambda_server.py` - Local Lambda server lifecycle (subprocess)
 - `orchestrator/lambda_service/server.py` - Flask wrapper around the decision function
+- `orchestrator/clients/` - Service clients: `api.py` (PrimeMover API), `loki.py` (log queries), `cloudwatch.py` (Lambda logs)
 - `orchestrator/logs/aggregator.py` - Unified log interface across Loki, files, HAR, CloudWatch
+- `orchestrator/logs/parsers/` - Log parsers: `laravel.py` (API), `runner.py` (Java runner)
 - `orchestrator/tracing/trace_builder.py` - Reconstructs execution traces as hierarchical `TraceSpan` trees
 - `orchestrator/debug/job_debugger.py` - Multi-source job diagnostics
-- `orchestrator/mcp_server/server.py` - FastMCP server with all tools
+- `orchestrator/mcp_server/server.py` - FastMCP server with all tools (stdio + HTTP transport)
+- `experiment_designer/cli.py` - `pmspec` Click CLI entry point
 - `experiment_designer/spec/converter.py` - YAML-to-JSON conversion pipeline
 - `experiment_designer/spec/design_expander.py` - Factorial design expansion
 - `experiment_designer/spec/job_registry.py` - Job type definitions and validation
@@ -510,7 +513,7 @@ def my_command(ctx: click.Context, time_range: str) -> None:
 
 ### MCP Tools
 
-MCP tools in `orchestrator/mcp_server/server.py` use `@mcp.tool()` decorator and return `json.dumps(...)`. The orchestrator MCP server is the single consolidated server for all PrimeMover operations (the API repo's MCP server is deprecated).
+MCP tools in `orchestrator/mcp_server/server.py` use `@mcp.tool()` decorator and return `json.dumps(...)`. The orchestrator MCP server is the single consolidated server for all PrimeMover operations (the API repo's MCP server is deprecated). The server supports two transport modes: stdio (default, for Claude Code local use) and HTTP (`--http --port 8100`, for remote access via SSH tunnel).
 
 There are **read/observe** tools (unprefixed: `list_experiments`, `list_crawlers`, `list_queues`, `list_library`, `get_*`, `trace_*`, `find_failed_executions`, `query_logs`, `list_job_types`, …) and **write/control** tools (`pm_` prefix: `pm_create_experiment`, `pm_add_bot`, `pm_create_run`, `pm_add_job`, `pm_set_behaviour`, `pm_activate_run`, `pm_delete`, and the composite `pm_compose_run`).
 
@@ -732,6 +735,8 @@ See `docs/experiment-designer.md` for full documentation.
 - Custom markers: `@pytest.mark.e2e`, `@pytest.mark.multilogin`
 - Mock external services (API, Loki, CloudWatch) in unit tests
 - Shared fixtures in `orchestrator/tests/conftest.py`: `cli_runner`, `mock_settings`, `mock_httpx_client`, `sample_log_entries`
+- `experiment_designer/tests/` has no conftest.py; its tests are self-contained
+- CI runs tests + lint + type-check on Python 3.10, 3.11, 3.12 (`.github/workflows/ci.yml`)
 
 ### CI across the ecosystem
 
@@ -785,6 +790,8 @@ Non-obvious constraints, each of which cost a red build to find:
 - **Ruff rules**: E, F, W, I, N, UP, B, C4 (E501 ignored)
 - **Target Python**: 3.10+
 - **Pre-commit hooks**: trailing whitespace, black, ruff, mypy, detect-secrets (`.secrets.baseline`)
+- **`make check`** runs in order: format → lint → typecheck → test (all must pass)
+- **Branch**: `master` is the main branch; PRs target `master`
 
 ## Environment
 

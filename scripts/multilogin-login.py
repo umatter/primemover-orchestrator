@@ -224,18 +224,22 @@ def get_credentials_from_env() -> tuple[str, str]:
     email = os.environ.get("MLX_EMAIL", "")
     password = os.environ.get("MLX_PASSWORD", "")
 
-    # Also check the runner config as fallback
+    # Also check the runner config as fallback. The user lives in the tracked
+    # application.properties; the password in the gitignored secrets.properties,
+    # which application.properties imports and which overrides it -- so read
+    # secrets.properties last and let it win.
+    env_email, env_password = email, password
     if not email or not password:
-        config_file = Path(
-            "/home/primemover/primemover_runner/primemover-runner/config/application.properties"
-        )
-        if config_file.exists():
-            content = config_file.read_text()
-            for line in content.splitlines():
-                if line.startswith("multilogin.apiUser=") and not email:
-                    email = line.split("=", 1)[1].strip()
-                elif line.startswith("multilogin.apiPassword=") and not password:
-                    password = line.split("=", 1)[1].strip()
+        config_dir = Path("/home/primemover/primemover_runner/primemover-runner/config")
+        for name in ("application.properties", "secrets.properties"):
+            config_file = config_dir / name
+            if not config_file.exists():
+                continue
+            for line in config_file.read_text().splitlines():
+                if line.startswith("multilogin.apiUser=") and not env_email:
+                    email = line.split("=", 1)[1].strip() or email
+                elif line.startswith("multilogin.apiPassword=") and not env_password:
+                    password = line.split("=", 1)[1].strip() or password
 
     return email, password
 
