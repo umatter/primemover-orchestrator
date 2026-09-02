@@ -174,6 +174,17 @@ mechanism is ownership isolation:
   with it. See `primemover_api` `app/Access/Isolation.php`
   (`isServiceAccount` / `enabled`).
 
+**Status on ex63 (verified 2026-09-02): the partitioning is already active.**
+`primemover.isolation.enabled` is true, no service accounts are configured
+(`service_account_ids` is empty), and the runner authenticates as
+`admin@primemover.example` (user id 1). So the current runner already sees **only user 1's
+experiments**, not everything -- a second runner authenticating as a different
+user with its own experiments partitions cleanly with no code change. Corollary:
+an experiment created under any other owner will **not** run unless a runner
+authenticates as that owner (three older experiments owned by users 2/5/6 are
+already invisible to the ex63 runner this way; they are done or past-dated, so
+nothing is actively stranded -- but it shows the boundary is real).
+
 If you would rather not partition by owner, the alternative is an atomic claim in
 the API (`UPDATE ... WHERE processing = 0` returning affected rows, or
 `SELECT ... FOR UPDATE`) so a queue is claimed by exactly one runner. That is an
