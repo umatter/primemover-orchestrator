@@ -131,3 +131,66 @@ These are hostname/account values, expected to differ per deployment: the MinIO
 endpoint (`s3.qamelab.org`), the Multilogin folder id, the Traefik edge configs
 (`*.qamelab.org`, tailnet IPs) under `infrastructure/traefik/` and the ex63
 compose overlays. None require code changes — they are configuration.
+
+## Adding a runner-only box (horizontal scaling)
+
+If ex63's compute is the limit but the rest of the stack is fine, you can add a
+second (tailnet) server that runs **only** the runner + Multilogin X + a local
+Lambda, sharing ex63's API, database, MinIO and monitoring. You do **not** need
+to redeploy the control plane.
+
+### Topology
+
+| component | where | how |
+|---|---|---|
+| runner (Java) | new box | `backend.endpoint.api` → ex63's API over the tailnet |
+| Multilogin X (`mlxapp`) | new box | its own `DISPLAY=:1`, logged in |
+| local Lambda + `bot-decision-yt` | new box | own checkout, symlink (§3), `OPENAI_API_KEY` — keeps decisions off the network |
+| API + MySQL + Grafana/Loki | **shared (ex63)** | reachable over the tailnet |
+| MinIO job data | **shared (ex63)** | `awsS3.endpoint = s3.qamelab.org`; the key namespace is flat and job-id-keyed, so two runners never collide |
+
+So you install §1, §3, §4 (runner-side config + the local Lambda), §5 (the MinIO
+key), §6 (proxies) and the `primemover-runner` / `primemover-lambda` /
+`multilogin-*` systemd units on the new box — and skip the API/DB/monitoring.
+
+### The hard requirement: partition the work
+
+`crawlers-unprocessed` is a plain `WHERE processed = 0` select with **no atomic
+claim**. Two runners pointed at the same API with the same visibility will both
+fetch the same queues and both run every job — doubling and corrupting the data.
+Before adding a second runner you must partition the work. The built-in
+mechanism is ownership isolation:
+
+- That query is wrapped in `visibleTo()`, which scopes results to the
+  authenticated user's own experiments — **unless the account bypasses
+  isolation** (a service account, or `Isolation` disabled), which sees
+  everything.
+- **Safe pattern:** run each runner as a **distinct regular user account** with
+  isolation **enabled**, and assign each experiment to the owner whose runner
+  should execute it. Each runner then sees only its own slice — no double
+  processing, no code change.
+- **Check first:** confirm ex63's current runner is not on a service account (or
+  with isolation off) that sees everything — otherwise a second runner collides
+  with it. See `primemover_api` `app/Access/Isolation.php`
+  (`isServiceAccount` / `enabled`).
+
+If you would rather not partition by owner, the alternative is an atomic claim in
+the API (`UPDATE ... WHERE processing = 0` returning affected rows, or
+`SELECT ... FOR UPDATE`) so a queue is claimed by exactly one runner. That is an
+API change and does not exist today.
+
+### Multilogin limits are per workspace, not per box
+
+If both runners use the **same** Multilogin account they share the 50
+operations/minute profile-create limit and the ~1000-profile quota, and the
+profile-create batcher is per process — two batchers can collectively exceed the
+rate limit even though each clamps at 10. Options: give the second box its **own
+Multilogin workspace** (its different folder id is pure config —
+`multilogin.defaultFolderId`, §4), or stagger launches across the two boxes.
+
+### Verify on the new box
+
+`orchestrator doctor` still helps even without the full stack: it checks Docker,
+Java, the decision symlink, the job-data store reachability and the systemd
+units. The API/port checks will show the API as remote (not local) — that is
+expected for a runner-only box.
