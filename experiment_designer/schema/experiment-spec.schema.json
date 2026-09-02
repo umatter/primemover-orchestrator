@@ -247,14 +247,12 @@
       "description": "Algorithm parameters",
       "properties": {
         "pi": {
-          "type": "number",
-          "description": "Political orientation parameter",
-          "minimum": -1,
-          "maximum": 1
+          "enum": [0, 1],
+          "description": "Treatment switch, NOT an intensity. Read by the decision function as int(round(x))==1, so use only 0 or 1 (0.5 rounds to 0 and silently disables the arm)."
         },
         "psi": {
-          "type": "number",
-          "description": "Psi parameter"
+          "enum": [0, 1],
+          "description": "Treatment switch (0 or 1 only; see pi)."
         },
         "alpha": {
           "type": "number",
@@ -263,12 +261,12 @@
           "maximum": 1
         },
         "tau": {
-          "type": "number",
-          "description": "Tau parameter"
+          "enum": [0, 1],
+          "description": "Treatment switch (0 or 1 only; see pi)."
         },
         "kappa": {
-          "type": "number",
-          "description": "Kappa parameter"
+          "enum": [0, 1],
+          "description": "Treatment switch (0 or 1 only; see pi)."
         },
         "beta": {
           "type": "number",
@@ -497,6 +495,21 @@
             {"$ref": "#/definitions/scrollLengthOptions"}
           ],
           "description": "Scroll by pixel amount"
+        },
+        "try_scroll": {
+          "oneOf": [
+            {"type": "integer"},
+            {"type": "string"},
+            {"$ref": "#/definitions/scrollOptions"}
+          ],
+          "description": "Best-effort scroll by duration (does not fail the job on error)"
+        },
+        "try_scroll_length": {
+          "oneOf": [
+            {"type": "integer"},
+            {"$ref": "#/definitions/scrollLengthOptions"}
+          ],
+          "description": "Best-effort scroll by pixel amount (does not fail the job on error)"
         },
         "lambda_select": {
           "$ref": "#/definitions/lambdaSelectOptions",

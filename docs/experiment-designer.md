@@ -243,10 +243,29 @@ templates:
     - wait: 10s
 
 # Factorial Design Definition
+#
+# ⚠️ Treatment params are 0/1 SWITCHES, not intensities.
+# `configuration.params.pi`, `.psi`, `.kappa` and `.tau` are read by the decision
+# function as `int(round(x)) == 1`, so ONLY 0 or 1 are meaningful. A fractional
+# value such as 0.5 rounds to 0 (Python rounds half-to-even) and *silently*
+# disables the arm it looks like it configures -- there is no error. A factor that
+# toggles such a param must therefore have 0/1 levels; a multi-level factor cannot
+# map to a single switch (map it to preferences or search terms instead). The
+# validator now rejects non-0/1 values for these four params.
 design:
   type: factorial
 
   factors:
+    # A 2-level treatment factor toggling a 0/1 switch param (the correct shape).
+    mainstream_media_aversion:
+      levels: [control, treated]
+      maps_to:
+        configuration.params.pi:
+          control: 0
+          treated: 1
+
+    # A multi-level factor drives non-switch levers (preferences, search terms),
+    # NOT a 0/1 param.
     political_orientation:
       levels: [left, center, right]
       maps_to:
@@ -255,11 +274,6 @@ design:
           left: "1"
           center: "0"
           right: "-1"
-        # Map to algorithm parameters
-        configuration.params.pi:
-          left: -0.5
-          center: 0
-          right: 0.5
         # Map to search terms (for variable substitution)
         initial_search:
           left: "progressive politics news"
@@ -281,7 +295,7 @@ design:
 # Crawler Template (expanded by design)
 crawlers:
   - from_design: true
-    name: "yt_{political_orientation}_{starting_content}_{replica:02d}"
+    name: "yt_{mainstream_media_aversion}_{political_orientation}_{starting_content}_{replica:02d}"
     description: "YouTube bot studying recommendation pathways"
     active: true
     testing: false

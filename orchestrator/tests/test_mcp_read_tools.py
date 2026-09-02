@@ -1577,25 +1577,29 @@ class TestGetSpecTemplate:
         assert "name" in spec["experiment"]
         assert isinstance(spec["crawlers"], list) and spec["crawlers"]
 
-    def test_youtube_template_is_currently_not_valid_yaml(self, no_network):
-        """Pins a live bug so it cannot be forgotten -- see the report accompanying
-        this file.
+    def test_youtube_template_is_valid_and_uses_switch_params(self, no_network):
+        """The youtube template must parse, validate, and demonstrate correct 0/1
+        switch params.
 
-        The youtube template's workflow contains::
-
-            - repeat: 5
-                template: watch_and_recommend
-
-        The over-indented ``template:`` key makes the whole document unparseable
-        ("mapping values are not allowed here"), so a model handed this template as a
-        starting point produces a spec that ``pmspec validate`` cannot even load. When
-        the template is fixed, this test will fail and should be folded back into
-        ``test_templates_are_parseable_yaml_with_the_expected_skeleton``.
+        Formerly this pinned two bugs: an over-indented ``template:`` under
+        ``repeat`` that made the document unparseable, and a
+        ``params.pi: {left: -0.5, center: 0, right: 0.5}`` mapping that rounds to
+        three identical control arms. Both are fixed; this now guards against
+        regressing either.
         """
-        template = json.loads(s.get_spec_template("youtube"))["template"]
+        from experiment_designer.spec.validator import SpecValidator
 
-        with pytest.raises(yaml.YAMLError):
-            yaml.safe_load(template)
+        template = json.loads(s.get_spec_template("youtube"))["template"]
+        spec = yaml.safe_load(template)  # must not raise
+
+        result = SpecValidator().validate(spec)
+        assert result.valid, result.errors
+
+        # Any params.pi mapping in the template must be a 0/1 switch, never fractional.
+        for factor in spec["design"]["factors"].values():
+            pi_map = factor.get("maps_to", {}).get("params.pi")
+            if pi_map:
+                assert set(pi_map.values()) <= {0, 1}
 
     def test_the_three_templates_are_actually_different(self, no_network):
         bodies = {

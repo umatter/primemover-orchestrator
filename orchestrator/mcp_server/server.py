@@ -2442,18 +2442,20 @@ templates:
 design:
   type: factorial
   factors:
-    political_orientation:
-      levels: [left, center, right]
+    # Treatment params (pi/psi/kappa/tau) are 0/1 SWITCHES, read by the decision
+    # function as int(round(x))==1 -- use ONLY 0 or 1. A fractional value such as
+    # 0.5 rounds to 0 and silently disables the treatment arm.
+    mainstream_media_aversion:
+      levels: [control, treated]
       maps_to:
         params.pi:
-          left: -0.5
-          center: 0
-          right: 0.5
+          control: 0
+          treated: 1
   replications: 3
 
 crawlers:
   - from_design: true
-    name: "yt_{political_orientation}_{replica:02d}"
+    name: "yt_{mainstream_media_aversion}_{replica:02d}"
     description: "YouTube bot"
 
     configuration:
@@ -2477,7 +2479,7 @@ crawlers:
         - wait: 5s
         - template: cookie_consent
         - repeat: 5
-            template: watch_and_recommend
+          template: watch_and_recommend
 """,
         "google": """# Google Search Experiment
 version: "1.0"

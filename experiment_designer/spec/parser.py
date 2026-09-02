@@ -411,6 +411,8 @@ class SpecParser:
             "try_type",
             "scroll",
             "scroll_length",
+            "try_scroll",
+            "try_scroll_length",
             "lambda_select",
             "single_select",
             "single_select_url",
@@ -523,7 +525,7 @@ class SpecParser:
             else:
                 self.errors.append("'type' job requires dict with 'text' and 'selector'")
 
-        elif job_type == "scroll":
+        elif job_type in ["scroll", "try_scroll"]:
             duration = (
                 self._parse_duration(value)
                 if isinstance(value, (str, int))
@@ -538,7 +540,7 @@ class SpecParser:
                 }
             )
 
-        elif job_type == "scroll_length":
+        elif job_type in ["scroll_length", "try_scroll_length"]:
             if isinstance(value, dict):
                 job["behaviors"] = self._make_behaviors(
                     {
