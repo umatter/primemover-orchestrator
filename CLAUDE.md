@@ -591,6 +591,48 @@ An SSH tunnel to `127.0.0.1:8100` still works for a one-off and needs the same
 token. Adding another MCP server to the host is a second router/middleware/
 service triple in `mcp.yml` with its own prefix and its own token.
 
+### Composing as a specific user (personal MCP identity)
+
+The shared MCP (`primemover-mcp.service`) authenticates to the API with **one**
+identity — `admin@primemover.example` (user 1) from the repo `.env` — regardless of which
+person's bearer token calls it. Since user 1 is a **service account** (see "Error
+& warning handling" and `docs/new-server-setup.md` — `service_account_ids=[1]`),
+it bypasses isolation and sees everything, and everything it composes is
+**owned by user 1**, so it is invisible to individual researcher logins (users
+2/3/5/6/7, who each see only their own experiments).
+
+To have your MCP-composed experiments **owned by, and visible only to, your own
+login** — while the runner still executes them — run a *personal* stdio MCP that
+authenticates as your user. It must run **on ex63**, because the write-guard
+(`_require_local_write_target`) requires the API target to be `localhost:8090`; a
+laptop-run MCP would point at the remote API and be refused.
+
+- Launcher (on ex63): `/home/primemover/.config/primemover/mcp-as-identity.sh
+  <creds-file>` — sources the repo `.env`, then the creds file **last** so its
+  `PM_API_EMAIL`/`PM_API_PASSWORD` override the shared admin identity while
+  `PM_API_BASE_URL` (=`localhost:8090`, guard-satisfying) still comes from `.env`.
+  Order matters: `mcp-server.sh` sources `.env` internally, so pre-set env vars do
+  **not** survive — the override has to come after.
+- Creds file: a **mode-600** file (e.g. `~/.config/primemover/mcp-<name>.env`)
+  exporting your `PM_API_EMAIL` and `PM_API_PASSWORD`. Same trust boundary as the
+  admin creds already in `.env` — anyone who is `primemover`/root on the box can
+  read it.
+- Register on the laptop (runs the launcher over SSH; no secret leaves ex63):
+  ```bash
+  claude mcp add --scope user primemover-me -- \
+    ssh primemover@<ex63-tailnet-ip> \
+    /home/primemover/.config/primemover/mcp-as-identity.sh \
+    /home/primemover/.config/primemover/mcp-<name>.env
+  ```
+
+Consequences: as a **regular** (non-service) user, your MCP's read tools
+(`list_experiments`, `query_logs`, `trace_*`) are **scoped to you** — keep the
+shared HTTP MCP or the CLI for cross-user/admin visibility. And a runner must
+authenticate as your user to run your experiments: today ex63's service-account
+runner runs everything, but once user 1 is de-service-accounted for runner
+partitioning (see `docs/new-server-setup.md` "The hard requirement"), route your
+experiments to a runner that authenticates as you (e.g. the second/VM runner).
+
 ### Adding a New Log Parser
 
 1. Create parser in `orchestrator/logs/parsers/`
