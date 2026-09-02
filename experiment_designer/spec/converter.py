@@ -16,6 +16,12 @@ from .design_expander import DesignExpander
 from .parser import ParsedSpec, SpecParser
 from .time_utils import parse_relative_time
 
+# The params the API contract defines explicit columns for; everything else in a
+# spec's params block is passed through untouched (see _convert_configuration).
+_STANDARD_PARAM_KEYS = frozenset(
+    {"pi", "psi", "alpha", "tau", "kappa", "beta", "active", "search_terms", "media_outlet_urls"}
+)
+
 
 @dataclass
 class ConversionResult:
@@ -247,9 +253,16 @@ class SpecConverter:
             "active": 1,  # API expects integer for configuration.active
         }
 
-        # Convert params
+        # Convert params. The standard keys are always emitted with defaults so the
+        # API/runner/decision-function contract is satisfied. Any additional keys
+        # are passed through rather than dropped, so a spec can carry experiment-
+        # specific treatment config forward (the validator warns that the current
+        # typed pipeline does not yet deliver such keys; the generic channel is the
+        # flexible-treatment work). Standard keys win over passthrough.
         params = config.get("params", {})
+        extra = {k: v for k, v in params.items() if k not in _STANDARD_PARAM_KEYS}
         api_config["params"] = {
+            **extra,
             "pi": params.get("pi", 0),
             "psi": params.get("psi", 0),
             "alpha": params.get("alpha", 1),

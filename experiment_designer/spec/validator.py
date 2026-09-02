@@ -68,6 +68,29 @@ class SpecValidator:
         "lambda_select": {"linkValue": ("function", "link_value")},
     }
 
+    # The decision function reads these four as int(round(x)) == 1, so they are
+    # binary switches, not intensities: 0.5 rounds to 0 and silently disables the
+    # arm. See CLAUDE.md and docs/integration-contract.md.
+    _SWITCH_PARAMS: tuple[str, ...] = ("pi", "psi", "kappa", "tau")
+
+    # Params the current converter/API/runner/decision-function pipeline actually
+    # carries. Anything else survives the DSL but is dropped downstream today, so
+    # it is warned about rather than silently lost. (Making this channel generic
+    # is the "flexible treatment" work; until then, unknown keys do not arrive.)
+    _KNOWN_PARAMS: frozenset[str] = frozenset(
+        {
+            "pi",
+            "psi",
+            "kappa",
+            "tau",
+            "alpha",
+            "beta",
+            "active",
+            "search_terms",
+            "media_outlet_urls",
+        }
+    )
+
     def __init__(self, schema_path: str | None = None):
         """
         Initialize validator.
@@ -145,7 +168,77 @@ class SpecValidator:
         errors.extend(ref_errors)
         warnings.extend(ref_warnings)
 
+        # 7. Treatment-param validation (0/1 switch semantics + unknown-key drops)
+        switch_errors, switch_warnings = self._validate_treatment_params(spec)
+        errors.extend(switch_errors)
+        warnings.extend(switch_warnings)
+
         return ValidationResult(valid=len(errors) == 0, errors=errors, warnings=warnings, info=info)
+
+    @staticmethod
+    def _is_switch_value(value: Any) -> bool:
+        """True only for a numeric 0 or 1 (the two meaningful switch values)."""
+        if isinstance(value, bool):
+            return True  # True/False == 1/0
+        try:
+            return float(value) in (0.0, 1.0)
+        except (TypeError, ValueError):
+            return False
+
+    def _validate_treatment_params(self, spec: dict[str, Any]) -> tuple[list[str], list[str]]:
+        """Validate treatment params: pi/psi/kappa/tau are 0/1 switches, and any
+        param outside the pipeline's known set is dropped downstream (warn).
+
+        Checks both the design's ``maps_to`` level values and each crawler's
+        direct ``configuration.params``. This is the one guard that catches the
+        classic ``{left: -0.5, center: 0, right: 0.5}`` mistake, where every level
+        rounds to 0 and the "treatment" is three identical control arms.
+        """
+        errors: list[str] = []
+        warnings: list[str] = []
+
+        design = spec.get("design") or {}
+        for fname, fdef in (design.get("factors") or {}).items():
+            for path, level_map in (fdef.get("maps_to") or {}).items():
+                parts = str(path).split(".")
+                leaf = parts[-1]
+                if not isinstance(level_map, dict):
+                    continue
+                if leaf in self._SWITCH_PARAMS:
+                    for level, value in level_map.items():
+                        if not self._is_switch_value(value):
+                            errors.append(
+                                f"design.factors.{fname}.maps_to.{path}: level '{level}' -> "
+                                f"{value!r} is not a 0/1 switch value. '{leaf}' is read as "
+                                "int(round(x))==1, so only 0 or 1 are meaningful (e.g. 0.5 "
+                                "rounds to 0 and silently disables the treatment arm)."
+                            )
+                elif "params" in parts and leaf not in self._KNOWN_PARAMS:
+                    warnings.append(
+                        f"design.factors.{fname}.maps_to.{path}: '{leaf}' is not carried by the "
+                        "current API/runner/decision-function pipeline and will be dropped "
+                        "downstream, so it will not reach the decision function."
+                    )
+
+        for i, crawler in enumerate(spec.get("crawlers", [])):
+            params = (crawler.get("configuration") or {}).get("params")
+            if not isinstance(params, dict):
+                continue
+            for key, value in params.items():
+                if key in self._SWITCH_PARAMS:
+                    if not self._is_switch_value(value):
+                        errors.append(
+                            f"crawler[{i}].configuration.params.{key}: {value!r} is not 0 or 1 "
+                            f"('{key}' is a switch read as int(round(x))==1; 0.5 rounds to 0)."
+                        )
+                elif key not in self._KNOWN_PARAMS:
+                    warnings.append(
+                        f"crawler[{i}].configuration.params.{key}: unknown parameter; the current "
+                        "pipeline only carries the standard params and will drop this key, so it "
+                        "will not reach the decision function."
+                    )
+
+        return errors, warnings
 
     def _validate_schema(self, spec: dict[str, Any]) -> list[str]:
         """Validate against JSON Schema."""
@@ -370,6 +463,8 @@ class SpecValidator:
             "try_type",
             "scroll",
             "scroll_length",
+            "try_scroll",
+            "try_scroll_length",
             "lambda_select",
             "single_select",
             "single_select_url",
@@ -382,6 +477,82 @@ class SpecValidator:
         for job_type in job_types:
             if job_type in item:
                 self._validate_job_shorthand(job_type, item[job_type], prefix, errors, warnings)
+
+    def _strategy_schema(self, strategy: str) -> dict[str, Any] | None:
+        """Load a decision strategy's JSON schema from the sibling bot-decision-yt.
+
+        Soft dependency: the orchestrator does not hard-require the decision repo
+        to be checked out, so a missing schema returns None (the caller warns and
+        skips) rather than failing validation. Tries the decision symlink first
+        (the canonical pointer), then the sibling path.
+        """
+        repo_root = Path(__file__).resolve().parents[2]
+        candidates = [
+            repo_root
+            / "orchestrator"
+            / "lambda_service"
+            / "decision"
+            / "strategies"
+            / f"{strategy}.schema.json",
+            repo_root.parent
+            / "bot-decision-yt"
+            / "bot-decision-EN"
+            / "strategies"
+            / f"{strategy}.schema.json",
+        ]
+        for path in candidates:
+            try:
+                if path.is_file():
+                    loaded: dict[str, Any] = json.loads(path.read_text())
+                    return loaded
+            except (OSError, json.JSONDecodeError):
+                continue
+        return None
+
+    def _validate_lambda_select_treatment(
+        self, value: dict[str, Any], prefix: str, errors: list[str], warnings: list[str]
+    ) -> None:
+        """Validate a lambda_select job's behaviours-channel treatment.
+
+        The behaviours channel activates only when a ``strategy`` marker is present
+        (matching the decision function's gate). When it is, the ``treatment``
+        block is validated against that strategy's schema; when a ``treatment`` is
+        set without a ``strategy``, it will be silently ignored downstream, so warn.
+        """
+        strategy = value.get("strategy")
+        treatment = value.get("treatment")
+
+        if not strategy:
+            if isinstance(treatment, dict) and treatment:
+                warnings.append(
+                    f"{prefix}.lambda_select: 'treatment' is set but 'strategy' is not; "
+                    "without a strategy marker the decision function ignores it and falls "
+                    "back to the legacy selectionConfiguration."
+                )
+            return
+
+        schema = self._strategy_schema(str(strategy))
+        if schema is None:
+            warnings.append(
+                f"{prefix}.lambda_select: cannot validate treatment for strategy "
+                f"'{strategy}' -- its schema was not found (is bot-decision-yt checked out "
+                "and the decision symlink present?); skipping treatment validation."
+            )
+            return
+
+        if not HAS_JSONSCHEMA:
+            return
+
+        config = dict(treatment) if isinstance(treatment, dict) else {}
+        config["strategy"] = strategy
+        try:
+            jsonschema.validate(config, schema)
+        except jsonschema.ValidationError as exc:
+            location = ".".join(str(part) for part in exc.absolute_path) or "(root)"
+            errors.append(
+                f"{prefix}.lambda_select.treatment: invalid for strategy '{strategy}' "
+                f"at {location}: {exc.message}"
+            )
 
     def _validate_job_shorthand(
         self, job_type: str, value: Any, prefix: str, errors: list[str], warnings: list[str]
@@ -418,6 +589,7 @@ class SpecValidator:
                     errors.append(f"{prefix}.lambda_select: 'task' is required")
                 if not value.get("function") and not value.get("link_value"):
                     errors.append(f"{prefix}.lambda_select: 'function' or 'link_value' is required")
+                self._validate_lambda_select_treatment(value, prefix, errors, warnings)
             else:
                 errors.append(f"{prefix}.lambda_select: must be an object")
 

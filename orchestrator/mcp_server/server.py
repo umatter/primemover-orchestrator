@@ -12,6 +12,7 @@ import threading
 import time
 from collections.abc import Callable
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any
 
 from orchestrator import status
@@ -2374,7 +2375,10 @@ def get_job_type_schema(job_type: str) -> str:
     Get detailed schema for a specific job type.
 
     Args:
-        job_type: Job type name (e.g., 'visit', 'click', 'type', 'scroll')
+        job_type: Either the DSL yaml_name ('visit', 'scroll') or the API type
+            ('visitjob', 'scrollbydurationjob'). Both are accepted -- the DSL uses
+            yaml_name, while the pm_add_job / pm_compose_run write tools take the
+            api_type, so this looks up by either to avoid that namespace trap.
 
     Returns:
         JSON with detailed job schema including behavior descriptions
@@ -2385,9 +2389,13 @@ def get_job_type_schema(job_type: str) -> str:
         return json.dumps({"error": f"experiment_designer not available: {e}"})
 
     schema = JobRegistry.get_schema(job_type)
+    if not schema:
+        # Fall back to an api_type lookup so callers holding the write-tool name
+        # (e.g. 'visitjob') still resolve.
+        schema = next((j for j in JobRegistry.list_all() if j.api_type == job_type), None)
 
     if not schema:
-        available = [j.yaml_name for j in JobRegistry.list_all()]
+        available = [f"{j.yaml_name} ({j.api_type})" for j in JobRegistry.list_all()]
         return json.dumps({"error": f"Unknown job type: {job_type}", "available_types": available})
 
     behaviors = []
@@ -2489,18 +2497,20 @@ templates:
 design:
   type: factorial
   factors:
-    political_orientation:
-      levels: [left, center, right]
+    # Treatment params (pi/psi/kappa/tau) are 0/1 SWITCHES, read by the decision
+    # function as int(round(x))==1 -- use ONLY 0 or 1. A fractional value such as
+    # 0.5 rounds to 0 and silently disables the treatment arm.
+    mainstream_media_aversion:
+      levels: [control, treated]
       maps_to:
         params.pi:
-          left: -0.5
-          center: 0
-          right: 0.5
+          control: 0
+          treated: 1
   replications: 3
 
 crawlers:
   - from_design: true
-    name: "yt_{political_orientation}_{replica:02d}"
+    name: "yt_{mainstream_media_aversion}_{replica:02d}"
     description: "YouTube bot"
 
     configuration:
@@ -2524,7 +2534,7 @@ crawlers:
         - wait: 5s
         - template: cookie_consent
         - repeat: 5
-            template: watch_and_recommend
+          template: watch_and_recommend
 """,
         "google": """# Google Search Experiment
 version: "1.0"
@@ -2850,6 +2860,119 @@ def get_current_settings() -> str:
             "pm_api_base_url": settings.pm_api_base_url,
             "lambda_function_name": settings.lambda_function_name,
         }
+    )
+
+
+def _read_repo_doc(*relative_parts: str) -> str:
+    """Read a doc file from the repo, for serving over MCP.
+
+    The design knowledge an agent needs to build a *valid* experiment lives in the
+    repo docs; an agent connected only to the MCP (no checkout) cannot see them.
+    These resources close that gap. The server process has the repo, so it reads
+    and returns the file content.
+    """
+    repo_root = Path(__file__).resolve().parents[2]
+    path = repo_root.joinpath(*relative_parts)
+    try:
+        return path.read_text(encoding="utf-8")
+    except OSError as e:
+        return f"(could not read {'/'.join(relative_parts)}: {e})"
+
+
+@mcp.resource("doc://experiment-designer")
+def doc_experiment_designer() -> str:
+    """The experiment-designer YAML DSL reference (factors, maps_to, distributions,
+    data pools, templates, job types, relative timestamps)."""
+    return _read_repo_doc("docs", "experiment-designer.md")
+
+
+@mcp.resource("doc://integration-contract")
+def doc_integration_contract() -> str:
+    """The cross-component integration contract, including the status vocabulary
+    (§3.4) and the decision-function degradation contract (§7.3)."""
+    return _read_repo_doc("docs", "integration-contract.md")
+
+
+@mcp.resource("doc://treatment-params")
+def doc_treatment_params() -> str:
+    """How treatment is expressed today, and the traps to avoid.
+
+    Distilled and stable (does not depend on grepping CLAUDE.md) so an MCP-only
+    agent designing an experiment has the semantics, not just the tools.
+    """
+    return (
+        "# Treatment parameters and decision-function semantics\n"
+        "\n"
+        "## pi / psi / kappa / tau are 0/1 SWITCHES, not intensities\n"
+        "The decision function reads each as `int(round(x)) == 1`. Use ONLY 0 or 1.\n"
+        "A fractional value such as 0.5 rounds to 0 (Python rounds half-to-even) and\n"
+        "SILENTLY disables the arm it looks like it configures -- no error anywhere.\n"
+        "A control crawler is `pi = psi = kappa = tau = 0`. A factor that toggles a\n"
+        "switch must have 0/1 levels; a multi-level factor cannot map to one switch\n"
+        "(map it to preferences or search terms instead). `validate_experiment_spec`\n"
+        "now errors on non-0/1 switch values.\n"
+        "\n"
+        "## These four names are one study's design, not the framework\n"
+        "They are specific to the YouTube personalization study (the `youtube_v1`\n"
+        "strategy). The general model: the lambda (decision function) decides, driven\n"
+        "by a per-experiment STRATEGY -- LLM-driven or parameters + a decision function.\n"
+        "\n"
+        "## Treatment via the behaviours channel (the generic path)\n"
+        "A lambda_select job can carry a `strategy` (which decision logic runs) and a\n"
+        "`treatment` block (its config); both become job behaviours the decision\n"
+        "function reads. The channel activates ONLY when `strategy` is present -- a\n"
+        "`treatment` without a `strategy` is ignored (validator warns), and legacy specs\n"
+        "with no `strategy` keep reading the old selectionConfiguration params. Example:\n"
+        "  - lambda_select:\n"
+        "      task: youtube_video_select\n"
+        "      function: bot-decision-yt\n"
+        "      strategy: youtube_v1\n"
+        "      treatment: {pi: 1, tau: 0}\n"
+        "`treatment` is validated against strategies/<strategy>.schema.json in\n"
+        "bot-decision-yt (youtube_v1 still enforces 0/1 on pi/psi/kappa/tau).\n"
+        "\n"
+        "## cookie_pref / consent is a treatment the runner acts on (runner PR #61)\n"
+        "The runner answers cookie/GDPR dialogs per the bot's `cookie_pref`\n"
+        "(`{accept_all: true}` -> 'Accept all', `false` -> 'Reject all'), overridable\n"
+        "per job with the `consent` behaviour (`accept | reject | ignore`). 'Reject\n"
+        "all' switches off the signed-out personalisation a study measures -- choose\n"
+        "it deliberately. Appears only from a CH/EU exit IP.\n"
+        "\n"
+        "## The decision returns HTTP 200 even when degraded -- read the report\n"
+        "Three fields (full contract: doc://integration-contract §7.3):\n"
+        "- `degraded`: a requested filter failed to apply, or nothing could be\n"
+        "  selected -> 'a human should look'.\n"
+        "- `treatment_lost`: degraded AND nothing requested applied -> 'this session's\n"
+        "  data is void' (the only alarm). Computed once, at the source.\n"
+        "- `selection_mode`: description only; `random` = no LLM rating informed the\n"
+        "  pick. NEVER alert on it -- a control crawler correctly draws at random.\n"
+    )
+
+
+@mcp.resource("doc://capacity")
+def doc_capacity() -> str:
+    """Parallel-bot capacity and scheduling constraints for designing runs."""
+    return (
+        "# Capacity & scheduling constraints (for run design)\n"
+        "\n"
+        "## Scheduling\n"
+        "- `start_at` MUST be in the future or the runner will not pick up the queue.\n"
+        "- Timestamps are interpreted as CET (+01:00).\n"
+        "\n"
+        "## Parallel-bot capacity (measured on ex63: 20 cores / 62 GB, HW decode)\n"
+        "- Multilogin profile-create rate limit is the first ceiling: ~50 ops/min.\n"
+        "  ~15 simultaneous launches is clean; beyond that, stagger `start_at` over\n"
+        "  60-90s so profile-creates stay under the limit. This caps launch RATE, not\n"
+        "  how many can run.\n"
+        "- RAM is a distant second: ~0.85 GB/bot (PSS). Judge headroom from `free`/PSS,\n"
+        "  never summed RSS. ~30-40 with staggered launch; then exit-IP supply and the\n"
+        "  GB budget bind, not the box.\n"
+        "- One stable exit IP per bot (a shared IP is a detection signal and a\n"
+        "  confound). Multilogin residential is GB-metered (~450 MB per bot-hour).\n"
+        "\n"
+        "## These numbers assume ex63's hardware video decode\n"
+        "A GPU-less VM falls back to software decode and is CPU-bound: expect far\n"
+        "lower concurrency there and measure it, rather than reusing these figures.\n"
     )
 
 

@@ -247,25 +247,25 @@ class TestDesignExpander(unittest.TestCase):
         design = {
             "type": "factorial",
             "factors": {
-                "orientation": {
-                    "levels": ["left", "right"],
-                    "maps_to": {"configuration.params.pi": {"left": -0.5, "right": 0.5}},
+                "condition": {
+                    "levels": ["control", "treated"],
+                    "maps_to": {"configuration.params.pi": {"control": 0, "treated": 1}},
                 }
             },
             "replications": 1,
         }
-        crawler_template = {"name": "test_{orientation}", "configuration": {"params": {}}}
+        crawler_template = {"name": "test_{condition}", "configuration": {"params": {}}}
 
         crawlers = self.expander.expand(design, crawler_template)
 
         self.assertEqual(len(crawlers), 2)
 
-        # Check parameter values were mapped correctly
+        # Check parameter values were mapped correctly (pi is a 0/1 switch)
         for c in crawlers:
-            if c["name"] == "test_left":
-                self.assertEqual(c["configuration"]["params"]["pi"], -0.5)
-            elif c["name"] == "test_right":
-                self.assertEqual(c["configuration"]["params"]["pi"], 0.5)
+            if c["name"] == "test_control":
+                self.assertEqual(c["configuration"]["params"]["pi"], 0)
+            elif c["name"] == "test_treated":
+                self.assertEqual(c["configuration"]["params"]["pi"], 1)
 
     def test_preview_design(self):
         """Test design preview."""
@@ -323,6 +323,51 @@ crawlers:
         self.assertIn("agent", crawler)
         self.assertIn("queues", crawler)
 
+    def test_convert_passes_through_unknown_params(self):
+        """Non-standard params survive conversion instead of being dropped."""
+        yaml_content = """
+experiment:
+  name: Test
+
+crawlers:
+  - name: Test Crawler
+    configuration:
+      params:
+        pi: 1
+        epsilon: 0.7
+    proxy:
+      hostname: proxy.example.com
+      port: 8080
+    session:
+      workflow:
+        - visit: https://example.com
+"""
+        parsed = self.parser.parse(yaml_content)
+        result = self.converter.convert(parsed)
+        params = result.json_data[0]["configuration"]["params"]
+        self.assertEqual(params["pi"], 1)  # standard key kept
+        self.assertEqual(params["epsilon"], 0.7)  # unknown key passed through
+
+    def test_try_scroll_is_parsed_not_dropped(self):
+        """try_scroll / try_scroll_length must map to their API job types."""
+        yaml_content = """
+experiment:
+  name: Test
+
+crawlers:
+  - name: Test Crawler
+    session:
+      workflow:
+        - try_scroll: 30s
+        - try_scroll_length: 500
+"""
+        parsed = self.parser.parse(yaml_content)
+        result = self.converter.convert(parsed)
+        jobs = result.json_data[0]["queues"][0]["jobs"]
+        types = [j["type"] for j in jobs]
+        self.assertIn("tryscrollbydurationjob", types)
+        self.assertIn("tryscrollbylengthjob", types)
+
     def test_convert_with_design(self):
         """Test converting a spec with factorial design."""
         yaml_content = """
@@ -362,7 +407,7 @@ crawlers:
   - name: Test
     configuration:
       params:
-        pi: -0.5
+        pi: 1
         alpha: 1
     proxy:
       hostname: localhost
@@ -509,6 +554,65 @@ class TestSpecValidator(unittest.TestCase):
         }
         result = self.validator.validate(spec)
         self.assertTrue(any("template" in e.lower() for e in result.errors))
+
+    def test_switch_param_rejects_fractional_in_maps_to(self):
+        """pi/psi/kappa/tau are 0/1 switches; a fractional maps_to value errors."""
+        spec = {
+            "experiment": {"name": "Test"},
+            "design": {
+                "factors": {
+                    "orientation": {
+                        "levels": ["left", "center", "right"],
+                        "maps_to": {
+                            "configuration.params.pi": {"left": -0.5, "center": 0, "right": 0.5}
+                        },
+                    }
+                }
+            },
+            "crawlers": [{"name": "Test", "from_design": True}],
+        }
+        result = self.validator.validate(spec)
+        self.assertFalse(result.valid)
+        self.assertTrue(any("switch" in e.lower() and "pi" in e for e in result.errors))
+
+    def test_switch_param_rejects_fractional_direct(self):
+        """A fractional switch param on a crawler errors."""
+        spec = {
+            "experiment": {"name": "Test"},
+            "crawlers": [{"name": "Test", "configuration": {"params": {"tau": 0.5}}}],
+        }
+        result = self.validator.validate(spec)
+        self.assertFalse(result.valid)
+        self.assertTrue(any("tau" in e for e in result.errors))
+
+    def test_switch_param_accepts_zero_and_one(self):
+        """0 and 1 are the valid switch values and must not error."""
+        spec = {
+            "experiment": {"name": "Test"},
+            "design": {
+                "factors": {
+                    "condition": {
+                        "levels": ["control", "treated"],
+                        "maps_to": {"configuration.params.pi": {"control": 0, "treated": 1}},
+                    }
+                }
+            },
+            "crawlers": [
+                {"name": "Test", "from_design": True, "configuration": {"params": {"psi": 1}}}
+            ],
+        }
+        result = self.validator.validate(spec)
+        self.assertTrue(result.valid, result.errors)
+
+    def test_unknown_param_warns_not_errors(self):
+        """A non-standard param survives validation but warns it will be dropped."""
+        spec = {
+            "experiment": {"name": "Test"},
+            "crawlers": [{"name": "Test", "configuration": {"params": {"epsilon": 0.7}}}],
+        }
+        result = self.validator.validate(spec)
+        self.assertTrue(result.valid, result.errors)
+        self.assertTrue(any("epsilon" in w for w in result.warnings))
 
     def _validate_workflow_item(self, item):
         """Validate a spec whose single crawler runs one workflow item."""

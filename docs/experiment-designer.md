@@ -250,10 +250,29 @@ templates:
     - wait: 10s
 
 # Factorial Design Definition
+#
+# ⚠️ Treatment params are 0/1 SWITCHES, not intensities.
+# `configuration.params.pi`, `.psi`, `.kappa` and `.tau` are read by the decision
+# function as `int(round(x)) == 1`, so ONLY 0 or 1 are meaningful. A fractional
+# value such as 0.5 rounds to 0 (Python rounds half-to-even) and *silently*
+# disables the arm it looks like it configures -- there is no error. A factor that
+# toggles such a param must therefore have 0/1 levels; a multi-level factor cannot
+# map to a single switch (map it to preferences or search terms instead). The
+# validator now rejects non-0/1 values for these four params.
 design:
   type: factorial
 
   factors:
+    # A 2-level treatment factor toggling a 0/1 switch param (the correct shape).
+    mainstream_media_aversion:
+      levels: [control, treated]
+      maps_to:
+        configuration.params.pi:
+          control: 0
+          treated: 1
+
+    # A multi-level factor drives non-switch levers (preferences, search terms),
+    # NOT a 0/1 param.
     political_orientation:
       levels: [left, center, right]
       maps_to:
@@ -262,11 +281,6 @@ design:
           left: "1"
           center: "0"
           right: "-1"
-        # Map to algorithm parameters
-        configuration.params.pi:
-          left: -0.5
-          center: 0
-          right: 0.5
         # Map to search terms (for variable substitution)
         initial_search:
           left: "progressive politics news"
@@ -288,7 +302,7 @@ design:
 # Crawler Template (expanded by design)
 crawlers:
   - from_design: true
-    name: "yt_{political_orientation}_{starting_content}_{replica:02d}"
+    name: "yt_{mainstream_media_aversion}_{political_orientation}_{starting_content}_{replica:02d}"
     description: "YouTube bot studying recommendation pathways"
     active: true
     testing: false
@@ -754,6 +768,32 @@ Relative timestamps are resolved to ISO 8601 format with local timezone offset d
 | `lambda_select` | `lambda_select: {task: "...", function: "..."}` | AWS Lambda selection |
 | `template` | `template: my_template` | Use template |
 | `repeat` | `repeat: 10` | Repeat N times |
+
+## Treatment via the decision strategy (behaviours channel)
+
+Treatment can be carried on the `lambda_select` job itself, rather than only in
+`configuration.params`. Set a **`strategy`** (which decision logic runs) and a
+**`treatment`** block (its config); both become job behaviours the decision
+function reads:
+
+```yaml
+- lambda_select:
+    task: youtube_video_select
+    function: bot-decision-yt
+    strategy: youtube_v1        # activates the behaviours channel
+    treatment:
+      pi: 1                     # strategy-specific config (0/1 switch here)
+      tau: 0
+```
+
+- The channel activates **only** when `strategy` is present; a `treatment` block
+  without a `strategy` is ignored by the decision function (the validator warns).
+- The `treatment` values are validated against that strategy's schema shipped in
+  `bot-decision-yt` (`strategies/<strategy>.schema.json`) when it can be found;
+  e.g. `youtube_v1` still enforces the 0/1 switch rule on `pi/psi/kappa/tau`.
+- Job-control keys (`task`, `link_type`, `function`) always win over `treatment`.
+- Legacy specs that set treatment in `configuration.params` are unaffected — no
+  `strategy`, so the decision function keeps reading `selectionConfiguration`.
 
 ## Variable Substitution
 

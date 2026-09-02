@@ -1554,14 +1554,21 @@ class TestGetJobTypeSchema:
         out = json.loads(s.get_job_type_schema("teleport"))
 
         assert out["error"] == "Unknown job type: teleport"
-        assert "visit" in out["available_types"]
-        assert "wait" in out["available_types"]
+        # available_types lists both names, "yaml_name (api_type)".
+        joined = " ".join(out["available_types"])
+        assert "visit (visitjob)" in joined
+        assert "wait (waitjob)" in joined
 
-    def test_api_type_is_not_accepted_as_a_lookup_key(self, no_network):
-        """Lookup is by YAML name; passing the API type must fail loudly, not silently."""
-        out = json.loads(s.get_job_type_schema("visitjob"))
+    def test_api_type_is_accepted_as_a_lookup_key(self, no_network):
+        """Lookup accepts either the YAML name or the API type, so a caller holding
+        the write-tool name (e.g. 'visitjob') still resolves."""
+        by_api = json.loads(s.get_job_type_schema("visitjob"))
+        by_yaml = json.loads(s.get_job_type_schema("visit"))
 
-        assert "error" in out
+        assert "error" not in by_api
+        assert by_api["yaml_name"] == "visit"
+        assert by_api["api_type"] == "visitjob"
+        assert by_api == by_yaml
 
 
 class TestGetSpecTemplate:
@@ -1577,25 +1584,29 @@ class TestGetSpecTemplate:
         assert "name" in spec["experiment"]
         assert isinstance(spec["crawlers"], list) and spec["crawlers"]
 
-    def test_youtube_template_is_currently_not_valid_yaml(self, no_network):
-        """Pins a live bug so it cannot be forgotten -- see the report accompanying
-        this file.
+    def test_youtube_template_is_valid_and_uses_switch_params(self, no_network):
+        """The youtube template must parse, validate, and demonstrate correct 0/1
+        switch params.
 
-        The youtube template's workflow contains::
-
-            - repeat: 5
-                template: watch_and_recommend
-
-        The over-indented ``template:`` key makes the whole document unparseable
-        ("mapping values are not allowed here"), so a model handed this template as a
-        starting point produces a spec that ``pmspec validate`` cannot even load. When
-        the template is fixed, this test will fail and should be folded back into
-        ``test_templates_are_parseable_yaml_with_the_expected_skeleton``.
+        Formerly this pinned two bugs: an over-indented ``template:`` under
+        ``repeat`` that made the document unparseable, and a
+        ``params.pi: {left: -0.5, center: 0, right: 0.5}`` mapping that rounds to
+        three identical control arms. Both are fixed; this now guards against
+        regressing either.
         """
-        template = json.loads(s.get_spec_template("youtube"))["template"]
+        from experiment_designer.spec.validator import SpecValidator
 
-        with pytest.raises(yaml.YAMLError):
-            yaml.safe_load(template)
+        template = json.loads(s.get_spec_template("youtube"))["template"]
+        spec = yaml.safe_load(template)  # must not raise
+
+        result = SpecValidator().validate(spec)
+        assert result.valid, result.errors
+
+        # Any params.pi mapping in the template must be a 0/1 switch, never fractional.
+        for factor in spec["design"]["factors"].values():
+            pi_map = factor.get("maps_to", {}).get("params.pi")
+            if pi_map:
+                assert set(pi_map.values()) <= {0, 1}
 
     def test_the_three_templates_are_actually_different(self, no_network):
         bodies = {
@@ -1619,6 +1630,22 @@ class TestGetSpecTemplate:
             if isinstance(step, dict) and "template" in step
         }
         assert referenced <= defined
+
+
+class TestDocResources:
+    """The doc:// resources give an MCP-only agent the design knowledge."""
+
+    def test_authored_resources_carry_the_key_semantics(self, no_network):
+        tp = s.doc_treatment_params()
+        assert "int(round(x)) == 1" in tp
+        assert "0.5" in tp and "switch" in tp.lower()
+        cap = s.doc_capacity()
+        assert "CET" in cap and "start_at" in cap
+
+    def test_file_backed_resources_return_the_docs(self, no_network):
+        assert "experiment" in s.doc_experiment_designer().lower()
+        # §7.3 degradation contract lives in the integration contract
+        assert "treatment_lost" in s.doc_integration_contract()
 
     def test_unknown_template_type_silently_returns_the_default(self, no_network):
         """Documents current behaviour, which is mildly misleading.
