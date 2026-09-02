@@ -1333,6 +1333,64 @@ def doctor(ctx: click.Context) -> None:
                 "(run scripts/install-systemd-services.sh on a VM deployment)"
             )
 
+    # Configuration & credentials preflight.
+    #
+    # Everything above checks the machine; these check that THIS box/account is
+    # actually configured. They exist because a fresh deployment previously only
+    # discovered a missing symlink, an unset secret, or an unreachable job-data
+    # store at runtime -- see docs/new-server-setup.md. Missing credentials are a
+    # warning, not a hard failure: a given command may not need all of them.
+    console.print("\n[bold]Checking configuration & credentials...[/bold]\n")
+
+    # Secrets that have no default and block the thing named if unset.
+    for value, label in (
+        (settings.pm_api_email, "PM_API_EMAIL (API login)"),
+        (settings.pm_api_password, "PM_API_PASSWORD (API login)"),
+        (
+            settings.grafana_admin_password,
+            "GRAFANA_ADMIN_PASSWORD (Grafana won't start without it)",
+        ),
+    ):
+        if value:
+            console.print(f"  [green]✓[/green] {label.split(' (')[0]} set")
+        else:
+            console.print(f"  [yellow]⚠[/yellow] {label} not set")
+
+    # The decision symlink: the local Lambda server refuses to start without it.
+    decision = settings.get_orchestrator_path() / "orchestrator" / "lambda_service" / "decision"
+    if (decision / "lambda_function.py").exists():
+        console.print(
+            f"  [green]✓[/green] decision symlink resolves ({decision} → bot-decision-EN)"
+        )
+    else:
+        console.print(
+            f"  [red]✗[/red] decision symlink broken or missing: {decision}\n"
+            "      [dim]ln -s ../../../bot-decision-yt/bot-decision-EN "
+            "orchestrator/lambda_service/decision[/dim]"
+        )
+        all_ok = False
+
+    # The job-data (MinIO) reader: without a working key, `debug job` /
+    # `lambda invocations` silently return nothing rather than failing.
+    from orchestrator.logs.jobdata_s3 import store_from_settings
+
+    store = store_from_settings(settings)
+    if not store.configured:
+        console.print(
+            "  [yellow]⚠[/yellow] JOBDATA_S3 key not set — 'orchestrator debug job' and "
+            "'lambda invocations' will be blind (mint a scoped read-only MinIO key)"
+        )
+    else:
+        try:
+            store.reachable()
+            console.print(f"  [green]✓[/green] job-data store reachable ({store.endpoint})")
+        except Exception as exc:  # noqa: BLE001 - report any failure, don't crash doctor
+            console.print(
+                f"  [red]✗[/red] job-data store NOT reachable ({store.endpoint}): "
+                f"{str(exc)[:80]}"
+            )
+            all_ok = False
+
     console.print()
     if all_ok:
         console.print("[green bold]All checks passed![/green bold] Run 'orchestrator up' to start.")

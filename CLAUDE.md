@@ -84,6 +84,8 @@ removed from `scripts/multilogin-login.py` in the same pass were swallowing
 
 ```bash
 # Setup (new developer onboarding)
+# For a fresh SERVER (accounts, secrets, symlink, MinIO key, systemd), follow
+# docs/new-server-setup.md -- `orchestrator doctor` preflights those pieces.
 orchestrator setup                  # Full setup: clone repos, build, start
 orchestrator setup --skip-clone     # Skip cloning (repos already exist)
 

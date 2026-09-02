@@ -150,6 +150,19 @@ class JobDataStore:
         """
         return sorted({obj.job_id for obj in self.list_objects()}, reverse=True)[:limit]
 
+    def reachable(self) -> bool:
+        """Cheap liveness probe for `orchestrator doctor`.
+
+        One list call capped at a single key -- confirms the endpoint answers
+        and the credentials are accepted, without pulling the whole bucket
+        (which holds tens of thousands of objects). Raises are the caller's to
+        catch; a False here would hide the reason.
+        """
+        client = self._get_client()
+        prefix = self.prefixes[0] if self.prefixes else ""
+        resp = client.list_objects_v2(Bucket=self.bucket, Prefix=prefix, MaxKeys=1)
+        return "Contents" in resp or resp.get("KeyCount", 0) == 0
+
     def read(self, key: str) -> bytes:
         """Fetch one object's bytes."""
         response = self._get_client().get_object(Bucket=self.bucket, Key=key)

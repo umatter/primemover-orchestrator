@@ -21,7 +21,7 @@ class FakeS3Client:
         self.page_size = page_size
         self.list_calls = 0
 
-    def list_objects_v2(self, Bucket, Prefix, ContinuationToken=None):  # noqa: N803
+    def list_objects_v2(self, Bucket, Prefix, ContinuationToken=None, MaxKeys=None):  # noqa: N803
         self.list_calls += 1
         keys = sorted(k for k in self.objects if k.startswith(Prefix))
         start = int(ContinuationToken) if ContinuationToken else 0
@@ -189,3 +189,26 @@ class TestAggregatorUsesTheStore:
         aggregator = LogAggregator(har_path="/nonexistent/out/har")
         aggregator.jobdata_store = Broken()
         assert aggregator._query_lambda_output() == []
+
+
+class TestReachable:
+    def test_reachable_returns_true_when_the_store_answers(self):
+        store, _ = make_store()
+        assert store.reachable() is True
+
+    def test_reachable_true_on_an_empty_but_answering_bucket(self):
+        # A fresh bucket with nothing under the prefix is reachable, not broken.
+        store, _ = make_store(objects={})
+        assert store.reachable() is True
+
+    def test_reachable_propagates_a_connection_error(self):
+        # doctor catches this and reports the reason; reachable must not swallow it.
+        class Broken:
+            def list_objects_v2(self, **kw):
+                raise OSError("connection refused")
+
+        store = JobDataStore("https://s3", "b", "k", "s", client=Broken())
+        import pytest
+
+        with pytest.raises(OSError):
+            store.reachable()
