@@ -235,3 +235,28 @@ plus plain CPU) before trusting any number.
 Java, the decision symlink, the job-data store reachability and the systemd
 units. The API/port checks will show the API as remote (not local) — that is
 expected for a runner-only box.
+
+### Logs from a runner-only box (done for the VM on 2026-09-02)
+
+Loki, Grafana, `orchestrator logs`/`trace` and the MCP log tools only see what
+Promtail ships to ex63's Loki. A runner-only box ships its own logs there, labelled
+by host, so both runners land in the same dashboards:
+
+- **ex63 side.** Loki is bound to `127.0.0.1:3100` by `docker-compose.yml`. A
+  gitignored `docker-compose.override.yml` on ex63 adds a second, tailnet-only
+  binding (`<ex63-tailnet-ip>:3100:3100`). Because ex63 runs the monitoring stack with
+  explicit files, the override must be passed explicitly too:
+  `docker compose -f docker-compose.yml -f docker-compose.ex63.yml -f docker-compose.override.yml up -d loki`.
+- **Box side.** The stock `grafana/promtail` image cannot read journald, so scrape
+  files: the runner already writes `primemover-runner/log/primemover-runner.log`
+  (same logback layout as ex63); the local Lambda logs to journald only, so a tiny
+  unit `primemover-lambda-journal-export.service` tails `journalctl -u
+  primemover-lambda -f -o cat` into `/var/log/primemover-lambda/lambda-server.log`
+  (rotated by `/etc/logrotate.d/primemover-lambda-export`, copytruncate). Promtail
+  runs as a container (`grafana/promtail:3.4.1`, `--restart unless-stopped`) with
+  `~/promtail/config.yml`: the runner and lambda pipelines copied from
+  `infrastructure/promtail/promtail-config.yaml`, plus the labels
+  `host: <tailnet hostname>` and `component: runner|lambda`, pushing to
+  `http://<ex63-tailnet-ip>:3100/loki/api/v1/push`.
+- **Query it.** `{host="primemover-switch-roland", component="runner"}`; ex63's own
+  streams carry no `host` label, so `host!="primemover-switch-roland"` selects them.

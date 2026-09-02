@@ -268,6 +268,13 @@ rollout: `PM_SERVICE_ACCOUNT_IDS=1,3`, `PM_DEFAULT_RUNNER_USER_ID=1`, experiment
 and 143 returned to users 5 and 6. Assign an experiment to the VM with
 `runner_user_id=3`; everything else runs on ex63.
 
+**Logs (2026-09-02 late):** the VM's runner + lambda logs now ship to ex63's Loki with
+`host=primemover-switch-roland` (Promtail container on the VM, Loki bound on ex63's tailnet
+address via a gitignored compose override; see `new-server-setup.md` "Logs from a
+runner-only box"). The MinIO->Nextcloud archiver is NOT scheduled on ex63 and its
+`infrastructure/har-drain/rclone.conf` still holds template placeholders; MinIO is the only
+copy of all job data until that is done.
+
 **Still open:** capacity measurement (single bot: ~1.6 GB PSS browser, CPU is the
 limit — measure with several bots before raising `runner.MaxParallelExecution` from 4);
 optional read-only GitHub deploy key for `primemover@primemover-switch-roland`
