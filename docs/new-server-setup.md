@@ -199,6 +199,38 @@ rate limit even though each clamps at 10. Options: give the second box its **own
 Multilogin workspace** (its different folder id is pure config —
 `multilogin.defaultFolderId`, §4), or stagger launches across the two boxes.
 
+### If the new box is a VM: GPU decode does not travel
+
+The Chrome-renderer-death fix has a hardware-dependent half and a
+hardware-independent half (`docs/chrome-browser-death-fix.txt`). Only the second
+half ships in the runner jar; the first does **not** exist on a VM:
+
+- **Software decode is back.** ex63's VA-API hardware decode (iHD driver +
+  render/video groups) is what makes each browser "mostly idle-waiting". A VM has
+  no iGPU passthrough, so YouTube's VP9/AV1 is decoded on CPU again — the exact
+  Feb-2026 condition that killed renderers after 19-95 jobs.
+- **The H.264 override extension goes from redundant to load-bearing.** On ex63 it
+  "no longer buys performance" because hardware decodes everything; on a VM,
+  forcing H.264 is what keeps software decode affordable instead of pinning the
+  renderer main thread. It is loaded by absolute path, so on a VM whose home
+  differs from `/home/primemover` you **must** set `multilogin.h264ExtensionPath`
+  in `application.properties` to where the extension actually lives. A wrong or
+  absent path makes Chrome drop the extension **silently** — no log line — and
+  the renderer dies under VP9/AV1. (The path was hardcoded until 2026-09-02;
+  it is now a property, ex63 path as the fallback.)
+- **The V8 heap cap + renderer recycle are hardware-independent** and already in
+  the jar — nothing to do.
+- **Do not** bother with render/video group membership (no `/dev/dri`) and do
+  **not** add GL flags (Chrome 151 allows only `gl=egl-angle, angle=default`;
+  anything else kills the GPU process).
+
+**Capacity is CPU-bound on a VM, not RAM-bound.** The `~15 instant / ~30-40
+staggered` figures in CLAUDE.md were measured on ex63 with hardware decode. With
+software decode, per-bot CPU is far higher, so CPU binds long before RAM or
+exit-IP supply — the reverse of ex63's ordering. Treat the VM's concurrency
+ceiling as unknown and measure it (`scripts/monitor-memory.sh` for renderer RSS,
+plus plain CPU) before trusting any number.
+
 ### Verify on the new box
 
 `orchestrator doctor` still helps even without the full stack: it checks Docker,

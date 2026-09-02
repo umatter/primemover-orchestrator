@@ -76,3 +76,9 @@ OPERATIONAL NOTES
   allows only (gl=egl-angle, angle=default); anything else kills the GPU
   process outright.
 - scripts/monitor-memory.sh watches renderer RSS to catch regressions.
+- On a GPU-less VM the H.264 override (a) reverts from redundant to load-bearing
+  (software decode again). Its path is configurable as of 2026-09-02
+  (multilogin.h264ExtensionPath, ProfileService.java); on a box whose home is not
+  /home/primemover, set it, or Chrome drops the extension silently and the
+  renderer dies under VP9/AV1. See docs/new-server-setup.md "If the new box is a
+  VM". Cause 1 is CPU-bound there, so expect far lower concurrency than ex63.
