@@ -140,5 +140,18 @@ Orchestrator: unit tests for the converter field and the MCP tool payload.
 Between steps 2 and 3 there is a window where the filter is live but user 3 is not yet a
 service account; the VM then sees nothing for a few seconds. Harmless.
 
-Rollback: restore `.env.bak-*`, `config:clear`, `php artisan migrate:rollback --step=1`,
-redeploy the previous commit.
+Rollback, in this order: redeploy the previous commit **first** (the old code never
+reads the column, so leaving it in place is safe), then restore `.env.bak-*` and
+`config:clear`. Only roll the migration back (`php artisan migrate:rollback --step=1`)
+if the column must go — it discards every assignment, and doing it while the new code
+is still deployed makes every experiment query reference a missing column. The safe
+partial rollback is "revert code, keep the column".
+
+Before rollout step 2, verify no other caller depends on the two partitioned
+endpoints returning everything to a human: the GUI (`primemover_gui`) does not call
+`crawlers-unprocessed`, `crawlers-testing` or `queues-unprocessed` (verified
+2026-09-02 at gui commit 7151766), and the Java runner's only work-fetching calls are
+`crawlers-unprocessed` and `crawlers-testing` (verified against the runner source).
+After step 3, check for stranded assignments — experiments whose `runner_user_id` is
+not in `PM_SERVICE_ACCOUNT_IDS` are fetched by nobody:
+`SELECT id, runner_user_id FROM experiments WHERE runner_user_id IS NOT NULL AND runner_user_id NOT IN (1, 3);`
