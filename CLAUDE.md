@@ -386,6 +386,29 @@ invocation contract. This is **on by default** (`orchestrator up`); pass
 - **Service**: `orchestrator/lambda_service/server.py` — exposes `GET /health`
   and `POST /invoke` on `127.0.0.1:5001`. `/invoke` calls
   `select_recommendation(json.dumps(event))` and returns its dict as JSON.
+- **Served by waitress, not `app.run`.** `main()` serves the Flask app with
+  **waitress** in production and uses werkzeug's `app.run` only under `--debug`.
+  This is load-bearing, not a preference: werkzeug's development server leaks an
+  epoll fd per connection under concurrency (reproduced with a bare threaded
+  Flask app: 0 → 17 epoll over 90 concurrent requests). Under 12 concurrent bots
+  that reached **844 leaked fds in one soak round**, crossing the process's fd
+  ceiling mid-run, after which every OpenAI call in the decision function failed
+  with `APIConnectionError` and the children/entertainment filter silently
+  stopped applying to ~40% of selects. waitress holds no per-connection epoll
+  (fixed thread pool + one asyncore loop). **Do not revert to `app.run`** — it
+  reintroduces the leak, and it only shows under concurrency, so a sequential
+  test will not catch it. `waitress>=3.0.0` is a declared dependency.
+- **`/health` reports open file descriptors** (`open_files: {open, soft_limit,
+  near_limit}`) and flips `status` to `degraded` at ≥80% of the soft limit — so
+  an fd leak is a glance, not an hour of forensics. The systemd unit sets
+  `LimitNOFILE=65536` (the default 1024 was the ceiling the leak hit); the
+  running process must show that limit after any unit change + `daemon-reload`.
+- **A fd leak that climbs ~1 per select and only under concurrency is the
+  werkzeug one above.** A *socket* leak (per invocation, sequential too) instead
+  points at the decision function's OpenAI client — it is created once and
+  reused (`_get_shared_openai_client`), so per-call socket growth means that
+  reuse was broken. Check `open_files` under a *concurrent* burst, never a
+  sequential one.
 - **Decision code**: imported from `orchestrator/lambda_service/decision`,
   a **symlink** to `bot-decision-yt/bot-decision-EN`. The symlink is a
   prerequisite — `LambdaServerComponent.validate()` errors if it (or
