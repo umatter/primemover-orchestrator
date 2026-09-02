@@ -791,3 +791,33 @@ class TestVisitConsentBehavior:
         consent = next(b for b in schema.behaviors if b.name == "consent")
         assert consent.required is False
         assert "reject" in consent.description
+
+
+class TestMultiloginProfileDefaults(unittest.TestCase):
+    """The converter's profile template must stay creatable on Multilogin X."""
+
+    def test_default_core_version_is_accepted_by_multilogin(self):
+        # Multilogin rejects profile creation with "Can't set core older than 147"
+        # (seen 2026-09-02 on a spec-uploaded bot); a stale default here makes
+        # every spec-created bot fail at setup on every runner.
+        from experiment_designer.spec.converter import DEFAULT_MULTILOGIN_PROFILE
+
+        self.assertGreaterEqual(DEFAULT_MULTILOGIN_PROFILE["core_version"], 147)
+        self.assertTrue(DEFAULT_MULTILOGIN_PROFILE["auto_update_core"])
+
+    def test_default_core_version_matches_the_e2e_template(self):
+        import json
+        from pathlib import Path
+
+        from experiment_designer.spec.converter import DEFAULT_MULTILOGIN_PROFILE
+
+        e2e = (
+            Path(__file__).resolve().parents[2]
+            / "orchestrator"
+            / "e2e"
+            / "test_experiment_youtube.json"
+        )
+        profile = json.loads(e2e.read_text())[0]["agent"]["multilogin_profile"]
+        if isinstance(profile, str):
+            profile = json.loads(profile)
+        self.assertEqual(DEFAULT_MULTILOGIN_PROFILE["core_version"], profile["core_version"])
