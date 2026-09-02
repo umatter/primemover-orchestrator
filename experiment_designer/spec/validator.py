@@ -478,6 +478,82 @@ class SpecValidator:
             if job_type in item:
                 self._validate_job_shorthand(job_type, item[job_type], prefix, errors, warnings)
 
+    def _strategy_schema(self, strategy: str) -> dict[str, Any] | None:
+        """Load a decision strategy's JSON schema from the sibling bot-decision-yt.
+
+        Soft dependency: the orchestrator does not hard-require the decision repo
+        to be checked out, so a missing schema returns None (the caller warns and
+        skips) rather than failing validation. Tries the decision symlink first
+        (the canonical pointer), then the sibling path.
+        """
+        repo_root = Path(__file__).resolve().parents[2]
+        candidates = [
+            repo_root
+            / "orchestrator"
+            / "lambda_service"
+            / "decision"
+            / "strategies"
+            / f"{strategy}.schema.json",
+            repo_root.parent
+            / "bot-decision-yt"
+            / "bot-decision-EN"
+            / "strategies"
+            / f"{strategy}.schema.json",
+        ]
+        for path in candidates:
+            try:
+                if path.is_file():
+                    loaded: dict[str, Any] = json.loads(path.read_text())
+                    return loaded
+            except (OSError, json.JSONDecodeError):
+                continue
+        return None
+
+    def _validate_lambda_select_treatment(
+        self, value: dict[str, Any], prefix: str, errors: list[str], warnings: list[str]
+    ) -> None:
+        """Validate a lambda_select job's behaviours-channel treatment.
+
+        The behaviours channel activates only when a ``strategy`` marker is present
+        (matching the decision function's gate). When it is, the ``treatment``
+        block is validated against that strategy's schema; when a ``treatment`` is
+        set without a ``strategy``, it will be silently ignored downstream, so warn.
+        """
+        strategy = value.get("strategy")
+        treatment = value.get("treatment")
+
+        if not strategy:
+            if isinstance(treatment, dict) and treatment:
+                warnings.append(
+                    f"{prefix}.lambda_select: 'treatment' is set but 'strategy' is not; "
+                    "without a strategy marker the decision function ignores it and falls "
+                    "back to the legacy selectionConfiguration."
+                )
+            return
+
+        schema = self._strategy_schema(str(strategy))
+        if schema is None:
+            warnings.append(
+                f"{prefix}.lambda_select: cannot validate treatment for strategy "
+                f"'{strategy}' -- its schema was not found (is bot-decision-yt checked out "
+                "and the decision symlink present?); skipping treatment validation."
+            )
+            return
+
+        if not HAS_JSONSCHEMA:
+            return
+
+        config = dict(treatment) if isinstance(treatment, dict) else {}
+        config["strategy"] = strategy
+        try:
+            jsonschema.validate(config, schema)
+        except jsonschema.ValidationError as exc:
+            location = ".".join(str(part) for part in exc.absolute_path) or "(root)"
+            errors.append(
+                f"{prefix}.lambda_select.treatment: invalid for strategy '{strategy}' "
+                f"at {location}: {exc.message}"
+            )
+
     def _validate_job_shorthand(
         self, job_type: str, value: Any, prefix: str, errors: list[str], warnings: list[str]
     ) -> None:
@@ -513,6 +589,7 @@ class SpecValidator:
                     errors.append(f"{prefix}.lambda_select: 'task' is required")
                 if not value.get("function") and not value.get("link_value"):
                     errors.append(f"{prefix}.lambda_select: 'function' or 'link_value' is required")
+                self._validate_lambda_select_treatment(value, prefix, errors, warnings)
             else:
                 errors.append(f"{prefix}.lambda_select: must be an object")
 

@@ -308,6 +308,16 @@ JobRegistry.register(
             ),
             BehaviorSchema("linkValue", required=True, description="Function name or ARN"),
             BehaviorSchema("captchaMode", required=False, default="never"),
+            BehaviorSchema(
+                "strategy",
+                required=False,
+                description=(
+                    "Decision strategy selector (e.g. 'youtube_v1'). Its presence "
+                    "activates the behaviours treatment channel; strategy-specific "
+                    "config rides alongside as further behaviours (see the DSL "
+                    "'treatment' block). Absent = legacy selectionConfiguration."
+                ),
+            ),
         ],
     )
 )

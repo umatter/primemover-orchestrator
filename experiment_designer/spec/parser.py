@@ -560,16 +560,25 @@ class SpecParser:
 
         elif job_type == "lambda_select":
             if isinstance(value, dict):
-                job["behaviors"] = self._make_behaviors(
-                    {
-                        "task": value.get("task", ""),
-                        "linkType": value.get("link_type", "FUNCTION_NAME"),
-                        "linkValue": value.get("function", value.get("link_value", "")),
-                        "captchaMode": value.get(
-                            "captcha_mode", defaults.get("captcha_mode", "never")
-                        ),
-                    }
-                )
+                behaviors = {
+                    "task": value.get("task", ""),
+                    "linkType": value.get("link_type", "FUNCTION_NAME"),
+                    "linkValue": value.get("function", value.get("link_value", "")),
+                    "captchaMode": value.get("captcha_mode", defaults.get("captcha_mode", "never")),
+                }
+                # Treatment via the behaviours channel: an explicit `strategy`
+                # selects the decision strategy, and `treatment` carries its config.
+                # Both become job behaviours the decision function reads (it uses
+                # them only when the `strategy` marker is present). Job-control keys
+                # win over treatment keys, so treatment cannot clobber task/linkType.
+                if value.get("strategy"):
+                    behaviors["strategy"] = value["strategy"]
+                treatment = value.get("treatment")
+                if isinstance(treatment, dict):
+                    for key, treatment_value in treatment.items():
+                        if key not in behaviors:
+                            behaviors[key] = treatment_value
+                job["behaviors"] = self._make_behaviors(behaviors)
             else:
                 self.errors.append("'lambda_select' requires dict with 'task' and 'function'")
 

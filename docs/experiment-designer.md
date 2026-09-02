@@ -762,6 +762,32 @@ Relative timestamps are resolved to ISO 8601 format with local timezone offset d
 | `template` | `template: my_template` | Use template |
 | `repeat` | `repeat: 10` | Repeat N times |
 
+## Treatment via the decision strategy (behaviours channel)
+
+Treatment can be carried on the `lambda_select` job itself, rather than only in
+`configuration.params`. Set a **`strategy`** (which decision logic runs) and a
+**`treatment`** block (its config); both become job behaviours the decision
+function reads:
+
+```yaml
+- lambda_select:
+    task: youtube_video_select
+    function: bot-decision-yt
+    strategy: youtube_v1        # activates the behaviours channel
+    treatment:
+      pi: 1                     # strategy-specific config (0/1 switch here)
+      tau: 0
+```
+
+- The channel activates **only** when `strategy` is present; a `treatment` block
+  without a `strategy` is ignored by the decision function (the validator warns).
+- The `treatment` values are validated against that strategy's schema shipped in
+  `bot-decision-yt` (`strategies/<strategy>.schema.json`) when it can be found;
+  e.g. `youtube_v1` still enforces the 0/1 switch rule on `pi/psi/kappa/tau`.
+- Job-control keys (`task`, `link_type`, `function`) always win over `treatment`.
+- Legacy specs that set treatment in `configuration.params` are unaffected — no
+  `strategy`, so the decision function keeps reading `selectionConfiguration`.
+
 ## Variable Substitution
 
 In crawler templates with `from_design: true`:
