@@ -145,6 +145,17 @@ class TestCreateExperiment:
         assert out["action"] == "create experiment"
         assert out["error"] == "API request failed: 422 contact required"
 
+    def test_runner_assignment_is_passed_through_when_given(self, api: RecordingAPI) -> None:
+        out = json.loads(
+            s.pm_create_experiment(name="Study A", contact="ada@example.org", runner_user_id=3)
+        )
+        assert out["payload"]["runner_user_id"] == 3
+        assert api.calls == []
+
+    def test_runner_assignment_is_absent_by_default(self, api: RecordingAPI) -> None:
+        out = json.loads(s.pm_create_experiment(name="Study A", contact="ada@example.org"))
+        assert "runner_user_id" not in out["payload"]  # NULL = default runner, API-side
+
 
 # =============================================================================
 # pm_add_bot

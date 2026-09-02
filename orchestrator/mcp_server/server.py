@@ -668,7 +668,12 @@ def list_library() -> str:
 
 @mcp.tool()
 def pm_create_experiment(
-    name: str, contact: str, description: str = "", testing: bool = False, confirm: bool = False
+    name: str,
+    contact: str,
+    description: str = "",
+    testing: bool = False,
+    runner_user_id: int | None = None,
+    confirm: bool = False,
 ) -> str:
     """Create an experiment (study). Dry-run unless confirm=true. Local API only.
 
@@ -677,14 +682,18 @@ def pm_create_experiment(
         contact: Contact person (required by the API).
         description: Optional description.
         testing: Mark as a testing experiment (runner uses testing endpoints).
+        runner_user_id: Which runner executes it: 1 = ex63 (the default when omitted),
+            3 = the runner-only VM. Must be a configured runner account on the API.
         confirm: Apply the change; without it, returns a preview only.
     """
-    payload = {
+    payload: dict[str, Any] = {
         "name": name,
         "contact": contact,
         "description": description or name,
         "testing": testing,
     }
+    if runner_user_id is not None:
+        payload["runner_user_id"] = runner_user_id
     return _write("create experiment", "POST", "experiments", payload, confirm=confirm)
 
 
@@ -2124,6 +2133,7 @@ def upload_experiment(
     yaml_content: str,
     experiment_id: int | None = None,
     dry_run: bool = True,
+    runner_user_id: int | None = None,
 ) -> str:
     """
     Convert YAML spec and upload to PrimeMover API.
@@ -2141,6 +2151,8 @@ def upload_experiment(
         experiment_id: Optional experiment ID to add crawlers to (creates new if None)
         dry_run: Validate and convert without uploading. Defaults to True; pass
             False to apply.
+        runner_user_id: Which runner executes it: 1 = ex63 (the default when omitted),
+            3 = the runner-only VM. Must be a configured runner account on the API.
 
     Returns:
         JSON with upload result including experiment ID and crawler count,
@@ -2227,14 +2239,20 @@ def upload_experiment(
                 result.experiment_name or f"Experiment {datetime.now().strftime('%Y%m%d_%H%M%S')}"
             )
 
+            create_payload: dict[str, Any] = {
+                "name": exp_name,
+                "description": result.experiment_description or "Created via MCP",
+                "contact": "PrimeMover Orchestrator MCP",
+                "active": 1,
+            }
+            if runner_user_id is not None:
+                create_payload["runner_user_id"] = runner_user_id
+            elif (exp_runner_id := getattr(result, "experiment_runner_user_id", None)) is not None:
+                create_payload["runner_user_id"] = exp_runner_id
+
             create_response = requests.post(
                 f"{api_url}/experiments",
-                json={
-                    "name": exp_name,
-                    "description": result.experiment_description or "Created via MCP",
-                    "contact": "PrimeMover Orchestrator MCP",
-                    "active": 1,
-                },
+                json=create_payload,
                 headers={
                     "Authorization": f"Bearer {token}",
                     "Accept": "application/json",
