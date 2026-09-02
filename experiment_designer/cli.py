@@ -17,6 +17,7 @@ Commands:
 import json
 import sys
 from pathlib import Path
+from typing import Any
 
 # Load .env file if present
 try:
@@ -286,6 +287,7 @@ def upload(
     click.echo(f"Experiment: {result.experiment_name}")
     click.echo(f"Crawlers:   {result.crawler_count}")
     click.echo(f"Jobs:       {result.total_jobs}")
+    click.echo(f"Runner:     {result.experiment_runner_user_id or 'default'}")
     click.echo()
 
     if dry_run:
@@ -332,15 +334,19 @@ def upload(
                 result.experiment_name or f"Experiment {datetime.now().strftime('%Y%m%d_%H%M%S')}"
             )
 
+            create_payload: dict[str, Any] = {
+                "name": exp_name,
+                "description": result.experiment_description
+                or "Created via experiment designer CLI",
+                "contact": "Experiment Designer CLI",
+                "active": 1,
+            }
+            if result.experiment_runner_user_id is not None:
+                create_payload["runner_user_id"] = result.experiment_runner_user_id
+
             create_response = requests.post(
                 f"{api_url}/experiments",
-                json={
-                    "name": exp_name,
-                    "description": result.experiment_description
-                    or "Created via experiment designer CLI",
-                    "contact": "Experiment Designer CLI",
-                    "active": 1,
-                },
+                json=create_payload,
                 headers={
                     "Authorization": f"Bearer {token}",
                     "Accept": "application/json",

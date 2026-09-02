@@ -381,6 +381,60 @@ crawlers:
         self.assertIsInstance(json_data, list)
         self.assertEqual(len(json_data), 1)
 
+    def test_convert_carries_runner_assignment(self):
+        yaml_content = """
+experiment:
+  name: VM study
+  runner_user_id: 3
+
+crawlers:
+  - name: Test Crawler
+    proxy:
+      hostname: proxy.example.com
+      port: 8080
+    session:
+      workflow:
+        - visit: https://example.com
+"""
+        result = self.converter.convert(self.parser.parse(yaml_content))
+        self.assertEqual(result.errors, [])
+        self.assertEqual(result.experiment_runner_user_id, 3)
+
+    def test_convert_defaults_runner_assignment_to_none(self):
+        yaml_content = """
+experiment:
+  name: Default study
+
+crawlers:
+  - name: Test Crawler
+    proxy:
+      hostname: proxy.example.com
+      port: 8080
+    session:
+      workflow:
+        - visit: https://example.com
+"""
+        result = self.converter.convert(self.parser.parse(yaml_content))
+        self.assertIsNone(result.experiment_runner_user_id)
+
+    def test_convert_rejects_non_integer_runner_assignment(self):
+        yaml_content = """
+experiment:
+  name: Bad
+  runner_user_id: vm
+
+crawlers:
+  - name: Test Crawler
+    proxy:
+      hostname: proxy.example.com
+      port: 8080
+    session:
+      workflow:
+        - visit: https://example.com
+"""
+        result = self.converter.convert(self.parser.parse(yaml_content))
+        self.assertTrue(any("runner_user_id" in e for e in result.errors))
+
 
 class TestSpecValidator(unittest.TestCase):
     """Tests for SpecValidator."""
