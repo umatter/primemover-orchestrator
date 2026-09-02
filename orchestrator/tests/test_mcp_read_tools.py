@@ -1554,14 +1554,21 @@ class TestGetJobTypeSchema:
         out = json.loads(s.get_job_type_schema("teleport"))
 
         assert out["error"] == "Unknown job type: teleport"
-        assert "visit" in out["available_types"]
-        assert "wait" in out["available_types"]
+        # available_types lists both names, "yaml_name (api_type)".
+        joined = " ".join(out["available_types"])
+        assert "visit (visitjob)" in joined
+        assert "wait (waitjob)" in joined
 
-    def test_api_type_is_not_accepted_as_a_lookup_key(self, no_network):
-        """Lookup is by YAML name; passing the API type must fail loudly, not silently."""
-        out = json.loads(s.get_job_type_schema("visitjob"))
+    def test_api_type_is_accepted_as_a_lookup_key(self, no_network):
+        """Lookup accepts either the YAML name or the API type, so a caller holding
+        the write-tool name (e.g. 'visitjob') still resolves."""
+        by_api = json.loads(s.get_job_type_schema("visitjob"))
+        by_yaml = json.loads(s.get_job_type_schema("visit"))
 
-        assert "error" in out
+        assert "error" not in by_api
+        assert by_api["yaml_name"] == "visit"
+        assert by_api["api_type"] == "visitjob"
+        assert by_api == by_yaml
 
 
 class TestGetSpecTemplate:
@@ -1623,6 +1630,22 @@ class TestGetSpecTemplate:
             if isinstance(step, dict) and "template" in step
         }
         assert referenced <= defined
+
+
+class TestDocResources:
+    """The doc:// resources give an MCP-only agent the design knowledge."""
+
+    def test_authored_resources_carry_the_key_semantics(self, no_network):
+        tp = s.doc_treatment_params()
+        assert "int(round(x)) == 1" in tp
+        assert "0.5" in tp and "switch" in tp.lower()
+        cap = s.doc_capacity()
+        assert "CET" in cap and "start_at" in cap
+
+    def test_file_backed_resources_return_the_docs(self, no_network):
+        assert "experiment" in s.doc_experiment_designer().lower()
+        # §7.3 degradation contract lives in the integration contract
+        assert "treatment_lost" in s.doc_integration_contract()
 
     def test_unknown_template_type_silently_returns_the_default(self, no_network):
         """Documents current behaviour, which is mildly misleading.

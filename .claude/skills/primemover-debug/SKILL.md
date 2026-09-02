@@ -25,7 +25,8 @@ Carry these down as you narrow the search.
 `docs/integration-contract.md` §3.4, executable copy in `orchestrator/status.py`:
 
 - **Job**: `running` · `success` · `warning` · `failure` · `skipped`
-- **Run/Queue**: `running` · `success` · `failure` · `skipped` (no `warning`)
+- **Run/Queue**: `running` · `success` · `warning` · `failure` · `skipped`
+  (queue `warning` added 2026-08-28: completed with lost/degraded jobs)
 
 Two traps:
 

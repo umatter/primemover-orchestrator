@@ -240,7 +240,7 @@ before writing any status check.
 
 ```
 job    status_code: running | success | warning | failure | skipped
-queue  status_code: running | success | failure | skipped
+queue  status_code: running | success | warning | failure | skipped
 ```
 
 The field is `status_code`. **There is no `status` field on the wire** — code

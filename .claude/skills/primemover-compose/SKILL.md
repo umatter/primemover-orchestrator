@@ -47,9 +47,15 @@ act on. Never guess an id — read it.
 ### Step 2 — Pick the path
 - **Compose a run on an existing bot** (most common, cleanest): you need a `crawler_id` from
   `list_crawlers`. Go to Step 3.
-- **Create a whole new experiment + bot**: call `pm_create_experiment` (confirm), then get the
-  Library block ids with **`list_library`** (agents / proxies / configurations), and call
+- **Create a whole new experiment + bot**: call `pm_create_experiment(name, contact, ...)` —
+  **`contact` is required** (an email address; omitting it fails with a 422) — (confirm), then get
+  the Library block ids with **`list_library`** (agents / proxies / configurations), and call
   `pm_add_bot(experiment_id, name, agent_id, proxy_id, configuration_id)` (dry-run → confirm). Then Step 3.
+- **Factorial / multi-arm design**: don't hand-build every cell. Write the YAML DSL and use the spec
+  tools — `get_spec_template` → `validate_experiment_spec` → `preview_factorial_design` →
+  `upload_experiment(dry_run=true)` then `dry_run=false`. The DSL, and the treatment-param traps
+  (pi/psi/kappa/tau are **0/1 switches**), are in the `doc://experiment-designer` and
+  `doc://treatment-params` MCP resources.
 
 ### Step 3 — Compose the run (preferred: one call)
 Prefer `pm_compose_run` — it builds the run + ordered jobs + each job's behaviours in one go:
@@ -72,11 +78,14 @@ Granular alternative (when editing an existing run): `pm_create_run` → `pm_add
 auto-orders and chains) → `pm_set_behaviour` per parameter.
 
 ### Step 4 — Get the job parameters right
-Each job type needs specific behaviours. Check `get_job_type_schema(<type>)` when unsure. Common ones:
+Each job type needs specific behaviours. Check `get_job_type_schema(<type>)` when unsure — it accepts
+**either** the API type (`visitjob`, what the `pm_` write tools take) **or** the DSL yaml_name
+(`visit`). `list_job_types` returns both names side by side; the write tools below use the **API
+type**. Common ones:
 
 | Job type | Required behaviours | Notes |
 |---|---|---|
-| `visitjob` | `url` | + optional `captchaMode` (default `never`) |
+| `visitjob` | `url` | + optional `captchaMode` (default `never`), `consent` (`accept`\|`reject`\|`ignore`) |
 | `waitjob` | `seconds` | |
 | `clickjob` / `singleselectjob` | `selector` | + `selectionType` (default `XPATH`) |
 | `entertextfieldjob` | `text`, `selector` | + `typingMode`, `appendReturn` |
