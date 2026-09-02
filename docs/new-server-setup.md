@@ -174,35 +174,16 @@ mechanism is ownership isolation:
   with it. See `primemover_api` `app/Access/Isolation.php`
   (`isServiceAccount` / `enabled`).
 
-**Status on ex63 (re-verified 2026-09-02 -- corrects an earlier wrong note that
-said partitioning was already active): owner-partitioning is NOT active yet; the
-ex63 runner sees everything.** `primemover.isolation.enabled` is `true`, **but
-`service_account_ids = [1]`** -- the default `PM_SERVICE_ACCOUNT_IDS=1` from
-`config/primemover.php` with no override in the API `.env` -- and the runner, CLI,
-MCP and e2e suite all authenticate as `admin@primemover.example` (**user 1**). User 1 is
-therefore a **service account that bypasses isolation and sees every user's
-unprocessed crawlers**. (Ownership today: 13 experiments under user 1, one each
-under users 2/5/6; the ex63 runner sees and would run all of them.) So a second
-runner added as a *regular* user would **not** partition cleanly -- ex63's
-all-seeing runner would also grab that user's queues, and both would run them:
-the exact double-processing this section warns against.
-
-**To make owner-partitioning work, first stop ex63's runner from being a service
-account:** remove `1` from `PM_SERVICE_ACCOUNT_IDS` (empty it, or point it at a
-dedicated non-runner id) so the ex63 runner -- as user 1 -- sees only user-1
-experiments. Then a second runner authenticating as a *different* regular user
-with its own experiments partitions cleanly. Two consequences, because user 1 is
-shared: (a) the CLI/MCP/e2e also stop seeing everything (`list_experiments` would
-show only user-1 experiments, and MCP-composed experiments -- always owned by
-user 1 -- would run only on the user-1 runner); (b) experiments currently owned
-by users 2/5/6 stop being executed unless a runner authenticates as those owners,
-so migrate their ownership first. Verify the effective value on the running API:
-`docker exec primemover-php8.1 php artisan tinker --execute="echo json_encode(config('primemover.isolation.service_account_ids'));"`
-
-If you would rather not partition by owner, the alternative is an atomic claim in
-the API (`UPDATE ... WHERE processing = 0` returning affected rows, or
-`SELECT ... FOR UPDATE`) so a queue is claimed by exactly one runner. That is an
-API change and does not exist today.
+**Since 2026-09-02 partitioning is explicit, not by owner.** Experiments carry
+`runner_user_id` (NULL = the default runner, `PM_DEFAULT_RUNNER_USER_ID`, 1 on
+ex63). Every runner account is listed in `PM_SERVICE_ACCOUNT_IDS` (`1,3` on ex63),
+so runners see everything for status reporting, but `crawlers-unprocessed` and
+`crawlers-testing` only hand each runner the experiments assigned to it. To add a
+runner-only box: create (or reuse) an API user for it, add its id to
+`PM_SERVICE_ACCOUNT_IDS`, `config:clear`, and assign experiments to it with
+`runner_user_id`. Researchers keep creating experiments under their own logins;
+those run on the default runner unless assigned elsewhere. See
+`docs/integration-contract.md` "Runner assignment".
 
 ### Multilogin limits are per workspace, not per box
 

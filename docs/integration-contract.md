@@ -353,6 +353,23 @@ corrected to the five values above.
 
 ---
 
+### 3.5 Runner assignment (2026-09-02)
+
+`experiments.runner_user_id` (nullable, FK → users) names the runner account that
+executes an experiment. `NULL` means the default runner, `PM_DEFAULT_RUNNER_USER_ID`
+on the API (1 = ex63). Valid targets are exactly the accounts in
+`PM_SERVICE_ACCOUNT_IDS`; on ex63 that is `1,3` (ex63's runner, the VM's runner).
+
+Only two endpoints are partitioned by it, the two the Java runner fetches work from:
+`GET /crawlers-unprocessed` and `GET /crawlers-testing` return crawlers whose
+experiment is assigned to the calling runner (plus unassigned ones for the default
+runner). The filter applies regardless of isolation bypass. Every other endpoint —
+including the runner's status PUTs — is unaffected.
+
+Ownership (`user_id`) is visibility only. Researchers create experiments under their
+own login and pick the runner with `runner_user_id` (create/update requests; the
+MCP `pm_create_experiment` and the YAML `experiment.runner_user_id`).
+
 ## 4. Directory Structure
 
 ### 4.1 primemover_api

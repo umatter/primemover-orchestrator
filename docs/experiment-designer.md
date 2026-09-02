@@ -108,6 +108,13 @@ crawlers:
 
 This automatically generates 10 crawlers (2 conditions × 5 replications) with proper naming and parameter mapping.
 
+### Runner assignment
+
+The `experiment:` mapping accepts an optional runner choice:
+
+- `runner_user_id` (optional, integer): which runner executes the study. `1` = ex63
+  (the default when omitted), `3` = the runner-only VM.
+
 ## Installation
 
 ```bash
