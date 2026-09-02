@@ -1,8 +1,8 @@
-# Proposal: a generic, lambda-driven treatment model
+# Plan: a generic, strategy-dispatched treatment model
 
-**Status:** draft for review (track D of the 2026-09-02 experiment-design review).
-Not implemented. This proposes a direction and a sequencing; it asks for
-decisions before any code.
+**Status:** decisions made 2026-09-02; **implementation plan below, not yet
+built**. Track D of the experiment-design review. Tracks A–C (the enablers) are
+merged.
 
 ## Problem
 
@@ -10,151 +10,154 @@ decisions before any code.
 (`pi, psi, kappa, tau, beta, alpha`) plus two lists (`search_terms`,
 `media_outlet_urls`), typed identically at every layer. That was right for the
 YouTube personalization study, but it is not a general framework: a new
-experiment with a different treatment cannot express it without editing code in
-several repos.
-
-The transport is already generic — the runner ships the whole page source, the
-full crawler and the raw configuration to the lambda as **opaque JSON**
-(`LambdaSelectJobHandler.java:398`, `LambdaCaller.java:193`). But arbitrary
-treatment config cannot reach the decision function today because of **four typed
-chokepoints**, each of which silently drops anything outside the fixed keys:
-
-1. `experiment_designer/spec/converter.py` — rebuilt `params` from a fixed
-   whitelist. *(Track B has opened this to pass unknown keys through; kept here
-   for the full picture.)*
-2. `primemover_api` `params` table — one typed column per param
-   (`…create_params_table.php`).
-3. `primemover_runner` `ConfigurationParam` — typed fields +
-   `@JsonIgnoreProperties(ignoreUnknown=true)` (`ConfigurationParam.java:13`),
-   copied into a typed `SelectionConfiguration`.
-4. `bot-decision-yt` `lambda_function.py` — reads the six names directly
-   (`:656`), runs hardwired `if preference_x == 1` branches (`:1078`, `:1162`, …),
-   and picks LLM-vs-random as a *side effect* of which fixed param built a rating
-   column (`:1356`) rather than as a per-experiment choice.
-
-The DSL spine above the chokepoints is already generic: `maps_to` sets arbitrary
-dotted paths (`design_expander.py:614`), distributions and data pools are
-treatment-agnostic, and `lambda_select` already carries an arbitrary
-`task`/`function`.
+experiment with different treatment logic cannot express it without code changes
+in several repos, and the decision function is a monolith of hardwired
+`if preference_x == 1` branches with LLM-vs-random chosen as a side effect.
 
 ## Goal
 
-An experiment declares its treatment as **arbitrary config**, which flows
-unmodified to the lambda, where a **per-experiment strategy** decides. Three
-strategy kinds must be first-class:
+An experiment declares its treatment as **arbitrary config carried on the
+`lambda_select` job's behaviours**, which flows to the decision function, where a
+**per-experiment strategy** (named explicitly) decides. Three strategy kinds are
+first-class: **LLM-driven**, **parameters + decision-function**, and
+**random/control**. The framework never knows any study's parameter *names*; it
+carries config and routes to a strategy, and the strategy owns the meaning.
 
-- **LLM-driven** — an LLM rates/filters candidates (today's `llm` mode).
-- **Parameter + decision-function** — deterministic rules over declared params
-  (today's `if pi == 1` branches, but registered per study).
-- **Random / control** — no treatment applied (today's `random` mode).
+## Decisions (settled 2026-09-02)
 
-The framework should not know the *names* of any study's params. It should carry
-config and route to a strategy; the strategy owns the meaning.
+1. **Channel = behaviours.** Treatment config rides on the `lambda_select` job's
+   behaviours (a generic `name`→`value` store that already flows DSL→API→runner),
+   **not** a new `treatment_config` DB column. This avoids a production DB
+   migration. Cost: treatment is per-job rather than per-crawler, so the DSL is
+   responsible for applying it consistently across a session's select jobs.
+2. **Explicit `strategy` behaviour**, e.g. `strategy = youtube_v1`. Defaulted to
+   `youtube_v1` when absent, so deployed experiments are unchanged. No inference
+   from which keys are present (that is how the fragile `selection_mode`
+   side-effect happened).
+3. **Strategies live in `bot-decision-yt`** as a registry, one module per study.
+4. **Validation via a shared per-strategy JSON schema file** shipped in
+   `bot-decision-yt`, read by both `validate_experiment_spec` (offline/CI) and the
+   strategy at runtime — single source, offline-capable.
+5. **Phased, decision-function-first**, ~two repos (runner + lambda; the API is
+   untouched). Sequence below never lets a mixed version record false data.
 
-## Design
+## Why behaviours reach nothing today (the two real gaps)
 
-### 1. A generic config channel (remove the three remaining chokepoints)
+Behaviours are generic in the DSL (`parser.py:732`, `converter.py:420`) and the
+API DB (`create_behaviors_table.php`, unguarded `Behavior.php`), and are
+serialized API→runner. But:
 
-Carry an opaque treatment blob end to end, **alongside** the legacy typed columns
-(which stay, for back-compat — legacy rows are real, per the `failed`/`failure`
-precedent in CLAUDE.md).
+- The runner flattens them to a `Map` and copies only known keys (`task`,
+  `linkValue`, …) into a **typed** internal `LambdaSelectJob`, dropping the rest
+  (`PrimemoverApiConverter.java:169`, `:138`).
+- The payload it POSTs (`LambdaSelectJobParam`) carries that typed job, which has
+  **no behaviours field**, so `lambda_function.py` never sees them (it reads only
+  `crawler.config.selectionConfiguration` + `pagesource`, `:656`).
 
-- **API** (`primemover_api`): add a JSON/`longText` column to `params` (e.g.
-  `treatment_config`) or a key-value child table; the crawler-config serializer
-  that emits `selectionConfiguration` includes it. Migration only adds a nullable
-  column.
-- **Runner** (`primemover_runner`): add a `Map<String,Object>` (or raw
-  `JsonNode`) field to `ConfigurationParam` / `SelectionConfiguration` so unknown
-  keys survive `@JsonIgnoreProperties`; `PrimemoverApiConverter` copies the blob
-  into `selectionConfiguration`. `LambdaCaller` / the job envelope need **no**
-  change — transport is already opaque.
-- **Converter** (`experiment_designer`): already passes unknown `params` keys
-  through (track B). Optionally emit the blob under a dedicated `treatment_config`
-  key rather than loose in `params`, to keep the wire shape explicit.
+So the plan's runner work is: carry the behaviours through to the payload. The
+lambda work is: read + dispatch on them.
 
-### 2. A strategy dispatcher in the decision function
+## Config shape on the wire
 
-Replace the monolithic body of `lambda_function.py` with a **registry**:
+Behaviours are string `name`→`value`. A strategy reads:
 
-- Read a `strategy` (or `study`) key from `selectionConfiguration`. If absent,
-  default to a `youtube_v1` strategy that reproduces today's exact behavior — so
-  the currently deployed experiments are unchanged (absence == legacy, per the
-  "absence reads as unknown, never degraded" rule).
-- Each strategy is a small object that declares: the config keys it reads, the
-  filters it *requests*, and a `select(candidates, config, page) -> decision`
-  method. The current six-param logic becomes the `youtube_v1` strategy verbatim.
-- `selection_mode` becomes something the **strategy** reports (`llm` / `random` /
-  strategy-specific), not an inference from column counts.
+- `strategy` — the strategy name (string).
+- its own named behaviours for simple scalar config (e.g. `pi = 1`), **and/or**
+- a single `treatment_config` behaviour whose value is a JSON string, for
+  structured config.
 
-### 3. Generalize the degradation contract (build on it, don't replace it)
+The per-strategy JSON schema (decision #4) defines which of these the strategy
+expects and validates them. `youtube_v1` reads the existing switch behaviours.
 
-The response envelope (`degraded` / `treatment_lost` / `selection_mode` /
-`filters` / `llm`, `docs/integration-contract.md` §7.3) is already
-treatment-agnostic in shape and is the right foundation. The one change:
-`treatment_lost` must stay computed **once, at the source** as "degraded AND
-nothing requested applied", where each strategy reports its own
-`requested` vs `applied` filter sets (rather than the global `FILTER_NAMES`
-constant). `orchestrator/status.py` and the alert (`pm-lambda-treatment-lost`)
-then work unchanged for any strategy.
+## Implementation plan
 
-### 4. DSL surface
+### Phase 1 — `bot-decision-yt` (deployable alone; zero behaviour change)
 
-No structural DSL change needed — `maps_to` already targets arbitrary paths. Add:
-- a documented `treatment_config` (or `strategy`) block in the schema, open
-  (`additionalProperties: true`) so studies carry their own keys;
-- validation that is **strategy-aware where it can be** (e.g. the 0/1 switch rule
-  from track A applies to the `youtube_v1` strategy's params, not universally);
-- `get_spec_template("<strategy>")` templates per strategy.
+- Add `strategies/` registry. Each strategy declares: `name`, the config keys it
+  reads, the filters it **requests**, a `schema.json`, and
+  `select(candidates, config, page) -> decision`.
+- Refactor the current monolith into a **`youtube_v1`** strategy — the existing
+  pi/psi/kappa/tau logic, verbatim, so behaviour is identical.
+- Dispatcher in `select_recommendation`:
+  1. Read treatment config: prefer `event['job']['behaviors']` **if present**,
+     else fall back to `crawler.config.selectionConfiguration` (legacy).
+  2. Read `strategy`; default `youtube_v1` when absent.
+  3. Route to the strategy; each strategy reports its own `requested`/`applied`
+     filter sets.
+- Keep `treatment_lost` computed **once, at the source** (degraded AND nothing
+  requested applied), now per-strategy.
+- Ship `strategies/<name>/schema.json` with importable `check_*` helpers (mirrors
+  the `tests/test_mainstream_media_csv.py` importable-helper pattern).
+- Tests: dispatch, **`youtube_v1` parity** (existing behaviour unchanged), the
+  no-behaviours/no-strategy fallback, per-strategy degradation.
+- **Deploy is a no-op behaviourally**: nothing sends behaviours yet, absence →
+  `youtube_v1` → `selectionConfiguration`.
+
+### Phase 2 — `primemover_runner` (makes behaviours reach the lambda)
+
+- Give the internal job model a generic `Map<String,String>` (e.g. on `BaseJob`
+  or `LambdaSelectJob`) to hold behaviours not consumed by typed fields.
+- Populate it in `convertApiLambdaSelectJob` / `setBaseFields` from the behaviour
+  map that `convertApiBehaviourList` already builds (`PrimemoverApiConverter.java`).
+- Ensure it serializes into `LambdaSelectJobParam` so it reaches the payload
+  (`LambdaSelectJobParam.java`, `LambdaSelectJobHandler.java:398`).
+- Build in a throwaway clone (JDK 25, one jar). Test: a `lambda_select` job with
+  an arbitrary behaviour serializes that behaviour into the payload.
+- **Deploy only after Phase 1 is live.**
+
+### Phase 3 — `primemover-orchestrator` (authoring + validation; no API change)
+
+- `job_registry.py`: register `strategy` (and known treatment behaviours) as
+  recognized optional behaviours on `lambda_select`.
+- `validate_experiment_spec`: when a `lambda_select` job carries a `strategy`
+  behaviour, load that strategy's `schema.json` from the `bot-decision-yt` sibling
+  (like the decision symlink) and validate the treatment behaviours against it;
+  if the sibling/schema is absent, **warn, do not hard-fail** (keep the
+  orchestrator's dependency on the sibling soft).
+- `get_spec_template("<strategy>")` per-strategy templates; update
+  `docs/experiment-designer.md` and the `doc://treatment-params` resource to
+  describe the strategy mechanism.
+- Tests for registration, schema validation, and templates.
+
+### Contract & docs
+
+- `docs/integration-contract.md` §7.3: treatment now comes from the
+  `lambda_select` job's behaviours (`strategy` + config); the degradation report
+  is per-strategy (`requested`/`applied`). Update §0's deploy order to
+  lambda → runner → DSL.
+- `orchestrator/status.py` and the `pm-lambda-treatment-lost` alert are unchanged
+  — `treatment_lost` stays a single source-computed boolean.
 
 ## Backward compatibility
 
-- Legacy typed columns and the six params keep working; `youtube_v1` is the
-  default strategy, so **already-deployed experiments and the running decision
-  function behave identically**.
-- A payload with no `strategy` and no `treatment_config` is a legacy payload →
-  `youtube_v1`. Absence is never treated as degraded.
+- No API change; legacy typed columns and the six params keep working.
+- A payload with no `strategy` behaviour and no job behaviours → `youtube_v1`
+  reading `selectionConfiguration`, i.e. **today's exact behaviour**. Absence is
+  never treated as degraded.
 
-## Sequencing (this spans four repos; order matters)
+## Sequencing safety
 
-Like `docs/integration-contract.md` §0, the danger is mixed versions recording
-*false* data rather than merely incomplete data. Proposed order:
+Deploy **lambda → runner → DSL**. Before the runner change, no behaviours arrive,
+so the lambda uses the legacy path unchanged. After it, behaviours arrive and
+dispatch runs. An old spec (no `strategy`) always falls back to `youtube_v1`. At
+no point does a mixed version record false data.
 
-1. **Decision function** first: add the strategy registry with `youtube_v1` as
-   default **and** keep reading the legacy params. Deployable alone; no behavior
-   change. (Reads the blob if present, ignores it otherwise.)
-2. **API**: add the nullable `treatment_config` column + serializer. Deployable
-   alone; nothing writes it yet.
-3. **Runner**: carry the blob through `ConfigurationParam` → `selectionConfiguration`.
-4. **experiment_designer / MCP**: emit `treatment_config`, add strategy templates
-   and validation, doc resources.
+## Effort
 
-At every step the system is runnable and legacy experiments are unaffected,
-because the decision function tolerates the blob's absence from step 1.
+Rough: Phase 1 ~1–2 days (registry refactor + parity tests), Phase 2 ~half a day
+(runner map + payload), Phase 3 ~half–1 day (registry/validation/templates), plus
+contract docs. Best scoped as one milestone.
 
-## Risks & open questions (need decisions)
+## Remaining sub-decision (not blocking)
 
-1. **Blob location on the wire** — a dedicated `treatment_config` object vs loose
-   keys in `params`. Recommendation: dedicated, so legacy vs generic is explicit.
-2. **Strategy identity** — a `strategy` enum the decision function registers, vs
-   inferring from which config keys are present. Recommendation: explicit
-   `strategy` key; inference is how we got the fragile `selection_mode`
-   side-effect.
-3. **Where strategies live** — all in `bot-decision-yt`, or a plugin dir. Start
-   in-repo; revisit if studies proliferate.
-4. **Validation ownership** — can the orchestrator validate a study's config
-   without importing the decision function? Options: a JSON-schema per strategy
-   shipped in `bot-decision-yt` and read by `validate_experiment_spec`, or a
-   lambda `POST /validate` endpoint. Decision needed.
-5. **Effort** — realistically a multi-day change across four repos with a
-   migration and a decision-function refactor. Worth scoping as its own milestone
-   rather than a single PR.
+How the orchestrator reaches a strategy's `schema.json` — read the sibling
+`bot-decision-yt` path if present (soft dependency, warn-and-skip otherwise), or
+vendor/publish the schemas. Recommendation: soft sibling read, matching the
+existing decision-symlink pattern. Decide at Phase 3.
 
-## What is already done (tracks A–C)
+## Status of the enablers (tracks A–C, merged)
 
-- A: 0/1 switch semantics enforced (schema + validator), the footgun template/docs
-  fixed. B: converter passes unknown params through; validator warns they are not
-  yet delivered; `try_scroll*` reachable. C: skills refreshed; design docs served
-  as MCP resources; `get_job_type_schema` accepts either name.
-
-These are the enablers; D is the architecture. **Decisions on the open questions
-above are the next step before implementation.**
+A: 0/1 switch semantics enforced (schema + validator); footgun template/docs
+fixed. B: converter passes unknown params through; validator warns; `try_scroll*`
+reachable. C: skills refreshed; design docs served as MCP resources;
+`get_job_type_schema` accepts either name.
