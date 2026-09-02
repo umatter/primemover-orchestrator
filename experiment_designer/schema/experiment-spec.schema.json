@@ -54,6 +54,10 @@
         "description": {
           "type": "string",
           "description": "Experiment description"
+        },
+        "runner_user_id": {
+          "type": "integer",
+          "description": "Runner account that executes this experiment; omit for the default runner (1 = ex63). 3 = the runner-only VM."
         }
       }
     },

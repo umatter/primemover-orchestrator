@@ -287,7 +287,17 @@ def upload(
     click.echo(f"Experiment: {result.experiment_name}")
     click.echo(f"Crawlers:   {result.crawler_count}")
     click.echo(f"Jobs:       {result.total_jobs}")
-    click.echo(f"Runner:     {result.experiment_runner_user_id or 'default'}")
+    runner_id = result.experiment_runner_user_id
+    if experiment_id is not None and runner_id is not None:
+        click.echo(f"Runner:     {runner_id} (ignored: appending to existing experiment)")
+        click.secho(
+            "  WARNING: runner_user_id is ignored because you are appending to an "
+            "existing experiment (--experiment-id); it can only be set when the "
+            "experiment is created.",
+            fg="yellow",
+        )
+    else:
+        click.echo(f"Runner:     {runner_id if runner_id is not None else 'default'}")
     click.echo()
 
     if dry_run:

@@ -155,6 +155,7 @@ class TestCreateExperiment:
     def test_runner_assignment_is_absent_by_default(self, api: RecordingAPI) -> None:
         out = json.loads(s.pm_create_experiment(name="Study A", contact="ada@example.org"))
         assert "runner_user_id" not in out["payload"]  # NULL = default runner, API-side
+        assert api.calls == []
 
 
 # =============================================================================
@@ -881,6 +882,78 @@ class TestComposeRun:
         assert api.calls == []
         assert "MCP writes are restricted to the local dev API" in out["error"]
         assert "api.primemover.example" in out["error"]
+
+
+# =============================================================================
+# upload_experiment -- runner assignment (dry_run only; it never touches the
+# network in that branch, verified by asserting no _api_request call is made and
+# by not patching requests.post at all, so a stray call would raise).
+# =============================================================================
+
+
+class TestUploadExperimentRunnerAssignment:
+    MINIMAL_SPEC = """
+version: "1.0"
+experiment:
+  name: VM study
+  runner_user_id: 3
+
+crawlers:
+  - name: Test Crawler
+    proxy:
+      hostname: proxy.example.com
+      port: 8080
+    session:
+      workflow:
+        - visit: https://example.com
+"""
+
+    NO_RUNNER_SPEC = """
+version: "1.0"
+experiment:
+  name: Default study
+
+crawlers:
+  - name: Test Crawler
+    proxy:
+      hostname: proxy.example.com
+      port: 8080
+    session:
+      workflow:
+        - visit: https://example.com
+"""
+
+    def test_argument_wins_over_yaml(self, api: RecordingAPI) -> None:
+        out = json.loads(s.upload_experiment(self.MINIMAL_SPEC, dry_run=True, runner_user_id=7))
+
+        assert out["success"] is True
+        assert out["runner_user_id"] == 7
+        assert "runner_user_id_ignored" not in out
+        assert api.calls == []
+
+    def test_yaml_used_when_no_argument(self, api: RecordingAPI) -> None:
+        out = json.loads(s.upload_experiment(self.MINIMAL_SPEC, dry_run=True))
+
+        assert out["success"] is True
+        assert out["runner_user_id"] == 3
+        assert "runner_user_id_ignored" not in out
+        assert api.calls == []
+
+    def test_none_when_neither_source_specifies_one(self, api: RecordingAPI) -> None:
+        out = json.loads(s.upload_experiment(self.NO_RUNNER_SPEC, dry_run=True))
+
+        assert out["success"] is True
+        assert out["runner_user_id"] is None
+        assert "runner_user_id_ignored" not in out
+        assert api.calls == []
+
+    def test_experiment_id_with_runner_id_is_flagged_as_ignored(self, api: RecordingAPI) -> None:
+        out = json.loads(s.upload_experiment(self.MINIMAL_SPEC, experiment_id=42, dry_run=True))
+
+        assert out["success"] is True
+        assert out["runner_user_id_ignored"] == 3
+        assert any("ignored" in w for w in out["warnings"])
+        assert api.calls == []
 
 
 # =============================================================================

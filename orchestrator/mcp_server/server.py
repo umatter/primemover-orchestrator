@@ -684,6 +684,8 @@ def pm_create_experiment(
         testing: Mark as a testing experiment (runner uses testing endpoints).
         runner_user_id: Which runner executes it: 1 = ex63 (the default when omitted),
             3 = the runner-only VM. Must be a configured runner account on the API.
+            None means "not supplied" -- there is no way to force the default
+            runner from this argument; omit it and the API applies its own default.
         confirm: Apply the change; without it, returns a preview only.
     """
     payload: dict[str, Any] = {
@@ -2153,6 +2155,10 @@ def upload_experiment(
             False to apply.
         runner_user_id: Which runner executes it: 1 = ex63 (the default when omitted),
             3 = the runner-only VM. Must be a configured runner account on the API.
+            None means "not supplied", which lets a `runner_user_id` set in the YAML
+            spec's `experiment:` block through; there is no way to force the default
+            runner from this argument alone. Ignored entirely when experiment_id is
+            given -- runner assignment can only be set when an experiment is created.
 
     Returns:
         JSON with upload result including experiment ID and crawler count,
@@ -2183,18 +2189,41 @@ def upload_experiment(
     if result.errors:
         return json.dumps({"success": False, "errors": result.errors, "warnings": result.warnings})
 
+    # Effective runner assignment: an explicit argument wins over a YAML value;
+    # None means neither source specified one, and the API's default runner applies.
+    effective_runner_id = (
+        runner_user_id if runner_user_id is not None else result.experiment_runner_user_id
+    )
+
+    # A runner assignment can only be set when an experiment is created, never when
+    # appending crawlers to an existing one -- silently dropping it would otherwise
+    # look like it took effect. Surface that here, not just where the create payload
+    # is built, so it shows up in the dry-run preview too.
+    runner_ignored = experiment_id is not None and effective_runner_id is not None
+    ignored_warnings = (
+        [
+            f"runner_user_id={effective_runner_id} ignored: it can only be set when "
+            "creating a new experiment, not when appending to an existing one "
+            "(experiment_id was given)."
+        ]
+        if runner_ignored
+        else []
+    )
+
     if dry_run:
-        return json.dumps(
-            {
-                "success": True,
-                "dry_run": True,
-                "experiment_name": result.experiment_name,
-                "crawler_count": result.crawler_count,
-                "total_jobs": result.total_jobs,
-                "warnings": result.warnings,
-                "to_apply": "call again with dry_run=false",
-            }
-        )
+        preview: dict[str, Any] = {
+            "success": True,
+            "dry_run": True,
+            "experiment_name": result.experiment_name,
+            "crawler_count": result.crawler_count,
+            "total_jobs": result.total_jobs,
+            "runner_user_id": effective_runner_id,
+            "warnings": result.warnings + ignored_warnings,
+            "to_apply": "call again with dry_run=false",
+        }
+        if runner_ignored:
+            preview["runner_user_id_ignored"] = effective_runner_id
+        return json.dumps(preview)
 
     # Local-only, like every other write on this surface. Checked here rather
     # than at the top of the function because the dry-run branch above is pure
@@ -2245,10 +2274,8 @@ def upload_experiment(
                 "contact": "PrimeMover Orchestrator MCP",
                 "active": 1,
             }
-            if runner_user_id is not None:
-                create_payload["runner_user_id"] = runner_user_id
-            elif (exp_runner_id := getattr(result, "experiment_runner_user_id", None)) is not None:
-                create_payload["runner_user_id"] = exp_runner_id
+            if effective_runner_id is not None:
+                create_payload["runner_user_id"] = effective_runner_id
 
             create_response = requests.post(
                 f"{api_url}/experiments",
@@ -2283,16 +2310,18 @@ def upload_experiment(
         )
         upload_response.raise_for_status()
 
-        return json.dumps(
-            {
-                "success": True,
-                "experiment_id": experiment_id,
-                "experiment_name": result.experiment_name,
-                "crawler_count": result.crawler_count,
-                "total_jobs": result.total_jobs,
-                "warnings": result.warnings,
-            }
-        )
+        success: dict[str, Any] = {
+            "success": True,
+            "experiment_id": experiment_id,
+            "experiment_name": result.experiment_name,
+            "crawler_count": result.crawler_count,
+            "total_jobs": result.total_jobs,
+            "runner_user_id": effective_runner_id,
+            "warnings": result.warnings + ignored_warnings,
+        }
+        if runner_ignored:
+            success["runner_user_id_ignored"] = effective_runner_id
+        return json.dumps(success)
 
     except requests.exceptions.HTTPError as e:
         error_detail = ""
