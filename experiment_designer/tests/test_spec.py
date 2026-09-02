@@ -434,6 +434,32 @@ crawlers:
 """
         result = self.converter.convert(self.parser.parse(yaml_content))
         self.assertTrue(any("runner_user_id" in e for e in result.errors))
+        # Verify short-circuit: no JSON crawlers generated
+        self.assertEqual(result.json_data, [])
+        self.assertEqual(result.crawler_count, 0)
+        self.assertIsNone(result.experiment_runner_user_id)
+
+    def test_convert_rejects_boolean_runner_assignment(self):
+        yaml_content = """
+experiment:
+  name: Bad
+  runner_user_id: true
+
+crawlers:
+  - name: Test Crawler
+    proxy:
+      hostname: proxy.example.com
+      port: 8080
+    session:
+      workflow:
+        - visit: https://example.com
+"""
+        result = self.converter.convert(self.parser.parse(yaml_content))
+        self.assertTrue(any("runner_user_id" in e for e in result.errors))
+        # Verify short-circuit: no JSON crawlers generated
+        self.assertEqual(result.json_data, [])
+        self.assertEqual(result.crawler_count, 0)
+        self.assertIsNone(result.experiment_runner_user_id)
 
 
 class TestSpecValidator(unittest.TestCase):
