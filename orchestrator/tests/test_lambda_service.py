@@ -654,3 +654,48 @@ def test_fd_stats_never_raises(monkeypatch):
     stats = server._fd_stats()
     assert stats["open"] is None
     assert stats["near_limit"] is None
+
+
+# ---------------------------------------------------------------------------
+# The server uses waitress in production, not werkzeug's dev server
+# ---------------------------------------------------------------------------
+#
+# The werkzeug dev server leaks an epoll fd under concurrency (reproduced with a
+# bare threaded Flask app: 0 -> 17 over 90 concurrent requests). On this VM that
+# reached 844 leaked fds in one soak round and silently disabled a filter once
+# the ceiling was hit. waitress holds no per-connection epoll. These tests pin
+# which server main() actually starts.
+
+
+def test_production_mode_serves_with_waitress(monkeypatch):
+    import waitress
+
+    called = {}
+    monkeypatch.setattr(server, "run_startup_checks", lambda: {})
+    monkeypatch.setattr(server, "get_decision_function", lambda: None)
+    monkeypatch.setattr(waitress, "serve", lambda app, **kw: called.setdefault("waitress", kw))
+    monkeypatch.setattr(server.app, "run", lambda **kw: called.setdefault("werkzeug", kw))
+    monkeypatch.setattr("sys.argv", ["server", "--port", "5001"])
+
+    server.main()
+
+    assert "waitress" in called, "production mode must serve with waitress"
+    assert "werkzeug" not in called, "the dev server must not be used in production"
+
+
+def test_debug_mode_keeps_the_dev_server(monkeypatch):
+    import waitress
+
+    called = {}
+    monkeypatch.setattr(server, "run_startup_checks", lambda: {})
+    monkeypatch.setattr(server, "get_decision_function", lambda: None)
+    monkeypatch.setattr(waitress, "serve", lambda app, **kw: called.setdefault("waitress", kw))
+    monkeypatch.setattr(server.app, "run", lambda **kw: called.setdefault("werkzeug", kw))
+    monkeypatch.setattr("sys.argv", ["server", "--debug"])
+
+    server.main()
+
+    # --debug is a local convenience where the reloader/debugger matter and
+    # concurrency does not; the dev server is fine there.
+    assert "werkzeug" in called
+    assert "waitress" not in called
