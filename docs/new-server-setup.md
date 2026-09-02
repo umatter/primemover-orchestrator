@@ -174,16 +174,30 @@ mechanism is ownership isolation:
   with it. See `primemover_api` `app/Access/Isolation.php`
   (`isServiceAccount` / `enabled`).
 
-**Status on ex63 (verified 2026-09-02): the partitioning is already active.**
-`primemover.isolation.enabled` is true, no service accounts are configured
-(`service_account_ids` is empty), and the runner authenticates as
-`admin@primemover.example` (user id 1). So the current runner already sees **only user 1's
-experiments**, not everything -- a second runner authenticating as a different
-user with its own experiments partitions cleanly with no code change. Corollary:
-an experiment created under any other owner will **not** run unless a runner
-authenticates as that owner (three older experiments owned by users 2/5/6 are
-already invisible to the ex63 runner this way; they are done or past-dated, so
-nothing is actively stranded -- but it shows the boundary is real).
+**Status on ex63 (re-verified 2026-09-02 -- corrects an earlier wrong note that
+said partitioning was already active): owner-partitioning is NOT active yet; the
+ex63 runner sees everything.** `primemover.isolation.enabled` is `true`, **but
+`service_account_ids = [1]`** -- the default `PM_SERVICE_ACCOUNT_IDS=1` from
+`config/primemover.php` with no override in the API `.env` -- and the runner, CLI,
+MCP and e2e suite all authenticate as `admin@primemover.example` (**user 1**). User 1 is
+therefore a **service account that bypasses isolation and sees every user's
+unprocessed crawlers**. (Ownership today: 13 experiments under user 1, one each
+under users 2/5/6; the ex63 runner sees and would run all of them.) So a second
+runner added as a *regular* user would **not** partition cleanly -- ex63's
+all-seeing runner would also grab that user's queues, and both would run them:
+the exact double-processing this section warns against.
+
+**To make owner-partitioning work, first stop ex63's runner from being a service
+account:** remove `1` from `PM_SERVICE_ACCOUNT_IDS` (empty it, or point it at a
+dedicated non-runner id) so the ex63 runner -- as user 1 -- sees only user-1
+experiments. Then a second runner authenticating as a *different* regular user
+with its own experiments partitions cleanly. Two consequences, because user 1 is
+shared: (a) the CLI/MCP/e2e also stop seeing everything (`list_experiments` would
+show only user-1 experiments, and MCP-composed experiments -- always owned by
+user 1 -- would run only on the user-1 runner); (b) experiments currently owned
+by users 2/5/6 stop being executed unless a runner authenticates as those owners,
+so migrate their ownership first. Verify the effective value on the running API:
+`docker exec primemover-php8.1 php artisan tinker --execute="echo json_encode(config('primemover.isolation.service_account_ids'));"`
 
 If you would rather not partition by owner, the alternative is an atomic claim in
 the API (`UPDATE ... WHERE processing = 0` returning affected rows, or

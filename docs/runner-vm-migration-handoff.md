@@ -162,15 +162,26 @@ tear anything down until the new runner is proven. Order:
    - decision function: `OPENAI_API_KEY` in the lambda unit's `EnvironmentFile`.
 5. **Build the jar** with Java 25 in a throwaway clone (never build in the live
    working copy). One jar in `target/`.
-6. **Work partitioning (hard requirement).** `crawlers-unprocessed` has no atomic
-   claim; two runners on the same API+visibility double-process every queue. ex63's
-   runner authenticates as `admin@primemover.example` (user id 1) with isolation **on**, so
-   it sees only user 1's experiments. **The VM runner must authenticate as a
-   different ex63 user** with its own experiments (create one via the API, or reuse
-   `ps@`/`runner@primemover.example` if appropriate). Confirm on ex63 that isolation is still
-   enabled and no service account sees everything. Decide **same vs separate
-   Multilogin workspace** (same account shares the 50 ops/min + ~1000-profile
-   quota; separate workspace = its own folder id).
+6. **Work partitioning (hard requirement) -- READ THE CORRECTED STATUS.**
+   `crawlers-unprocessed` has no atomic claim; two runners with overlapping
+   visibility double-process every queue. **ex63's runner authenticates as
+   `admin@primemover.example` (user 1), which IS a service account** (`service_account_ids
+   = [1]`, re-verified 2026-09-02 -- an earlier note in this file's plan and in
+   `new-server-setup.md` wrongly said "no service accounts"). It **bypasses
+   isolation and sees every user's crawlers**. So adding the VM runner as a
+   different regular user does **not** partition cleanly on its own -- ex63 would
+   also run that user's queues. Before the VM runner goes live, pick one:
+   - **(a)** remove `1` from `PM_SERVICE_ACCOUNT_IDS` on ex63 so its runner (user
+     1) sees only user-1 experiments, then run the VM runner as a *distinct
+     regular user* with its own experiments. Mind the shared-account consequences
+     (CLI/MCP/e2e stop seeing everything; experiments owned by users 2/5/6 stop
+     running unless a runner authenticates as them -- migrate ownership first).
+     Full detail in `new-server-setup.md` "The hard requirement".
+   - **(b)** add an atomic claim in the API (`UPDATE ... WHERE processing=0`
+     returning affected rows, or `SELECT ... FOR UPDATE`). Does not exist today.
+
+   Also decide **same vs separate Multilogin workspace** (same account shares the
+   50 ops/min + ~1000-profile quota; separate workspace = its own folder id).
 7. **systemd** (`sudo scripts/install-systemd-services.sh`) — units already assume
    `/home/primemover`. Enable `primemover-runner`, `primemover-lambda`,
    `multilogin-*` only (no api/gui/monitoring). Free **port 5001** from the old
