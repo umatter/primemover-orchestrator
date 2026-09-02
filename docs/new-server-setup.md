@@ -158,32 +158,35 @@ key), §6 (proxies) and the `primemover-runner` / `primemover-lambda` /
 `crawlers-unprocessed` is a plain `WHERE processed = 0` select with **no atomic
 claim**. Two runners pointed at the same API with the same visibility will both
 fetch the same queues and both run every job — doubling and corrupting the data.
-Before adding a second runner you must partition the work. The built-in
-mechanism is ownership isolation:
+Before adding a second runner you must partition the work.
 
-- That query is wrapped in `visibleTo()`, which scopes results to the
-  authenticated user's own experiments — **unless the account bypasses
-  isolation** (a service account, or `Isolation` disabled), which sees
-  everything.
-- **Safe pattern:** run each runner as a **distinct regular user account** with
-  isolation **enabled**, and assign each experiment to the owner whose runner
-  should execute it. Each runner then sees only its own slice — no double
-  processing, no code change.
-- **Check first:** confirm ex63's current runner is not on a service account (or
-  with isolation off) that sees everything — otherwise a second runner collides
-  with it. See `primemover_api` `app/Access/Isolation.php`
-  (`isServiceAccount` / `enabled`).
+Runners **are** service accounts — both listed in `PM_SERVICE_ACCOUNT_IDS` on
+the API, so each sees every experiment (needed for its own status reporting:
+agent heartbeats, job/queue PUTs). Partitioning happens on the two
+work-fetching endpoints, `crawlers-unprocessed` and `crawlers-testing`: both
+filter by `experiments.runner_user_id` — the experiments assigned to the
+calling runner, plus unassigned ones (`runner_user_id` NULL) for the default
+runner. Every other endpoint is unaffected. Ownership (`user_id`) is
+visibility only; it plays no part in which runner executes an experiment. See
+`primemover_api` `app/Access/Isolation.php` (`isServiceAccount` / `enabled`)
+and `docs/integration-contract.md` "Runner assignment".
 
-**Since 2026-09-02 partitioning is explicit, not by owner.** Experiments carry
-`runner_user_id` (NULL = the default runner, `PM_DEFAULT_RUNNER_USER_ID`, 1 on
-ex63). Every runner account is listed in `PM_SERVICE_ACCOUNT_IDS` (`1,3` on ex63),
-so runners see everything for status reporting, but `crawlers-unprocessed` and
-`crawlers-testing` only hand each runner the experiments assigned to it. To add a
-runner-only box: create (or reuse) an API user for it, add its id to
-`PM_SERVICE_ACCOUNT_IDS`, `config:clear`, and assign experiments to it with
-`runner_user_id`. Researchers keep creating experiments under their own logins;
-those run on the default runner unless assigned elsewhere. See
-`docs/integration-contract.md` "Runner assignment".
+*Owner-based partitioning was tried on 2026-09-02 and abandoned because
+researchers' own experiments could no longer run under their own login.*
+
+**With API PR #59 (runner assignment), partitioning is explicit, not by
+owner.** Experiments carry `runner_user_id` (NULL = the default runner,
+`PM_DEFAULT_RUNNER_USER_ID`, 1 = ex63). The rollout target on ex63 is every
+runner account listed in `PM_SERVICE_ACCOUNT_IDS` (`1,3`: ex63's runner, the
+VM's runner), so runners see everything for status reporting, but
+`crawlers-unprocessed` and `crawlers-testing` only hand each runner the
+experiments assigned to it. To add a runner-only box: create (or reuse) an
+API user for it, add its id to `PM_SERVICE_ACCOUNT_IDS`, `config:clear`, and
+assign experiments to it with `runner_user_id`. Researchers keep creating
+experiments under their own logins; those run on the default runner unless
+assigned elsewhere. Rollout status on ex63: see
+`docs/runner-vm-migration-handoff.md`. See `docs/integration-contract.md`
+"Runner assignment".
 
 ### Multilogin limits are per workspace, not per box
 

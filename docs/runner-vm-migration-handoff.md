@@ -250,6 +250,8 @@ too) — no VNC login was needed.
 - Verified: VM runner picked up queue 960 (YouTube e2e); ex63's runner log has zero
   mentions of it and keeps polling.
 
+*Superseded — see "Partitioning, second iteration" below.*
+
 **Smoke test passed (2026-09-02 14:48):** `orchestrator e2e --youtube` run from the VM
 (experiment 156, queue 960, owner user 3): 20/20 jobs `success` incl. 3
 `lambdasingleselectjob` via the VM's local lambda, 328 s; HAR + lambda jobdata for job
@@ -259,16 +261,16 @@ projects (`primemover`, `primemover-orchestrator`) `down` **without** `--volumes
 old checkouts, MySQL bind-mount data, monitoring volumes, DB dump and job-data tar are
 still on the VM's disk under `/home/ubuntu`.
 
-**Still open:** capacity measurement (single bot: ~1.6 GB PSS browser, CPU is the
-limit — measure with several bots before raising `runner.MaxParallelExecution` from 4);
-optional read-only GitHub deploy key for `primemover@primemover-switch-roland`
-(key in `~/.ssh/id_ed25519.pub` on the VM; until then resync checkouts from the laptop
-with rsync); Multilogin workspace is shared with ex63 (same folder id) — stagger
-launches; delete `/home/ubuntu`'s old checkouts/volumes when Ulrich decides.
-
 **Partitioning, second iteration (2026-09-02, after the smoke test):** owner-based
 partitioning made researchers' own experiments unrunnable, so it was replaced by an
 explicit `experiments.runner_user_id` (API PR "Runner assignment"). After that
 rollout: `PM_SERVICE_ACCOUNT_IDS=1,3`, `PM_DEFAULT_RUNNER_USER_ID=1`, experiments 42
 and 143 returned to users 5 and 6. Assign an experiment to the VM with
 `runner_user_id=3`; everything else runs on ex63.
+
+**Still open:** capacity measurement (single bot: ~1.6 GB PSS browser, CPU is the
+limit — measure with several bots before raising `runner.MaxParallelExecution` from 4);
+optional read-only GitHub deploy key for `primemover@primemover-switch-roland`
+(key in `~/.ssh/id_ed25519.pub` on the VM; until then resync checkouts from the laptop
+with rsync); Multilogin workspace is shared with ex63 (same folder id) — stagger
+launches; delete `/home/ubuntu`'s old checkouts/volumes when Ulrich decides.

@@ -112,6 +112,8 @@ version: "1.0"
 experiment:
   name: "My Experiment"
   description: "Description of the experiment"
+  runner_user_id: 3  # optional; which runner executes the study.
+                      # 1 = ex63 (the default when omitted), 3 = the runner-only VM.
 
 defaults:
   location: US-IL-CHICAGO
