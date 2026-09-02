@@ -659,6 +659,9 @@ def main():
     parser.add_argument("--port", type=int, default=5001, help="Port to listen on")
     parser.add_argument("--host", type=str, default="127.0.0.1", help="Host to bind to")
     parser.add_argument("--debug", action="store_true", help="Enable debug mode")
+    parser.add_argument(
+        "--threads", type=int, default=16, help="waitress worker threads (production mode)"
+    )
     args = parser.parse_args()
 
     logger.info(f"Starting Local Lambda Server on {args.host}:{args.port}")
@@ -673,7 +676,27 @@ def main():
     except ImportError:
         logger.warning("Decision function not available - /invoke will fail until fixed")
 
-    app.run(host=args.host, port=args.port, debug=args.debug)
+    if args.debug:
+        # The werkzeug reloader/debugger only exists on app.run(); keep it for
+        # local debugging where concurrency and longevity do not matter.
+        app.run(host=args.host, port=args.port, debug=True)
+        return
+
+    # Production: serve with waitress, not werkzeug's development server.
+    #
+    # The dev server leaks an epoll fd under concurrency -- reproduced in
+    # isolation with a bare threaded Flask app and a trivial route: 0 -> 17 epoll
+    # over 90 concurrent requests, climbing monotonically. On this VM, 12 bots
+    # calling /invoke concurrently drove the process to 844 leaked epoll fds in a
+    # single soak round (round 9), which is what silently disabled the
+    # children/entertainment filter once the fd ceiling was hit before
+    # LimitNOFILE was raised. waitress uses a fixed thread pool and a single
+    # asyncore loop, so it holds no per-connection epoll: verified flat at 0
+    # across 200 concurrent requests. This is the actual fix; the client
+    # singleton and the raised fd limit only reduced and delayed the leak.
+    from waitress import serve
+
+    serve(app, host=args.host, port=args.port, threads=args.threads)
 
 
 if __name__ == "__main__":

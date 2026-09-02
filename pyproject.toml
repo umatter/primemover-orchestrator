@@ -36,6 +36,7 @@ dependencies = [
     "jsonschema>=4.0.0",
     # Local Lambda service dependencies
     "flask>=3.0.0",
+    "waitress>=3.0.0",  # production WSGI server; werkzeug's dev server leaks epoll fds under concurrency
     "lxml>=4.9.0",
     "pandas>=2.0.0",
     "openai>=1.0.0",
