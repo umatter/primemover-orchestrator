@@ -48,7 +48,11 @@ DEFAULT_MULTILOGIN_PROFILE = {
     "name": "%%AGENTID%%",
     "browser_type": "mimic",
     "folder_id": "%%FOLDERID%%",
-    "core_version": 142,
+    # Multilogin rejects profile creation with "Can't set core older than 147"
+    # (verified 2026-09-02); 142 made every spec-uploaded bot fail at setup while
+    # the e2e template (orchestrator/e2e/test_experiment_youtube.json) and all
+    # recent agents use 149. Keep this in step with that template.
+    "core_version": 149,
     "auto_update_core": True,
     "os_type": "linux",
     "times": 1,
