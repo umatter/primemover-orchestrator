@@ -32,6 +32,7 @@ class ConversionResult:
     experiment_description: str
     crawler_count: int
     total_jobs: int
+    experiment_runner_user_id: int | None = None  # None = the API's default runner
     errors: list[str] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
 
@@ -108,6 +109,18 @@ class SpecConverter:
         self.errors: list[str] = []
         self.warnings: list[str] = []
 
+    def _runner_user_id(self, experiment: dict[str, Any]) -> int | None:
+        """experiment.runner_user_id, validated; None when absent."""
+        value = experiment.get("runner_user_id")
+        if value is None:
+            return None
+        if isinstance(value, bool) or not isinstance(value, int):
+            self.errors.append(
+                "experiment.runner_user_id must be an integer runner account id (1 = ex63, 3 = VM)"
+            )
+            return None
+        return value
+
     def convert(self, parsed: ParsedSpec) -> ConversionResult:
         """
         Convert a parsed spec to API JSON format.
@@ -120,14 +133,16 @@ class SpecConverter:
         """
         self.errors = list(parsed.errors)  # Copy any parsing errors
         self.warnings = list(parsed.warnings)
+        runner_user_id = self._runner_user_id(parsed.experiment)
 
-        if parsed.errors:
+        if self.errors:
             return ConversionResult(
                 json_data=[],
                 experiment_name=parsed.experiment.get("name", ""),
                 experiment_description=parsed.experiment.get("description", ""),
                 crawler_count=0,
                 total_jobs=0,
+                experiment_runner_user_id=runner_user_id,
                 errors=self.errors,
                 warnings=self.warnings,
             )
@@ -170,6 +185,7 @@ class SpecConverter:
             experiment_description=parsed.experiment.get("description", ""),
             crawler_count=len(api_crawlers),
             total_jobs=total_jobs,
+            experiment_runner_user_id=runner_user_id,
             errors=self.errors,
             warnings=self.warnings,
         )

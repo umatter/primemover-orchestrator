@@ -205,3 +205,72 @@ tear anything down until the new runner is proven. Order:
   (runner not running, DB stale 7 months), but confirm before teardown.
 - The old checkouts are under `/home/ubuntu`; the new ones go under
   `/home/primemover`. Don't mix them.
+
+## Status 2026-09-02 (laptop session) — build done, smoke test in progress
+
+Everything up to the smoke test is done; the old `/home/ubuntu` stack is still
+present (not torn down). Access: laptop SSH aliases `pm-vm` (primemover), `pm-vm-ubuntu`,
+`ex63` — tailnet only. `primemover` on the VM has passwordless sudo now.
+
+**Preserved before anything was touched** (on ex63, `~/backups/primemover-switch-roland/`,
+sha256 verified): `primemover-switch-roland-db-20260902.sql` (12 MB, 25 tables; the
+"PROCESS privilege" warning is tablespace metadata only) and
+`primemover-switch-roland-jobdata-20260902.tar` (641 MB, 5,514 files = the 5,514
+`primemover/s3` report pointers, which live in
+`/home/ubuntu/primemover_runner/primemover-runner/out/har/<job_id>/`, not in the DB).
+
+**Built under `/home/primemover`:** Java 25 (apt, default), the three checkouts at
+ex63's commits (orchestrator `73ec587`, runner `1cea95f`, bot-decision-yt `93304d7`),
+decision symlink, venv (+ `langdetect`, `lxml`; the decision function's pinned
+`requirements.txt` does not install on Python 3.12 and is not needed), runner jar
+2.2.1 built in `~/build/` and copied to `target/`, Multilogin X **12.10.1** installed
+from ex63's own deb (`/opt/mlxapp`). Config: `secrets.properties` carries the
+host-specific overrides (edge endpoints, `awsS3.endpoint`, `runner.MaxParallelExecution=4`
+to start) plus the copied secrets; orchestrator `.env` points at the edge with the
+read-only MinIO key. `E2E_PROXY_PORT` must not be blank (pydantic int) — delete the
+line rather than leave it empty.
+
+**systemd:** `vncserver@1` switched from `ubuntu` to `primemover` (localhost-only, tunnel
+in with `ssh -L 5901:127.0.0.1:5901 pm-vm`; password given to Ulrich in-session),
+`multilogin-desktop`, `primemover-lambda` (old ubuntu lambda on 5001 killed first),
+`primemover-runner` all enabled and active. `multilogin-agent` and
+`primemover-health-check` deliberately disabled (v12 has no agent; the health check
+probes local Grafana/Loki that do not exist here). Multilogin login was done with
+`scripts/multilogin-login.py --env` (fixed this session to read `secrets.properties`
+too) — no VNC login was needed.
+
+**Partitioning (step 6) — done, option (a):**
+- Experiments 42 (user 5) and 143 (user 6) reassigned to user 1 on ex63
+  (`UPDATE experiments SET user_id=1`); only the seed experiment 1 (user 2) stays stranded.
+- `PM_SERVICE_ACCOUNT_IDS=` (empty) in ex63's API `.env` (backup `.env.bak-*`),
+  `config:clear` run; effective config verified `{"enabled":true,"service_account_ids":[]}`.
+- VM runner identity: **existing ex63 user 3 `runner@primemover.example` ("Primemover Runner")**,
+  password reset in-session; also the VM orchestrator's `PM_API_EMAIL`. So anything the
+  VM `orchestrator e2e` creates is owned by user 3 and runs only on the VM.
+- Verified: VM runner picked up queue 960 (YouTube e2e); ex63's runner log has zero
+  mentions of it and keeps polling.
+
+*Superseded — see "Partitioning, second iteration" below.*
+
+**Smoke test passed (2026-09-02 14:48):** `orchestrator e2e --youtube` run from the VM
+(experiment 156, queue 960, owner user 3): 20/20 jobs `success` incl. 3
+`lambdasingleselectjob` via the VM's local lambda, 328 s; HAR + lambda jobdata for job
+33947 readable back from ex63's MinIO (`orchestrator debug job`). ex63's runner never
+saw the queue. Old `/home/ubuntu` stack decommissioned the same afternoon: both compose
+projects (`primemover`, `primemover-orchestrator`) `down` **without** `--volumes`; the
+old checkouts, MySQL bind-mount data, monitoring volumes, DB dump and job-data tar are
+still on the VM's disk under `/home/ubuntu`.
+
+**Partitioning, second iteration (2026-09-02, after the smoke test):** owner-based
+partitioning made researchers' own experiments unrunnable, so it was replaced by an
+explicit `experiments.runner_user_id` (API PR "Runner assignment"). After that
+rollout: `PM_SERVICE_ACCOUNT_IDS=1,3`, `PM_DEFAULT_RUNNER_USER_ID=1`, experiments 42
+and 143 returned to users 5 and 6. Assign an experiment to the VM with
+`runner_user_id=3`; everything else runs on ex63.
+
+**Still open:** capacity measurement (single bot: ~1.6 GB PSS browser, CPU is the
+limit — measure with several bots before raising `runner.MaxParallelExecution` from 4);
+optional read-only GitHub deploy key for `primemover@primemover-switch-roland`
+(key in `~/.ssh/id_ed25519.pub` on the VM; until then resync checkouts from the laptop
+with rsync); Multilogin workspace is shared with ex63 (same folder id) — stagger
+launches; delete `/home/ubuntu`'s old checkouts/volumes when Ulrich decides.

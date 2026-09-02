@@ -17,6 +17,7 @@ Commands:
 import json
 import sys
 from pathlib import Path
+from typing import Any
 
 # Load .env file if present
 try:
@@ -286,6 +287,17 @@ def upload(
     click.echo(f"Experiment: {result.experiment_name}")
     click.echo(f"Crawlers:   {result.crawler_count}")
     click.echo(f"Jobs:       {result.total_jobs}")
+    runner_id = result.experiment_runner_user_id
+    if experiment_id is not None and runner_id is not None:
+        click.echo(f"Runner:     {runner_id} (ignored: appending to existing experiment)")
+        click.secho(
+            "  WARNING: runner_user_id is ignored because you are appending to an "
+            "existing experiment (--experiment-id); it can only be set when the "
+            "experiment is created.",
+            fg="yellow",
+        )
+    else:
+        click.echo(f"Runner:     {runner_id if runner_id is not None else 'default'}")
     click.echo()
 
     if dry_run:
@@ -332,15 +344,19 @@ def upload(
                 result.experiment_name or f"Experiment {datetime.now().strftime('%Y%m%d_%H%M%S')}"
             )
 
+            create_payload: dict[str, Any] = {
+                "name": exp_name,
+                "description": result.experiment_description
+                or "Created via experiment designer CLI",
+                "contact": "Experiment Designer CLI",
+                "active": 1,
+            }
+            if result.experiment_runner_user_id is not None:
+                create_payload["runner_user_id"] = result.experiment_runner_user_id
+
             create_response = requests.post(
                 f"{api_url}/experiments",
-                json={
-                    "name": exp_name,
-                    "description": result.experiment_description
-                    or "Created via experiment designer CLI",
-                    "contact": "Experiment Designer CLI",
-                    "active": 1,
-                },
+                json=create_payload,
                 headers={
                     "Authorization": f"Bearer {token}",
                     "Accept": "application/json",
