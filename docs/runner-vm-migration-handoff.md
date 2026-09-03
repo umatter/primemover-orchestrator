@@ -275,6 +275,17 @@ runner-only box"). The MinIO->Nextcloud archiver is NOT scheduled on ex63 and it
 `infrastructure/har-drain/rclone.conf` still holds template placeholders; MinIO is the only
 copy of all job data until that is done.
 
+**GUI (2026-09-03):** the experiment wizard at `/experiments/create` (the only creation
+path the GUI routes to; the old standalone create component is unrouted) has a "Runs on"
+select on its "The study" step, fed by `GET /api/v1/runners` (API #60) and preselecting the
+default. Verified end to end under a researcher's own login: EXP-163 stored runner 1
+(ex63), EXP-164 stored runner 3 (VM). ex63 pins the GUI image in
+`/opt/ex63-infra/compose/apps.yml` (`sha-593a027` as of this note). Runner display names:
+user 1 "Administrator (ex63 runner, default)", user 3 "Switch VM (Roland) runner".
+VM `runner.MaxParallelExecution` is 10 (soak: 4 concurrent bots used ~19% CPU avg, 61%
+peak, 1.85 GB RAM per browser; ~10-12 is the likely ceiling). Test experiments 157-164
+were deleted on 2026-09-03; their MinIO objects remain (nothing references them).
+
 **Still open:** capacity measurement (single bot: ~1.6 GB PSS browser, CPU is the
 limit — measure with several bots before raising `runner.MaxParallelExecution` from 4);
 optional read-only GitHub deploy key for `primemover@primemover-switch-roland`
