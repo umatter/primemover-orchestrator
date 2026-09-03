@@ -5,6 +5,9 @@ Wants=network-online.target
 
 [Service]
 Type=oneshot
+# restic wants a cache dir; systemd services have no HOME.
+Environment=HOME=/root
+Environment=RESTIC_CACHE_DIR=/var/cache/restic
 ExecStart=/home/primemover/primemover-orchestrator/infrastructure/backup/vm-backup.sh
 # First run uploads everything; give it a generous window.
 TimeoutStartSec=43200
