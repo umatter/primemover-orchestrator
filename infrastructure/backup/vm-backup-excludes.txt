@@ -1,0 +1,47 @@
+# restic --exclude-file for a runner-only box. One path or glob per line.
+# Everything not listed is in the snapshot (restic backup / --one-file-system).
+#
+# Kernel / runtime
+/proc
+/sys
+/dev
+/run
+/tmp
+/var/tmp
+/var/cache
+/var/lib/apt/lists
+/var/log/journal
+/lost+found
+/snap
+/var/lib/snapd/cache
+/swap.img
+/swapfile
+# Docker: images and layers are re-pullable; named volumes hold nothing of ours
+# on a runner-only box (Promtail positions only).
+/var/lib/docker/overlay2
+/var/lib/docker/image
+/var/lib/docker/buildkit
+/var/lib/docker/containers
+/var/lib/docker/tmp
+/var/lib/containerd
+# Rebuildable artefacts (docs/new-server-setup.md rebuilds them from git):
+/home/*/primemover_runner/**/target
+/home/*/build
+/home/*/.m2
+/home/*/primemover-orchestrator/venv
+/home/*/primemover-orchestrator/.superpowers
+/home/*/.cache
+/home/*/.npm
+# Multilogin: the profile cache under ~/mlx is re-downloaded from Multilogin's
+# cloud on next profile start; keep ~/mlx/configs (agent login state) by not
+# excluding it -- only the bulky, regenerable subtrees are out.
+/home/*/mlx/profiles
+/home/*/mlx/deps
+/home/*/mlx/logs
+# The decommissioned standalone stack: its DB dump and job-data tar were copied
+# to ex63 (~/backups/primemover-switch-roland/) on 2026-09-02 and it is slated
+# for deletion, so it is not part of this box's state.
+/home/ubuntu
+# Runner logs are in Loki on ex63; local copies rotate.
+/home/*/primemover_runner/primemover-runner/log
+/var/log/primemover-lambda

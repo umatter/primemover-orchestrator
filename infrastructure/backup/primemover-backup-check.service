@@ -1,0 +1,11 @@
+[Unit]
+Description=PrimeMover runner-only box: weekly restic integrity check
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/home/primemover/primemover-orchestrator/infrastructure/backup/vm-backup-check.sh
+TimeoutStartSec=14400
+Nice=10
+IOSchedulingClass=idle

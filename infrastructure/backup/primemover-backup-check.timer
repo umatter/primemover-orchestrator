@@ -1,0 +1,9 @@
+[Unit]
+Description=PrimeMover runner-only box weekly backup check timer
+
+[Timer]
+OnCalendar=Sun 09:30
+Persistent=true
+
+[Install]
+WantedBy=timers.target

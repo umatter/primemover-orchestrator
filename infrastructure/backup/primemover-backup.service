@@ -1,0 +1,12 @@
+[Unit]
+Description=PrimeMover runner-only box: restic snapshot of the whole machine -> Nextcloud
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/home/primemover/primemover-orchestrator/infrastructure/backup/vm-backup.sh
+# First run uploads everything; give it a generous window.
+TimeoutStartSec=43200
+Nice=10
+IOSchedulingClass=idle
