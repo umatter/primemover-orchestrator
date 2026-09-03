@@ -77,6 +77,73 @@ class TestStatusCommand:
         assert result.exit_code in (0, 1) or result.exception is None
 
 
+class TestCheckUrl:
+    """Tests for the legacy ``_check_url`` health probe."""
+
+    @staticmethod
+    def _fake_get(recorder, status_code):
+        def get(url, timeout=None, headers=None):
+            recorder.append({"url": url, "headers": headers})
+            return MagicMock(status_code=status_code)
+
+        return get
+
+    def test_api_probe_401_is_healthy_and_asks_for_json(self):
+        """Every /api/v1 route is behind ``auth:api``, so 401 is the only proof of
+        life an unauthenticated probe can get -- and only with ``Accept:
+        application/json``. Without that header Laravel redirects to a ``login``
+        route this API never defines and the probe sees a 404, which is what made
+        this check report a working API as broken."""
+        from orchestrator.cli import _check_url
+
+        calls: list[dict] = []
+        with patch("httpx.get", self._fake_get(calls, 401)):
+            status, detail = _check_url(
+                "http://localhost:8090/api/v1",
+                "/crawlers",
+                headers={"Accept": "application/json"},
+                healthy_codes=(200, 401),
+            )
+
+        assert calls == [
+            {
+                "url": "http://localhost:8090/api/v1/crawlers",
+                "headers": {"Accept": "application/json"},
+            }
+        ]
+        assert "OK" in status
+        assert detail == "http://localhost:8090/api/v1/crawlers"
+
+    def test_api_probe_404_is_still_a_warning(self):
+        """A 404 means the route did not resolve -- not a healthy API."""
+        from orchestrator.cli import _check_url
+
+        calls: list[dict] = []
+        with patch("httpx.get", self._fake_get(calls, 404)):
+            status, detail = _check_url(
+                "http://localhost:8090/api/v1",
+                "/crawlers",
+                headers={"Accept": "application/json"},
+                healthy_codes=(200, 401),
+            )
+
+        assert "WARN" in status
+        assert detail == "404"
+
+    def test_default_rule_is_unchanged_for_the_monitoring_probes(self):
+        """Without ``healthy_codes`` anything below 400 is healthy, and a 401 is not."""
+        from orchestrator.cli import _check_url
+
+        calls: list[dict] = []
+        with patch("httpx.get", self._fake_get(calls, 204)):
+            assert "OK" in _check_url("http://loki.test:3100", "/ready")[0]
+
+        with patch("httpx.get", self._fake_get(calls, 401)):
+            assert "WARN" in _check_url("http://loki.test:3100", "/ready")[0]
+
+        assert all(c["headers"] is None for c in calls)
+
+
 class TestConfigCommand:
     """Tests for config commands."""
 

@@ -390,12 +390,24 @@ def system_status() -> str:
 
     settings = get_settings()
 
-    def check_health(name: str, url: str, path: str) -> dict:
+    def check_health(
+        name: str,
+        url: str,
+        path: str,
+        *,
+        headers: dict[str, str] | None = None,
+        healthy_codes: tuple[int, ...] | None = None,
+    ) -> dict:
         try:
-            response = httpx.get(f"{url.rstrip('/')}{path}", timeout=5.0)
+            response = httpx.get(f"{url.rstrip('/')}{path}", timeout=5.0, headers=headers)
+            healthy = (
+                response.status_code in healthy_codes
+                if healthy_codes is not None
+                else response.status_code < 400
+            )
             return {
                 "name": name,
-                "status": "healthy" if response.status_code < 400 else "unhealthy",
+                "status": "healthy" if healthy else "unhealthy",
                 "code": response.status_code,
             }
         except httpx.ConnectError:
@@ -410,12 +422,34 @@ def system_status() -> str:
         check_health("loki", settings.loki_url, "/ready"),
         check_health("prometheus", settings.prometheus_url, "/-/healthy"),
         check_health("tempo", settings.tempo_url, "/ready"),
-        check_health(
-            "primemover_api",
-            settings.pm_api_base_url.replace("/api/v1", ""),
-            "/api/health",
-        ),
     ]
+
+    # The Laravel API has no unauthenticated health route: every /api/v1 path
+    # sits behind `auth:api`. So a **401 is the healthy answer** -- it proves the
+    # app booted, routing resolved and the auth middleware ran.
+    #
+    # Two separate traps made the old probe (`GET /api/health`, healthy iff
+    # <400) report a perfectly healthy API as unhealthy:
+    #   * `api/health` is not a defined route. It 404s with or without the
+    #     Accept header below -- adding the header alone does not fix it.
+    #   * On a route that *does* exist, Laravel answers an unauthenticated
+    #     non-JSON request by redirecting to a `login` route this API never
+    #     defines, so the probe sees a 404 instead of the 401. `Accept:
+    #     application/json` is what turns that into `{"message":
+    #     "Unauthenticated."}` with a 401.
+    #
+    # This is liveness only: a 401 says the PHP app is serving, not that MySQL
+    # behind it is reachable.
+    api_check = check_health(
+        "primemover_api",
+        settings.pm_api_base_url,
+        "/crawlers",
+        headers={"Accept": "application/json"},
+        healthy_codes=(200, 401),
+    )
+    if api_check.get("code") == 401:
+        api_check["note"] = "401 is expected and healthy: the API requires auth on every route"
+    components.append(api_check)
 
     healthy_count = sum(1 for c in components if c["status"] == "healthy")
     overall = "healthy" if healthy_count == len(components) else "degraded"
