@@ -630,11 +630,15 @@ laptop-run MCP would point at the remote API and be refused.
 
 Consequences: as a **regular** (non-service) user, your MCP's read tools
 (`list_experiments`, `query_logs`, `trace_*`) are **scoped to you** — keep the
-shared HTTP MCP or the CLI for cross-user/admin visibility. And a runner must
-authenticate as your user to run your experiments: today ex63's service-account
-runner runs everything, but once user 1 is de-service-accounted for runner
-partitioning (see `docs/new-server-setup.md` "The hard requirement"), route your
-experiments to a runner that authenticates as you (e.g. the second/VM runner).
+shared HTTP MCP or the CLI for cross-user/admin visibility. Your experiments
+**do run**: since 2026-09-02 execution is decided by `experiments.runner_user_id`,
+not by owner (see `docs/integration-contract.md` "Runner assignment"). Leave it
+unset and ex63 runs them; pass `runner_user_id=3` to `pm_create_experiment` /
+`upload_experiment` (or `experiment.runner_user_id: 3` in a YAML spec) to run them
+on the VM instead — handy for test runs while a real study occupies ex63. This
+user-scoped MCP is what lets Claude Code in any other repo on the laptop author,
+validate, upload and trace experiments; the `primemover*` skills are symlinked
+into `~/.claude/skills` for the same reason.
 
 ### Adding a New Log Parser
 
