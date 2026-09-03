@@ -421,6 +421,8 @@ curl -s -X POST "$API/experiments/$EXP_ID/upload" \
 
 The scenario JSON is an array of crawler objects each containing `queues` with `jobs`. Set `start_at` to a future time for the runner to pick it up. See `orchestrator/e2e/runner.py:_upload_experiment()` for the reference implementation.
 
+An experiment's `runner_user_id` field decides which box's runner executes it (unset = default runner, ex63); see `docs/integration-contract.md` "Runner assignment" for the full mechanism, including the equivalent knob in the YAML DSL.
+
 ### End-to-End Testing
 
 ```bash
@@ -465,6 +467,8 @@ This test:
 4. Reports success/failure with timing
 
 **Prerequisites:** Multilogin X must be running and logged in. The runner will create a new browser profile automatically.
+
+A `--youtube` variant (`orchestrator e2e --youtube`) drives the Lambda-select workflow instead. E2E experiments are always created unassigned, so they always run on ex63 regardless of which box they're launched from.
 
 ## Experiment Designer (YAML DSL)
 
@@ -591,7 +595,7 @@ orchestrator dashboard
                     └─────────────────────┘
 ```
 
-**Note on Lambda**: The `bot-decision-yt` Lambda runs in AWS, not locally. The Runner invokes it via HTTP during job execution to select YouTube videos. No local setup is required - the orchestrator provides commands to view logs and analyze decisions from the deployed Lambda.
+**Note on Lambda**: The decision function runs locally on each box (a waitress-served Flask service) as the live path; the Runner invokes it via HTTP during job execution to select YouTube videos. The AWS Lambda function is dormant and no longer receives traffic.
 
 > **Integration Contract**: The orchestrator depends on specific log formats, API endpoints, and directory structures in the API and Runner repositories. Before making changes to those repos, consult [docs/integration-contract.md](docs/integration-contract.md) to avoid breaking the orchestrator.
 
