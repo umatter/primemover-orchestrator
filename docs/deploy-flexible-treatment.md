@@ -24,7 +24,27 @@ since the running version, not only the D work. Before restarting, diff what you
 are about to ship and make sure you intend all of it (e.g. the error/warning
 overhaul may also be merged-but-undeployed on this box).
 
-## Current state (as of 2026-09-02 — re-derive before deploying)
+## Deployed 2026-09-03 (both boxes) — canary result
+
+Deployed per this runbook on **ex63** (lambda restarted 10:46 on `461ab5f`, runner jar
+rebuilt from `1826600`, MCP restarted) and on the **VM** `primemover-switch-roland`
+(lambda 10:31, runner 10:33). Old jars kept at `/var/tmp/runner-jar-rollback.jar` on
+each box. Every deploy of this chain must be repeated on both boxes.
+
+Canary (experiment 165 on the VM, deleted afterwards): a treatment bot with
+`strategy: youtube_v1, treatment: {pi: 1}` and a control bot without a marker.
+- The runner sends `job.behaviors` on every `lambda_select` (both bots).
+- The gate holds: the control's payload carries behaviours but no `strategy`, and it
+  decided on the legacy path, not degraded.
+- The treatment bot's second call applied the treatment (not degraded). Its **first**
+  call lost it: the mainstream-media aversion filter raised `IndexError: list index out
+  of range` at `lambda_function.py:983` (`...xpath(xpath_recommendations_channel)[0]`
+  on a recommendation card with no channel node), the decision fell back to random and
+  the job was reported as `warning` / `treatment_lost` — i.e. the new degradation
+  reporting works, and it exposed a pre-existing fragility in that filter's DOM path.
+  Follow-up in `bot-decision-yt`: guard the per-card xpath lookups instead of `[0]`.
+
+## Current state (as of 2026-09-02, superseded by the section above — re-derive before deploying)
 
 | piece | running | target (main/master) |
 |---|---|---|
