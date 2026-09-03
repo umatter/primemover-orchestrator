@@ -1,0 +1,13 @@
+[Unit]
+Description=PrimeMover runner-only box nightly backup timer
+
+[Timer]
+# 02:30 local -- offset from ex63's 02:00 so the two uploads to the same
+# Nextcloud account do not overlap. Persistent=true catches up a run missed
+# while the box was down.
+OnCalendar=*-*-* 02:30:00
+Persistent=true
+RandomizedDelaySec=600
+
+[Install]
+WantedBy=timers.target

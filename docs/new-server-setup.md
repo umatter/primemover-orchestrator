@@ -260,3 +260,23 @@ by host, so both runners land in the same dashboards:
   `http://<ex63-tailnet-ip>:3100/loki/api/v1/push`.
 - **Query it.** `{host="primemover-switch-roland", component="runner"}`; ex63's own
   streams carry no `host` label, so `host!="primemover-switch-roland"` selects them.
+
+### Backing up a runner-only box (done for the VM on 2026-09-03)
+
+Same approach as ex63's nightly backup (`/opt/ex63-infra/scripts/backup.sh`): a root
+rclone WebDAV remote named `nextcloud`, a restic repository on it, a nightly snapshot of
+`/` with an exclusion list, retention 14 daily / 8 weekly / 6 monthly, and a weekly
+`restic check` on a data subset. The box has no database and its job data lives in ex63's
+MinIO (covered by ex63's backup), so there are no dumps; what this protects is the box's
+state -- runner/orchestrator config and secrets, Multilogin login state, systemd units,
+Promtail config -- so it can be rebuilt without redoing this guide by hand.
+
+Files: `infrastructure/backup/` (`vm-backup.sh`, `vm-backup-check.sh`,
+`vm-backup-excludes.txt`, the two `primemover-backup*` service/timer pairs, `install.sh`).
+Install: give root the `nextcloud` rclone remote (copy the `[nextcloud]` section from a
+machine that already has it into `/root/.config/rclone/rclone.conf`, mode 600), then
+`sudo infrastructure/backup/install.sh` -- it writes `/etc/primemover-backup.env` with a
+fresh `RESTIC_PASSWORD` (store it in the password manager; without it the backups are
+unreadable), enables the timers (02:30 nightly, offset from ex63's 02:00; check Sunday
+09:30) and prints how to run the first snapshot. Repository path: `Backups/<hostname>`
+on the same Nextcloud account as ex63's `Backups/ex63`. Logs: `/var/log/primemover-backup/`.
