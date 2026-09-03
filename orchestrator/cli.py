@@ -940,9 +940,14 @@ def status(ctx: click.Context, verbose: bool, legacy: bool) -> None:
         tempo_status = _check_url(settings.tempo_url, "/ready")
         table.add_row("Tempo", tempo_status[0], tempo_status[1])
 
-        # Check PrimeMover API
-        api_base = settings.pm_api_base_url.removesuffix("/api/v1").rstrip("/")
-        api_status = _check_url(api_base, "/api/health")
+        # Check PrimeMover API. There is no unauthenticated health route -- see
+        # _check_url's note on why 401 is the healthy answer here.
+        api_status = _check_url(
+            settings.pm_api_base_url,
+            "/crawlers",
+            headers={"Accept": "application/json"},
+            healthy_codes=(200, 401),
+        )
         table.add_row("PrimeMover API", api_status[0], api_status[1])
 
         console.print(table)
@@ -960,14 +965,33 @@ def status(ctx: click.Context, verbose: bool, legacy: bool) -> None:
         console.print(f"  Lambda Log Group: {settings.lambda_log_group}")
 
 
-def _check_url(base_url: str, path: str) -> tuple[str, str]:
-    """Check if a URL is healthy."""
+def _check_url(
+    base_url: str,
+    path: str,
+    *,
+    headers: dict[str, str] | None = None,
+    healthy_codes: tuple[int, ...] | None = None,
+) -> tuple[str, str]:
+    """Check if a URL is healthy.
+
+    ``healthy_codes`` overrides the default "anything below 400" rule. The
+    PrimeMover API needs it: every /api/v1 route is behind ``auth:api``, so an
+    unauthenticated probe can only ever prove liveness by getting a **401**.
+    Getting that 401 also requires ``Accept: application/json`` -- otherwise
+    Laravel redirects to a ``login`` route this API does not define and the
+    probe sees a 404, which is what made this check cry wolf on a healthy API.
+    """
     import httpx
 
     try:
         url = f"{base_url.rstrip('/')}{path}"
-        response = httpx.get(url, timeout=5.0)
-        if response.status_code < 400:
+        response = httpx.get(url, timeout=5.0, headers=headers)
+        healthy = (
+            response.status_code in healthy_codes
+            if healthy_codes is not None
+            else response.status_code < 400
+        )
+        if healthy:
             return "[green]OK[/green]", url
         return "[yellow]WARN[/yellow]", f"{response.status_code}"
     except httpx.ConnectError:

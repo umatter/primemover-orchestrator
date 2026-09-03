@@ -1077,7 +1077,7 @@ class TestSystemStatus:
             "http://loki.test:3100/ready",
             "http://prom.test:9090/-/healthy",
             "http://tempo.test:3200/ready",
-            "http://localhost:8090/api/health",
+            "http://localhost:8090/api/v1/crawlers",
         ]
         assert [c["name"] for c in out["components"]] == [
             "grafana",
@@ -1088,7 +1088,10 @@ class TestSystemStatus:
         ]
 
     def test_all_healthy(self, monkeypatch, fake_settings):
-        self._patch_health(monkeypatch, lambda url, **kw: FakeResponse(204))
+        self._patch_health(
+            monkeypatch,
+            lambda url, **kw: FakeResponse(200) if "/api/v1/" in url else FakeResponse(204),
+        )
 
         out = json.loads(s.system_status())
 
@@ -1156,6 +1159,52 @@ class TestSystemStatus:
 
         assert out["overall_status"] == "down"
         assert out["healthy_count"] == 0
+
+    def test_api_probe_asks_for_json_so_laravel_answers_401_not_a_login_redirect(
+        self, monkeypatch, fake_settings
+    ):
+        """Without ``Accept: application/json`` Laravel redirects an unauthenticated
+        request to a ``login`` route this API does not define, and the probe sees a
+        404. The header is what makes the 401 observable."""
+        fake = self._patch_health(monkeypatch, lambda url, **kw: FakeResponse(200))
+
+        s.system_status()
+
+        api_call = fake.calls[-1]
+        assert api_call["url"] == "http://localhost:8090/api/v1/crawlers"
+        assert api_call["headers"] == {"Accept": "application/json"}
+
+    def test_api_401_is_healthy_because_every_route_requires_auth(self, monkeypatch, fake_settings):
+        """Regression: the old probe hit the non-existent ``/api/health`` and called
+        anything >= 400 unhealthy, so a fully working API reported ``unhealthy``."""
+
+        def handler(url: str, **kwargs: Any):
+            return FakeResponse(401) if "/api/v1/" in url else FakeResponse(200)
+
+        self._patch_health(monkeypatch, handler)
+
+        out = json.loads(s.system_status())
+
+        api = next(c for c in out["components"] if c["name"] == "primemover_api")
+        assert api["status"] == "healthy"
+        assert api["code"] == 401
+        assert "401" in api["note"]
+        assert out["overall_status"] == "healthy"
+        assert out["healthy_count"] == 5
+
+    def test_api_404_is_still_unhealthy(self, monkeypatch, fake_settings):
+        """A 404 means the route did not resolve -- the app is not serving the API."""
+
+        def handler(url: str, **kwargs: Any):
+            return FakeResponse(404) if "/api/v1/" in url else FakeResponse(200)
+
+        self._patch_health(monkeypatch, handler)
+
+        out = json.loads(s.system_status())
+
+        api = next(c for c in out["components"] if c["name"] == "primemover_api")
+        assert api == {"name": "primemover_api", "status": "unhealthy", "code": 404}
+        assert out["overall_status"] == "degraded"
 
     def test_trailing_slashes_in_configured_urls_do_not_double_up(self, monkeypatch, fake_settings):
         fake_settings.grafana_url = "http://grafana.test:3000/"

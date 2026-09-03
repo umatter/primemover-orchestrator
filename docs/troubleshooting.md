@@ -92,8 +92,12 @@ curl -X POST http://localhost:8090/api/v1/login \
   -H "Content-Type: application/json" \
   -d '{"email":"admin@primemover.example","password":"password"}'
 
-# Check API is running
-curl http://localhost:8090/api/health
+# Check API is running. There is no unauthenticated health route: every
+# /api/v1 path is behind auth:api, so **401 is the healthy answer**. The
+# Accept header is required -- without it Laravel redirects an unauthenticated
+# request to a `login` route this API does not define and you get a 404.
+curl -s -o /dev/null -w '%{http_code}\n' \
+  -H "Accept: application/json" http://localhost:8090/api/v1/crawlers
 ```
 
 ### CloudWatch not available
