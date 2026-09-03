@@ -464,6 +464,11 @@ invocation contract. This is **on by default** (`orchestrator up`); pass
   only in the working copy on the VM, where CI cannot see it. The natural second
   home is `LambdaServerComponent.validate()`, so `orchestrator up` refuses to
   start on a corrupted copy.
+
+  A second, pre-existing fragility on the same filter: the per-card xpath `[0]`
+  at `lambda_function.py:983` can raise `IndexError`, also silently losing a
+  treatment — correctly reported as `warning`/`treatment_lost` rather than
+  failing the job. Fix pending in `bot-decision-yt`.
 - **Lifecycle**: two different supervisors, and **they log to different places** —
   check which one is actually running before reading a log, or you will be
   reading a file that stopped being written weeks ago.
@@ -598,11 +603,11 @@ service triple in `mcp.yml` with its own prefix and its own token.
 
 The shared MCP (`primemover-mcp.service`) authenticates to the API with **one**
 identity — `admin@primemover.example` (user 1) from the repo `.env` — regardless of which
-person's bearer token calls it. Since user 1 is a **service account** (see "Error
-& warning handling" and `docs/new-server-setup.md` — `service_account_ids=[1]`),
-it bypasses isolation and sees everything, and everything it composes is
-**owned by user 1**, so it is invisible to individual researcher logins (users
-2/3/5/6/7, who each see only their own experiments).
+person's bearer token calls it. Users 1 and 3 are both **service accounts**
+(`PM_SERVICE_ACCOUNT_IDS=1,3`; user 3 is the VM runner identity, not a
+researcher login — researchers are users 2/5/6/7). Service accounts bypass
+isolation and see everything, and everything the shared MCP composes is
+**owned by user 1**, so it is invisible to individual researcher logins.
 
 To have your MCP-composed experiments **owned by, and visible only to, your own
 login** — while the runner still executes them — run a *personal* stdio MCP that
@@ -803,7 +808,7 @@ Configuration via `.env` file (Pydantic Settings). Required credentials with no 
 - `PM_API_EMAIL`, `PM_API_PASSWORD` - API authentication
 - `GRAFANA_ADMIN_PASSWORD` - Grafana admin
 
-All other settings have sensible defaults (see `orchestrator/config/settings.py`). The API logs in CET timezone; Promtail config handles conversion to UTC for Loki.
+All other settings have sensible defaults (see `orchestrator/config/settings.py`). The API logs in CET timezone; Promtail config handles conversion to UTC for Loki. `PM_DEFAULT_RUNNER_USER_ID` (defaults to 1, ex63) and `PM_SERVICE_ACCOUNT_IDS` (`1,3`) drive the runner-assignment mechanism used by "Composing as a specific user" above.
 
 ## Deployment (VM / systemd)
 
@@ -943,6 +948,9 @@ grep -nE '127\.0\.0\.1:.*(3307|8889)|ALLOW_EMPTY' ../primemover_api/docker-compo
   repo root, not from `decision/`. `readlink /proc/$(systemctl show -p MainPID
   --value primemover-lambda)/cwd`. A passing CSV test plus a wrong cwd looks
   exactly like a healthy system.
+- The same filter can also silently lose a treatment via an `IndexError` at
+  `lambda_function.py:983` (per-card xpath `[0]`), unrelated to CSV corruption
+  — see "Data files are load-bearing" above.
 - Port 5001 in use: stop the stale process (`.lambda_server.pid`) or check the
   `primemover-lambda` systemd unit isn't already running it
 
