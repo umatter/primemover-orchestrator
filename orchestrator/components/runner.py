@@ -6,6 +6,7 @@ Manages the Spring Boot Java runner application with PID-based process tracking.
 
 import fcntl
 import os
+import shutil
 import signal
 import subprocess
 import time
@@ -88,6 +89,10 @@ class RunnerComponent(BaseComponent):
     # Shutdown timeout (seconds)
     SHUTDOWN_TIMEOUT = 15
 
+    # systemd unit that owns the runner on the production VM (infrastructure/systemd/).
+    # It never writes PID_FILE, so every PID-file-only check reads "stopped" there.
+    SYSTEMD_UNIT = "primemover-runner"
+
     def __init__(
         self,
         path: Path,
@@ -168,9 +173,20 @@ class RunnerComponent(BaseComponent):
 
         try:
             with _pid_file_lock(self.PID_FILE):
-                # Check if already running (within lock to prevent race)
-                pid = self._get_pid()
-                if pid and self._is_process_running(pid):
+                # Check if already running (within lock to prevent race). This must
+                # see a systemd-owned runner too: otherwise `orchestrator up` on the VM
+                # sweeps the live runner's browsers as "orphans" and starts a second one.
+                pid, source = self._resolve_pid()
+                if pid:
+                    if source == "systemd":
+                        return ComponentHealth(
+                            status=ComponentStatus.RUNNING,
+                            message=(
+                                f"Runner is already running under {self.SYSTEMD_UNIT}.service "
+                                f"(PID: {pid}); manage it with systemctl"
+                            ),
+                            details={"pid": pid, "managed_by": "systemd"},
+                        )
                     return ComponentHealth(
                         status=ComponentStatus.RUNNING,
                         message=f"Runner is already running (PID: {pid})",
@@ -273,6 +289,21 @@ class RunnerComponent(BaseComponent):
             with _pid_file_lock(self.PID_FILE):
                 pid = self._get_pid()
 
+                if not pid or not self._is_process_running(pid):
+                    systemd_pid = self._systemd_pid()
+                    if systemd_pid:
+                        # Not ours to kill: stopping the process behind systemd's back
+                        # just makes Restart=always start it again.
+                        return ComponentHealth(
+                            status=ComponentStatus.RUNNING,
+                            message=(
+                                f"Runner is managed by {self.SYSTEMD_UNIT}.service "
+                                f"(PID: {systemd_pid}); stop it with "
+                                f"`sudo systemctl stop {self.SYSTEMD_UNIT}`"
+                            ),
+                            details={"pid": systemd_pid, "managed_by": "systemd"},
+                        )
+
                 if not pid:
                     # Clean up stale PID file if exists
                     self._remove_pid_file()
@@ -354,19 +385,34 @@ class RunnerComponent(BaseComponent):
         Returns:
             ComponentHealth with current status and details
         """
-        pid = self._get_pid()
+        # A missing *or stale* PID file does not mean stopped: on the VM the runner
+        # is owned by primemover-runner.service, which never writes one, and a PID
+        # file left behind by an old manual start must not hide that. Ask systemd
+        # before reporting STOPPED, or `orchestrator status` is wrong on every
+        # production box.
+        pid, source = self._resolve_pid()
 
-        if not pid:
+        if pid is None:
+            stale_pid = self._get_pid()
+            if stale_pid:
+                return ComponentHealth(
+                    status=ComponentStatus.STOPPED,
+                    message="Runner is not running (stale PID file)",
+                    details={"stale_pid": stale_pid},
+                )
             return ComponentHealth(
                 status=ComponentStatus.STOPPED,
-                message="Runner is not running (no PID file)",
+                message="Runner is not running (no PID file, no systemd unit active)",
             )
 
-        if not self._is_process_running(pid):
+        if source == "systemd":
+            details = self._get_process_details(pid)
+            details["managed_by"] = "systemd"
+            details["unit"] = f"{self.SYSTEMD_UNIT}.service"
             return ComponentHealth(
-                status=ComponentStatus.STOPPED,
-                message="Runner is not running (stale PID file)",
-                details={"stale_pid": pid},
+                status=ComponentStatus.RUNNING,
+                message=(f"Runner is running (PID: {pid}, managed by {self.SYSTEMD_UNIT}.service)"),
+                details=details,
             )
 
         # Get process info
@@ -385,8 +431,8 @@ class RunnerComponent(BaseComponent):
         Returns:
             True if runner process is running
         """
-        pid = self._get_pid()
-        return pid is not None and self._is_process_running(pid)
+        pid, _source = self._resolve_pid()
+        return pid is not None
 
     def validate(self) -> tuple[bool, list[str]]:
         """
@@ -476,6 +522,45 @@ class RunnerComponent(BaseComponent):
             return int(self.PID_FILE.read_text().strip())
         except (ValueError, OSError):
             return None
+
+    def _systemd_pid(self) -> int | None:
+        """
+        PID of the runner if primemover-runner.service is running it, else None.
+
+        Returns None (never raises) when systemctl is absent, the unit is unknown or
+        inactive, or the reported MainPID is not a live process.
+        """
+        if not shutil.which("systemctl"):
+            return None
+        try:
+            result = subprocess.run(
+                ["systemctl", "show", "-p", "MainPID", "--value", self.SYSTEMD_UNIT],
+                capture_output=True,
+                text=True,
+                timeout=5,
+            )
+            pid = int(result.stdout.strip() or "0")
+        except (subprocess.SubprocessError, OSError, ValueError):
+            return None
+        if pid > 0 and self._is_process_running(pid):
+            return pid
+        return None
+
+    def _resolve_pid(self) -> tuple[int | None, str | None]:
+        """
+        Find the live runner PID and who owns it.
+
+        Returns:
+            (pid, "pidfile") for a runner this component started, (pid, "systemd") for
+            one owned by primemover-runner.service, or (None, None).
+        """
+        pid = self._get_pid()
+        if pid and self._is_process_running(pid):
+            return pid, "pidfile"
+        systemd_pid = self._systemd_pid()
+        if systemd_pid:
+            return systemd_pid, "systemd"
+        return None, None
 
     def _write_pid(self, pid: int) -> None:
         """Write PID to file atomically using write-and-rename pattern."""
@@ -591,11 +676,11 @@ class RunnerComponent(BaseComponent):
             # Only kill browsers once the runner itself is gone — at that point every
             # remaining browser process is an orphan. While the runner is alive its
             # browsers are left alone, regardless of who their parent is.
-            runner_pid = self._get_pid()
+            runner_pid, _source = self._resolve_pid()
             for pid in pids:
                 try:
                     # If the runner is not running, all browser processes are orphans
-                    if runner_pid and self._is_process_running(runner_pid):
+                    if runner_pid:
                         continue  # Runner is still alive, don't touch its browsers
 
                     os.kill(pid, signal.SIGTERM)
