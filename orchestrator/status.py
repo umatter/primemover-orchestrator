@@ -65,10 +65,19 @@ Finally, a payload carrying **no** degradation report is a legacy payload from
 the decision function currently deployed, and the HAR archive is full of them.
 Absence reads as *unknown* -- never as degraded. :func:`lambda_report_present`
 and :class:`LambdaVerdict` keep "clean" and "we cannot tell" apart.
+
+The same verdict is now **persisted on the job row** (``decision_degraded``,
+``decision_treatment_lost``, ``decision_selection_mode``, ``decision_report``),
+so a consumer no longer has to fetch a MinIO object to ask whether a treatment
+applied. The ``job_decision_*`` helpers read those columns, and they answer by
+rebuilding the payload and handing it to the ``lambda_*`` helpers above -- one
+implementation of the rules, two sources. A NULL column is *unknown*, never
+clean; that is what makes the API-then-GUI-then-runner deploy order safe.
 """
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any
@@ -90,6 +99,19 @@ __all__ = [
     "is_running",
     "is_terminal",
     "is_bad",
+    "SEVERITY_SORT_RANK",
+    "UNKNOWN_SEVERITY_SORT_RANK",
+    "severity_rank",
+    "DECISION_DEGRADED_FIELD",
+    "DECISION_TREATMENT_LOST_FIELD",
+    "DECISION_SELECTION_MODE_FIELD",
+    "DECISION_REPORT_FIELD",
+    "DECISION_FIELDS",
+    "job_decision_payload",
+    "job_decision_verdict",
+    "job_decision_reported",
+    "job_decision_degraded",
+    "job_decision_treatment_lost",
     "LAMBDA_FILTER_NAMES",
     "LambdaVerdict",
     "lambda_warnings",
@@ -161,6 +183,38 @@ SEVERITY: dict[str, int] = {
     "warning": 3,
     "failure": 4,
 }
+
+#: Ordering used **for sorting only** -- the rank behind ``sortBy=severity`` on
+#: the API's queue/job/crawler list endpoints, and behind any worst-first
+#: ordering in the orchestrator or the GUI.
+#:
+#: It is deliberately **not** :data:`SEVERITY`, and the difference is the whole
+#: point: this table has an ``unknown`` rank, inserted between ``running`` and
+#: ``warning``. :data:`SEVERITY` has no such entry because it answers a different
+#: question -- "which of these child statuses does the parent inherit?" -- and
+#: other code depends on its exact numbers, so it must not gain one.
+#:
+#: Sorting is where the contract's "an unrecognised value is unknown, never
+#: success" rule is easiest to break: rank unknown at 0 and every unreported or
+#: mis-spelled row hides at the clean end of the list, which is exactly where
+#: nobody looks. Ranking it above ``running`` and below ``warning`` says what is
+#: true -- worse than anything still in flight, not yet evidence of damage.
+#:
+#: An empty or missing ``status_code`` (the ``jobs`` table holds thousands of
+#: NULLs) is unknown too, and gets the same rank. The API's ``sortBy=severity``
+#: must use these six numbers, including that NULL rule.
+SEVERITY_SORT_RANK: dict[str, int] = {
+    "success": 0,
+    "skipped": 1,
+    "running": 2,
+    "unknown": 3,
+    "warning": 4,
+    "failure": 5,
+}
+
+#: The rank any value not in :data:`SEVERITY_SORT_RANK` sorts at -- including
+#: ``None``, ``""`` and a runner typo nobody has an alias for yet.
+UNKNOWN_SEVERITY_SORT_RANK: int = SEVERITY_SORT_RANK["unknown"]
 
 _TERMINAL = frozenset({"success", "warning", "failure", "skipped"})
 
@@ -265,6 +319,20 @@ def is_bad(value: Any) -> bool:
     degradation the ``warning`` state was introduced to expose.
     """
     return normalize(value) in (JobStatus.FAILURE.value, JobStatus.WARNING.value)
+
+
+def severity_rank(value: Any) -> int:
+    """Sort rank for *value*: higher is worse. See :data:`SEVERITY_SORT_RANK`.
+
+    Aliases are resolved first, so ``failed`` and ``failure`` sort together --
+    which is the reason this exists at all. Sorting on the raw string splits the
+    256 legacy ``failed`` job rows away from the 1607 ``failure`` ones and puts
+    them either side of ``skipped``.
+
+    Anything unrecognised -- ``None``, ``""``, a future spelling -- ranks as
+    *unknown*, between ``running`` and ``warning``. Never as success.
+    """
+    return SEVERITY_SORT_RANK.get(normalize(value), UNKNOWN_SEVERITY_SORT_RANK)
 
 
 # ---------------------------------------------------------------------------
@@ -544,3 +612,148 @@ def lambda_verdict(payload: dict[str, Any] | None) -> LambdaVerdict:
         warnings=lambda_warnings(payload),
         error=lambda_error(payload),
     )
+
+
+# ---------------------------------------------------------------------------
+# The decision verdict, persisted on the job row
+# ---------------------------------------------------------------------------
+# Until this change the verdict above existed only inside a MinIO object and a
+# runner log line, so answering "did the treatment apply?" for a job meant
+# fetching an artifact -- and, for the 6682 archived ``lambda-jobdata`` objects in
+# MinIO (counted 2026-09-07; one more lands with every ``lambdaselect`` job),
+# meant nobody ever asked. The API now stores it on ``jobs`` in four columns,
+# written by the runner from the same parsed response.
+#
+# **NULL on any of them means UNKNOWN, never clean.** A legacy job, a non-lambda
+# job, and a job run by a runner that predates the change are all indistinguishable
+# from each other and all of them are "we cannot tell". That is precisely what
+# makes the staged deploy safe (API migration -> GUI -> runner jar): every
+# intermediate state produces nulls, and nulls render as "no verdict".
+
+#: ``jobs.decision_degraded`` -- boolean, nullable. Mirrors the payload's
+#: ``degraded``: a *requested* filter failed, or selection failed outright.
+DECISION_DEGRADED_FIELD = "decision_degraded"
+
+#: ``jobs.decision_treatment_lost`` -- boolean, nullable. Mirrors the payload's
+#: ``treatment_lost``: the bot was configured to be treated and produced
+#: control-arm data. The alarm.
+DECISION_TREATMENT_LOST_FIELD = "decision_treatment_lost"
+
+#: ``jobs.decision_selection_mode`` -- varchar(32), nullable. ``"llm"`` /
+#: ``"random"``. A neutral descriptor, and the one column no consumer may branch
+#: on by itself.
+DECISION_SELECTION_MODE_FIELD = "decision_selection_mode"
+
+#: ``jobs.decision_report`` -- JSON, nullable:
+#: ``{"filters": {...}, "llm": {...}, "warnings": [...], "applied": [...],
+#: "requested": [...]}``.
+DECISION_REPORT_FIELD = "decision_report"
+
+#: The four columns, in migration order. Anything projecting the job row for a
+#: verdict should select exactly these.
+DECISION_FIELDS: tuple[str, ...] = (
+    DECISION_DEGRADED_FIELD,
+    DECISION_TREATMENT_LOST_FIELD,
+    DECISION_SELECTION_MODE_FIELD,
+    DECISION_REPORT_FIELD,
+)
+
+
+def _decision_report_of(record: dict[str, Any] | None) -> dict[str, Any]:
+    """The ``decision_report`` column as a dict.
+
+    Tolerates the two shapes it arrives in: already decoded (Laravel's ``json``
+    cast, the MCP tools) or still a JSON string (a raw DB row, a CSV export).
+    Anything unparseable is treated as absent rather than raising -- a corrupt
+    report must not make a job unreadable.
+    """
+    if not record:
+        return {}
+    raw = record.get(DECISION_REPORT_FIELD)
+    if isinstance(raw, str):
+        try:
+            raw = json.loads(raw)
+        except (TypeError, ValueError):
+            return {}
+    return raw if isinstance(raw, dict) else {}
+
+
+def job_decision_payload(record: dict[str, Any] | None) -> dict[str, Any]:
+    """Rebuild a decision-function payload from the persisted job columns.
+
+    The point of this function is that there is exactly **one** implementation of
+    the verdict rules in this module. The columns are reassembled into the shape
+    the wire payload has, and every question is then answered by the same
+    ``lambda_*`` helpers that read a payload straight out of MinIO -- so a job row
+    and the HAR object it came from can never disagree about what happened.
+
+    A NULL column contributes **no key**, which is what keeps "unknown" distinct
+    from "false": :func:`lambda_report_present` looks for ``degraded`` /
+    ``treatment_lost`` / ``filters``, so a row with all four columns NULL yields
+    ``{}`` and reads as unknown.
+
+    ``decision_selection_mode`` alone is deliberately *not* enough to make a
+    payload "present". It is a descriptor, not a verdict; a row carrying only a
+    mode still cannot say whether anything degraded.
+    """
+    if not record:
+        return {}
+    payload: dict[str, Any] = {}
+
+    degraded = record.get(DECISION_DEGRADED_FIELD)
+    if degraded is not None:
+        payload["degraded"] = bool(degraded)
+
+    treatment_lost = record.get(DECISION_TREATMENT_LOST_FIELD)
+    if treatment_lost is not None:
+        payload["treatment_lost"] = bool(treatment_lost)
+
+    mode = record.get(DECISION_SELECTION_MODE_FIELD)
+    if mode:
+        payload["selection_mode"] = str(mode)
+
+    report = _decision_report_of(record)
+    for key in ("filters", "llm", "warnings"):
+        if key in report:
+            payload[key] = report[key]
+
+    return payload
+
+
+def job_decision_verdict(record: dict[str, Any] | None) -> LambdaVerdict:
+    """Read the persisted verdict off an API job record.
+
+    Returns the same :class:`LambdaVerdict` a raw payload would, so callers do
+    not care which source the verdict came from. ``verdict.unknown`` is ``True``
+    for every job the columns say nothing about.
+    """
+    return lambda_verdict(job_decision_payload(record))
+
+
+def job_decision_reported(record: dict[str, Any] | None) -> bool:
+    """Did this job record carry a decision verdict at all?
+
+    ``False`` is the answer for a legacy job, a non-lambda job, and any job
+    written by a runner that predates the columns. All three are **unknown**, and
+    a renderer must say so rather than showing them clean.
+    """
+    return lambda_report_present(job_decision_payload(record))
+
+
+def job_decision_degraded(record: dict[str, Any] | None) -> bool:
+    """Did a *requested* filter fail on this job's decision? "Look at this."
+
+    ``False`` also means "no verdict recorded" -- a boolean cannot carry three
+    states. Pair it with :func:`job_decision_reported`, or use
+    :func:`job_decision_verdict`, whenever clean and unknown must be told apart.
+    """
+    return lambda_is_degraded(job_decision_payload(record))
+
+
+def job_decision_treatment_lost(record: dict[str, Any] | None) -> bool:
+    """Did this job's bot produce control-arm data despite being treated?
+
+    The one alarm condition, read straight from the column the runner copied it
+    into. Never derived here from ``decision_selection_mode``.
+    """
+    return lambda_treatment_lost(job_decision_payload(record))

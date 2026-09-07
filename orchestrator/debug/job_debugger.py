@@ -198,6 +198,19 @@ class JobMetadata:
         return "Detail"
 
     @property
+    def decision(self) -> status_contract.LambdaVerdict:
+        """The decision verdict the API now persists on the job row.
+
+        Reads the four ``decision_*`` columns out of ``raw_data``. Before they
+        existed, the only witness to a lost treatment was the job's MinIO object
+        -- and when the store is unreachable (which it silently was for a month)
+        that meant no witness at all. ``verdict.unknown`` is ``True`` for a
+        legacy job, a non-lambda job, or a job written by a runner that predates
+        the columns; unknown is never rendered as clean.
+        """
+        return status_contract.job_decision_verdict(self.raw_data)
+
+    @property
     def diagnostic_is_duplicate(self) -> bool:
         """True when :attr:`diagnostic` is verbatim the ``status_message``.
 
@@ -229,6 +242,9 @@ class JobMetadata:
             "error_message": self.error_message,
             "diagnostic": self.diagnostic,
             "diagnostic_label": self.diagnostic_label,
+            # Omitted rather than serialised as all-false when no verdict was
+            # recorded: null is "we cannot tell", and a false verdict is a claim.
+            "decision": self.decision.to_dict() if self.decision.reported else None,
         }
 
 
@@ -324,7 +340,13 @@ class JobDebugReport:
         Promoted to the report level so a caller does not have to reach into
         ``lambda_decision`` (and does not have to know that ``selection_mode``
         is not the field to look at).
+
+        Either witness is enough. The MinIO payload is the richer one, but it is
+        also the one that goes missing; the job row's persisted verdict answers
+        even when no artifact could be fetched.
         """
+        if self.metadata is not None and self.metadata.decision.treatment_lost:
+            return True
         return bool(self.lambda_decision and self.lambda_decision.treatment_lost)
 
     def to_dict(self) -> dict:
@@ -941,6 +963,29 @@ class JobDebugger:
                     warnings.append(f"Lambda filter {name}: {state}")
                 for warning in ld.warnings[:3]:
                     warnings.append(f"Lambda warning: {warning[:100]}")
+
+        # The same verdict, read off the job row, when the MinIO object is the
+        # witness that is missing. That is not a hypothetical: the HAR readers
+        # answered "nothing" for a month after the writer moved to MinIO, and an
+        # unreachable store is missing evidence about a job, never evidence that
+        # the job was fine. Only consulted when the payload could not be parsed,
+        # so a readable artifact never produces the finding twice.
+        row_verdict = meta.decision if meta else None
+        if row_verdict and row_verdict.reported and not (ld and ld.output_parsed):
+            if row_verdict.treatment_lost:
+                warnings.insert(
+                    0,
+                    "TREATMENT LOST (recorded on the job, no payload read): this bot "
+                    "was configured to be treated but produced control-arm data, so "
+                    "this session is scientifically void",
+                )
+            elif row_verdict.degraded:
+                warnings.append(
+                    "Lambda decision degraded (recorded on the job, no payload read): "
+                    "a requested filter did not apply"
+                )
+            for name, state in list(row_verdict.failed_filters.items())[:6]:
+                warnings.append(f"Lambda filter {name}: {state}")
 
         # Check HAR for failed requests
         if report.har_summary and report.har_summary.failed_requests:

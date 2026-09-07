@@ -386,3 +386,225 @@ class TestTheDiagnosticIsLabelledByTheActualStatus:
         assert meta.error_message is None
         assert meta.diagnostic_label == "Detail"
         assert meta.diagnostic_is_duplicate is False
+
+
+# ---------------------------------------------------------------------------
+# The verdict, persisted on the job row (2026-09-07)
+# ---------------------------------------------------------------------------
+# The API now stores the decision verdict in four nullable columns on ``jobs``,
+# so a consumer can ask "did the treatment apply?" without fetching a MinIO
+# object. The rules do not change; the source does. These tests pin that the
+# columns are read through the *same* helpers as the payload, and that NULL
+# keeps meaning unknown -- which is the property the staged deploy depends on.
+
+#: A treated bot's row after the runner wrote its verdict: the alarm state.
+ROW_TREATMENT_LOST = {
+    "id": 1,
+    "status_code": "warning",
+    "status_message": "job finished - treatment lost",
+    "decision_degraded": True,
+    "decision_treatment_lost": True,
+    "decision_selection_mode": "random",
+    "decision_report": {
+        "filters": TREATED_AND_LOST["filters"],
+        "llm": TREATED_AND_LOST["llm"],
+        "warnings": TREATED_AND_LOST["warnings"],
+        "requested": ["mainstream_media"],
+        "applied": [],
+    },
+}
+
+#: The common case on this box: a control bot, picking at random, perfectly fine.
+ROW_CONTROL_ARM = {
+    "id": 2,
+    "status_code": "success",
+    "decision_degraded": False,
+    "decision_treatment_lost": False,
+    "decision_selection_mode": "random",
+    "decision_report": {
+        "filters": CONTROL_ARM["filters"],
+        "llm": CONTROL_ARM["llm"],
+        "warnings": [],
+        "requested": [],
+        "applied": [],
+    },
+}
+
+#: A legacy job, a non-lambda job, or a job written by a runner that predates
+#: the columns. All three look like this, and all three mean "we cannot tell".
+ROW_NO_VERDICT = {"id": 3, "status_code": "success", "status_message": "successfully finished job"}
+
+
+class TestAbsentVerdictIsUnknownNotClean:
+    """The property that makes API -> GUI -> runner a safe deploy order.
+
+    Every intermediate state of that rollout writes nulls. If a null read as
+    "clean" the migration itself would silently certify thousands of jobs as
+    having applied treatments nobody measured.
+    """
+
+    def test_a_row_with_no_decision_columns_is_not_reported(self):
+        assert status.job_decision_reported(ROW_NO_VERDICT) is False
+        assert status.job_decision_verdict(ROW_NO_VERDICT).unknown is True
+
+    def test_an_unreported_verdict_is_not_labelled_ok(self):
+        assert status.job_decision_verdict(ROW_NO_VERDICT).label() == "no report"
+
+    def test_explicit_nulls_read_the_same_as_missing_keys(self):
+        row = {
+            "id": 4,
+            "decision_degraded": None,
+            "decision_treatment_lost": None,
+            "decision_selection_mode": None,
+            "decision_report": None,
+        }
+        assert status.job_decision_payload(row) == {}
+        assert status.job_decision_reported(row) is False
+
+    def test_a_mode_on_its_own_is_still_unknown(self):
+        """``selection_mode`` is a descriptor, so it cannot make a verdict present.
+
+        A row carrying only ``"random"`` says how the pick was made and nothing
+        at all about whether anything was requested -- the exact confusion the
+        contract was amended to remove.
+        """
+        row = {"id": 5, "decision_selection_mode": "random"}
+        assert status.job_decision_reported(row) is False
+        assert status.job_decision_treatment_lost(row) is False
+
+    def test_no_record_at_all_is_unknown_not_an_alarm(self):
+        assert status.job_decision_reported(None) is False
+        assert status.job_decision_degraded(None) is False
+        assert status.job_decision_treatment_lost(None) is False
+
+
+class TestAControlArmRowIsNotAFinding:
+    """82% of this box's traffic. If this goes amber, the change is worthless."""
+
+    def test_a_control_row_is_reported_and_clean(self):
+        verdict = status.job_decision_verdict(ROW_CONTROL_ARM)
+        assert verdict.reported is True
+        assert verdict.unknown is False
+        assert verdict.degraded is False
+        assert verdict.treatment_lost is False
+        assert verdict.label() == "ok"
+
+    def test_random_plus_not_degraded_is_not_bad(self):
+        assert status.job_decision_degraded(ROW_CONTROL_ARM) is False
+        assert status.job_decision_treatment_lost(ROW_CONTROL_ARM) is False
+        assert status.job_decision_verdict(ROW_CONTROL_ARM).needs_attention is False
+
+    def test_its_five_skipped_filters_are_not_casualties(self):
+        verdict = status.job_decision_verdict(ROW_CONTROL_ARM)
+        assert verdict.failed_filters == {}
+        assert len(verdict.skipped_filters) == 5
+
+
+class TestTreatmentLostOnTheRowIsTheAlarm:
+    def test_the_row_reports_the_lost_treatment(self):
+        verdict = status.job_decision_verdict(ROW_TREATMENT_LOST)
+        assert verdict.treatment_lost is True
+        assert verdict.degraded is True
+        assert verdict.needs_attention is True
+        assert verdict.label() == "treatment-lost"
+
+    def test_the_helpers_agree_with_the_verdict(self):
+        assert status.job_decision_treatment_lost(ROW_TREATMENT_LOST) is True
+        assert status.job_decision_degraded(ROW_TREATMENT_LOST) is True
+
+    def test_the_failed_filter_is_named(self):
+        assert "mainstream_media" in status.job_decision_verdict(ROW_TREATMENT_LOST).failed_filters
+
+    def test_the_row_and_the_payload_give_the_same_verdict(self):
+        """One implementation of the rules, two sources; they cannot diverge."""
+        from_row = status.job_decision_verdict(ROW_TREATMENT_LOST)
+        from_payload = status.lambda_verdict(TREATED_AND_LOST)
+        assert from_row.treatment_lost == from_payload.treatment_lost
+        assert from_row.degraded == from_payload.degraded
+        assert from_row.failed_filters == from_payload.failed_filters
+
+
+class TestTheReportColumnSurvivesItsTransport:
+    def test_a_json_encoded_report_is_parsed(self):
+        """MySQL/CSV hand it back as a string; Laravel's cast hands back a dict."""
+        import json as _json
+
+        row = dict(ROW_TREATMENT_LOST)
+        row["decision_report"] = _json.dumps(row["decision_report"])
+        assert status.job_decision_verdict(row).failed_filters == {
+            "mainstream_media": "failed: KeyError: 'channel'"
+        }
+
+    def test_an_unparseable_report_does_not_raise(self):
+        row = dict(ROW_TREATMENT_LOST)
+        row["decision_report"] = "{not json"
+        verdict = status.job_decision_verdict(row)
+        assert verdict.treatment_lost is True
+        assert verdict.filters == {}
+
+    def test_a_report_of_the_wrong_type_is_ignored(self):
+        row = dict(ROW_CONTROL_ARM)
+        row["decision_report"] = ["filters"]
+        assert status.job_decision_verdict(row).filters == {}
+
+    def test_the_column_names_are_the_cross_repo_contract(self):
+        assert status.DECISION_FIELDS == (
+            "decision_degraded",
+            "decision_treatment_lost",
+            "decision_selection_mode",
+            "decision_report",
+        )
+
+
+class TestTheSortRankKeepsUnknownOutOfTheCleanEnd:
+    """``sortBy=severity``: unknown sits between ``running`` and ``warning``."""
+
+    def test_the_documented_rank(self):
+        assert status.SEVERITY_SORT_RANK == {
+            "success": 0,
+            "skipped": 1,
+            "running": 2,
+            "unknown": 3,
+            "warning": 4,
+            "failure": 5,
+        }
+
+    def test_unknown_ranks_between_running_and_warning(self):
+        assert (
+            status.severity_rank("running")
+            < status.severity_rank("unknown")
+            < status.severity_rank("warning")
+        )
+
+    def test_an_unrecognised_code_sorts_as_unknown_never_as_success(self):
+        for value in ("", None, "pending", "cancelled", "sucess"):
+            assert status.severity_rank(value) == status.UNKNOWN_SEVERITY_SORT_RANK
+            assert status.severity_rank(value) > status.severity_rank("success")
+
+    def test_legacy_spellings_sort_with_their_canonical_form(self):
+        """The reason this exists: raw-string sorting splits 256 rows off 1607."""
+        assert status.severity_rank("failed") == status.severity_rank("failure")
+        assert status.severity_rank("skpped") == status.severity_rank("skipped")
+        assert status.severity_rank("warn") == status.severity_rank("warning")
+
+    def test_worst_first_ordering(self):
+        codes = ["success", "failed", "running", "skipped", "mystery", "warning"]
+        assert sorted(codes, key=status.severity_rank, reverse=True) == [
+            "failed",
+            "warning",
+            "mystery",
+            "running",
+            "skipped",
+            "success",
+        ]
+
+    def test_the_inheritance_table_is_left_alone(self):
+        """SEVERITY answers a different question and other code pins its numbers."""
+        assert "unknown" not in status.SEVERITY
+        assert status.SEVERITY == {
+            "success": 0,
+            "skipped": 1,
+            "running": 2,
+            "warning": 3,
+            "failure": 4,
+        }
