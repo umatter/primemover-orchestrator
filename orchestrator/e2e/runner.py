@@ -56,6 +56,9 @@ class E2EResult:
 # Path to the test experiment JSON templates
 TEST_EXPERIMENT_JSON = Path(__file__).parent / "test_experiment.json"
 TEST_EXPERIMENT_YOUTUBE_JSON = Path(__file__).parent / "test_experiment_youtube.json"
+TEST_EXPERIMENT_YOUTUBE_TREATMENT_JSON = (
+    Path(__file__).parent / "test_experiment_youtube_treatment.json"
+)
 
 
 class QueuePickupTimeoutError(TimeoutError):
@@ -78,7 +81,8 @@ class E2ETestTypeConfig(TypedDict, total=False):
     """Configuration for one e2e test type.
 
     ``total=False`` because ``identification_override`` is only set for the
-    "chrome" test type; every other key is present for all test types.
+    "chrome" test type, and the two ``expect_*`` keys only for a treated arm;
+    every other key is present for all test types.
 
     Named with the ``E2E`` prefix on purpose: as ``TestTypeConfig`` it matched
     pytest's default ``Test*`` collection pattern, so every run emitted a
@@ -93,6 +97,8 @@ class E2ETestTypeConfig(TypedDict, total=False):
     pickup_timeout: int
     description: str
     identification_override: str
+    expect_selection_mode: str
+    expect_filters_applied: list[str]
 
 
 # Test type configurations.
@@ -134,6 +140,32 @@ TEST_TYPES: dict[str, E2ETestTypeConfig] = {
         "pickup_timeout": 180,
         "description": "YouTube recommendation workflow with Lambda selection",
     },
+    # The treated arm. The control scenario above is pi=psi=kappa=tau=0, so it
+    # exercises the decision function's rejection path and nothing that WEIGHTS
+    # the draw -- selection_mode comes back 'random', which is correct for a
+    # control and says nothing about whether any treatment works. This one asks
+    # for two filters that a control never reaches:
+    #
+    #   pi=1    -> mainstream_media, backed by mainstream_media_channels.csv.
+    #              A corrupted CSV or a wrong process cwd degrades this filter
+    #              SILENTLY: HTTP 200, plausible recommendations, no failed job,
+    #              and the pi=1 arm quietly runs as a second control arm.
+    #   kappa=1 -> similar, an LLM RATING filter. A rating column is the only
+    #              thing that makes selection_mode 'llm', so this is also the
+    #              only way an e2e run can observe that path at all.
+    #
+    # Both are verified after the run (see _treatment_failures): a green run in
+    # which the treatment did not apply is a FAILURE here, which is the entire
+    # reason this test type exists.
+    "youtube_treatment": {
+        "template": TEST_EXPERIMENT_YOUTUBE_TREATMENT_JSON,
+        "name": "YouTube Treatment E2E Test",
+        "timeout": 600,
+        "pickup_timeout": 180,
+        "description": "YouTube workflow on the treated arm (pi=1, kappa=1)",
+        "expect_selection_mode": "llm",
+        "expect_filters_applied": ["mainstream_media", "similar"],
+    },
 }
 
 
@@ -163,6 +195,83 @@ def _job_ok(job: dict[str, Any]) -> bool:
     ):
         return True
     return str(job.get("type", "")).startswith("try")
+
+
+def _treatment_failures(
+    jobs: list[dict[str, Any]],
+    expected_mode: str,
+    expected_filters: list[str],
+) -> list[str]:
+    """Ways in which a treated run failed to actually be treated.
+
+    Returns one human-readable line per problem, empty when the treatment
+    applied. This exists because every other signal in this file answers a
+    different question: the jobs succeeded, the queue succeeded, the HTTP call
+    returned 200, and none of that says the bot was treated. The decision
+    function degrades by *omission* -- a filter that cannot be applied is
+    dropped, the remaining recommendations are still plausible, and the run is
+    green. That is precisely how a treatment arm becomes a second control arm
+    without anyone noticing.
+
+    Four things are checked, and the first is not a formality:
+
+    1. **Some job recorded a verdict at all.** ``verdict.reported`` is false for
+       a legacy payload, a non-lambda job and an un-redeployed runner alike --
+       all three are *unknown*, and a run that observed nothing must not pass as
+       one that observed a healthy treatment.
+    2. **selection_mode.** Only a rating filter (kappa/tau/beta) makes this
+       'llm'; a control's correct answer is 'random'. Checked ONLY here, against
+       a scenario that explicitly asked for a rating -- never as a general alarm,
+       where it would fire on every healthy control.
+    3. **Each requested filter applied.** ``skipped`` means NOT REQUESTED, so a
+       filter that reads 'skipped' in a scenario that asked for it is the silent
+       failure itself, not a pass.
+    4. **The verdict's own two flags.** degraded, and treatment_lost.
+    """
+    problems: list[str] = []
+    verdicts = [
+        (job, status_contract.job_decision_verdict(job))
+        for job in jobs
+        if status_contract.job_decision_reported(job)
+    ]
+
+    if not verdicts:
+        return [
+            "no job recorded a decision verdict: the treatment could not be "
+            "observed at all (unknown is not a pass)"
+        ]
+
+    for job, verdict in verdicts:
+        label = f"job {job.get('id', '?')} ({job.get('type', 'unknown')})"
+
+        if expected_mode and verdict.selection_mode != expected_mode:
+            problems.append(
+                f"{label}: selection_mode is '{verdict.selection_mode or 'unset'}', "
+                f"expected '{expected_mode}' -- no rating informed the pick, so the "
+                f"treated arm drew the same way a control would"
+            )
+
+        filters = verdict.filters or {}
+        for name in expected_filters:
+            state = str(filters.get(name, "")).strip().lower()
+            if state == "ok":
+                continue
+            problems.append(
+                f"{label}: filter '{name}' is "
+                f"'{state or 'absent'}', expected 'ok'"
+                + (
+                    " -- 'skipped' means the filter was never requested"
+                    if state == "skipped"
+                    else ""
+                )
+            )
+
+        if verdict.treatment_lost:
+            problems.append(f"{label}: treatment_lost -- this session's data is void")
+        elif verdict.degraded:
+            problems.append(f"{label}: degraded -- a requested filter did not apply")
+
+    return problems
 
 
 def _queue_status(queue: dict[str, Any]) -> str:
@@ -330,11 +439,39 @@ class E2ETestRunner:
                 detail = job_status_message(job) or "no detail reported"
                 self.reporter.console.print(f"      [yellow]•[/yellow] {job_type}: {detail}")
 
+        # A treated arm has to be checked for having actually been treated. Job
+        # status cannot answer that: the decision function degrades by omission
+        # and still returns 200, so an untreated run looks exactly like a
+        # treated one from here. Only asked of test types that requested a
+        # treatment; for the control scenarios this list is always empty.
+        treatment_problems = (
+            _treatment_failures(
+                jobs,
+                self.test_config.get("expect_selection_mode", ""),
+                self.test_config.get("expect_filters_applied", []),
+            )
+            if self.test_config.get("expect_filters_applied")
+            else []
+        )
+
+        if treatment_problems:
+            self.reporter.console.print(
+                "  [red]✗[/red] the jobs ran, but the treatment did not apply:"
+            )
+            for problem in treatment_problems:
+                self.reporter.console.print(f"      [red]•[/red] {problem}")
+
         duration = time.time() - start_time
+        errors = []
+        if failed_jobs:
+            errors.append(f"{len(failed_jobs)} job(s) failed")
+        if treatment_problems:
+            errors.append(f"{len(treatment_problems)} treatment check(s) failed")
+
         result = E2EResult(
-            success=all_completed and not failed_jobs,
+            success=all_completed and not failed_jobs and not treatment_problems,
             duration=duration,
-            error=f"{len(failed_jobs)} job(s) failed" if failed_jobs else None,
+            error="; ".join(errors) if errors else None,
             experiment_id=experiment_id,
             crawler_id=crawler_id,
             queue_id=queue_id,
