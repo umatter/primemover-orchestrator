@@ -4179,6 +4179,14 @@ def test(ctx: click.Context, verbose: bool, quick: bool, test_filter: str) -> No
     help="Run YouTube-specific e2e test with Lambda selection workflow",
 )
 @click.option(
+    "--youtube-treatment",
+    is_flag=True,
+    help=(
+        "Run the YouTube e2e on the TREATED arm (pi=1, kappa=1) and fail unless the "
+        "treatment actually applied. --youtube is a control crawler and cannot."
+    ),
+)
+@click.option(
     "--chrome",
     is_flag=True,
     help="Run e2e test with plain Chrome (no Multilogin X, no proxy)",
@@ -4190,6 +4198,7 @@ def e2e(
     pickup_timeout: int | None,
     verbose: bool,
     youtube: bool,
+    youtube_treatment: bool,
     chrome: bool,
 ) -> None:
     """
@@ -4208,6 +4217,20 @@ def e2e(
     - Basic (default): Simple visit/wait jobs via Multilogin X (~3 min)
     - Chrome (--chrome): Same workflow using plain Chrome, no MLX or proxy (~3 min)
     - YouTube (--youtube): Full YouTube workflow with Lambda video selection (~10 min)
+    - YouTube treated (--youtube-treatment): the same workflow on a TREATED bot
+      (pi=1, kappa=1), which additionally fails unless the treatment applied (~10 min)
+
+    \b
+    Why the treated variant exists:
+    --youtube runs a control crawler (pi=psi=kappa=tau=0). It calls OpenAI, but
+    only for the always-on children_entertainment rejection filter, so
+    selection_mode comes back 'random' and no filter that WEIGHTS the draw is
+    ever exercised. A corrupted mainstream_media_channels.csv, a wrong lambda
+    cwd, or the known IndexError in the per-card xpath all degrade a treatment
+    silently -- HTTP 200, plausible recommendations, no failed job -- and a
+    control crawler never reaches any of those branches. --youtube-treatment
+    asks for two filters a control never requests and fails the run if they did
+    not apply.
 
     \b
     Prerequisites:
@@ -4231,7 +4254,8 @@ def e2e(
         orchestrator e2e                  # Run basic e2e test (requires MLX)
         orchestrator e2e --chrome         # Run with plain Chrome (no MLX needed)
         orchestrator e2e --chrome -v      # Chrome test with verbose output
-        orchestrator e2e --youtube        # Run YouTube workflow test
+        orchestrator e2e --youtube        # Run YouTube workflow test (control arm)
+        orchestrator e2e --youtube-treatment   # Treated arm; fails if untreated
         orchestrator e2e --timeout 300 -v # Basic test with a bigger execution budget
         orchestrator e2e --pickup-timeout 900  # Runner polls on a long UpdateInterval
     """
@@ -4241,6 +4265,8 @@ def e2e(
 
     if chrome:
         test_type = "chrome"
+    elif youtube_treatment:
+        test_type = "youtube_treatment"
     elif youtube:
         test_type = "youtube"
     else:
