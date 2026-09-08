@@ -712,7 +712,38 @@ class TraceBuilder:
         if status_contract.is_bad(status_code) and status_message:
             span.errors.insert(0, f"{status_code}: {status_message}"[:200])
 
+        # The decision verdict the API now persists on the job row. Before it
+        # existed, answering "did the treatment apply?" meant fetching the job's
+        # MinIO object, so a trace never said. A row with the columns NULL says
+        # nothing here either -- unknown is not rendered as clean.
+        verdict = status_contract.job_decision_verdict(job_data)
+        if verdict.reported:
+            span.metadata["decision"] = verdict.to_dict()
+            if verdict.treatment_lost or verdict.degraded:
+                span.errors.insert(0, self._decision_finding(verdict))
+                # A backfilled verdict can contradict a status_code written
+                # before the runner reported degradation at all; the verdict is
+                # the newer evidence, so it may only make the span worse.
+                if _severity(span.status) < _severity(SpanStatus.WARNING):
+                    span.status = SpanStatus.WARNING
+
         return span
+
+    @staticmethod
+    def _decision_finding(verdict: status_contract.LambdaVerdict) -> str:
+        """One line naming what the decision lost, for the span's errors list.
+
+        ``treatment_lost`` leads because it is the only state that voids the
+        session's data; the failed filters follow because "which treatment" is
+        the next question anyone asks. ``selection_mode`` is never the finding.
+        """
+        headline = "treatment lost" if verdict.treatment_lost else "decision degraded"
+        failed = verdict.failed_filters
+        if failed:
+            detail = ", ".join(f"{name} {state}" for name, state in failed.items())
+        else:
+            detail = "; ".join(verdict.warnings) or "no filter named"
+        return f"{headline}: {detail}"[:200]
 
     def _build_lambda_span(self, job_id: int, lambda_output: dict) -> TraceSpan:
         """Build a span for Lambda execution.

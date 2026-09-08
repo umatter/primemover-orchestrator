@@ -14,64 +14,159 @@ The two contracts that decide whether an experiment's data is trustworthy are
 **§3.4 Job & Queue Status Contract** and **§7.3 Decision-Function Response
 Contract**. Both are normative; `orchestrator/status.py` is their executable copy.
 Before shipping either of them, read **§0 Deploy order** — the order is part of
-the contract, because two of the pairings record *false* data rather than merely
-incomplete data.
+the contract. It records what is deployed on ex63 today, the order for the work
+in flight, and the one historical pairing that recorded *false* data rather than
+merely incomplete data.
 
 ---
 
 ## 0. Deploy Order
 
-**Status:** Critical - **normative**, for as long as the 2026-08-27 error-handling
-change is only half deployed.
+**Status:** Critical - **normative** whenever a change to §3.4 or §7.3 is in
+flight across repositories.
 
-Nothing in that change is deployed at the time of writing: the runner jar is not
-rebuilt, `primemover-lambda` has not been restarted, the GUI image is not rebuilt,
-promtail and Grafana have not been restarted. The five components will therefore
-run mixed versions for a while. This order is the one in which a mismatch loses
-*information* instead of asserting something *false*.
+### The 2026-08-27/28 overhaul is deployed (verified 2026-09-07)
 
-| # | deploy | how | why it sits here |
+This section used to open "nothing in that change is deployed". That has been
+false since 2026-09-03 and reading it as current would send someone off to
+redeploy a stack that is already current. The six steps of that rollout, and how
+each was checked on ex63:
+
+| # | step | state on ex63 | how it was verified |
 |---|---|---|---|
-| 1 | **`bot-decision-yt` → local Lambda server** | `sudo systemctl restart primemover-lambda` | The source of `degraded` / `treatment_lost` / `filters` (§7.3). Nothing downstream can report a degradation the payload does not carry. The restart also picks up `ensure_decision_cwd()`, which is what makes the `pi=1` arm work on this VM at all - so this step **changes what the treatment does**, see below. |
-| 2 | **promtail** | `docker compose restart promtail` (from the repo root) | Runner-line regex and the `job.id` MDC key. Ship the labels before anything is keyed on them; a restart only affects lines read after it. |
-| 3 | **runner jar** | build in a **throwaway clone** (never in the live tree - it executes from `target/`), then `sudo systemctl restart primemover-runner` while nothing is in flight | Turns the payload's report into `status_code=warning` (§3.4) and into the WARN/ERROR outcome lines the alert rules read. Needs (1) to have anything to read. |
-| 4 | **API** | *nothing to deploy* | It stores whatever `status_code` it is sent - `nullable`, no `in:` rule - and this change adds no migration. Version-agnostic, which is why it is not a gate. |
-| 5 | **GUI image** | rebuild, repoint the pin | Renders the `warning` pill and the real `status_message`. Harmless early (the value simply never arrives); pointless before (3). |
-| 6 | **Grafana** | `docker compose restart grafana` (from the repo root) | Provisioning is read at startup **only**. Last, because every rule keys on lines steps 1-3 produce. |
+| 1 | `bot-decision-yt` -> local Lambda server | **done** 2026-09-03 10:46 CEST | `systemctl show -p ActiveEnterTimestamp primemover-lambda`; `readlink /proc/$(systemctl show -p MainPID --value primemover-lambda)/cwd` ends in `/bot-decision-EN`, so `ensure_decision_cwd()` took effect and the `pi=1` arm is live |
+| 2 | promtail | **done** 2026-08-28 17:05 CEST | `docker inspect pm-orchestrator-promtail` |
+| 3 | runner jar | **done** 2026-09-03 | jar `primemover-runner/target/primemover-runner-2.2.1.jar` built 10:47, unit restarted 10:48 |
+| 4 | API | nothing to deploy | unchanged: `status_code` is `nullable` with no `in:` rule |
+| 5 | GUI image | **done** 2026-09-03 09:31 CEST | `docker ps`: `ex63-primemover-1` runs `ghcr.io/umatter/primemover_gui:sha-593a027` |
+| 6 | Grafana | **done** 2026-08-27 17:35 CEST | container start postdates `infrastructure/grafana/provisioning/alerting/` (written 15:00) |
 
-### Pairings that produce WRONG data rather than missing data
+The database is the confirmation that the vocabulary is actually flowing, not
+merely deployed. On 2026-09-07:
 
-- **(1) without (3) - new decision function, old runner jar. This is the one to
-  avoid.** The payload says `treatment_lost: true`; the deployed jar neither reads
-  the field nor owns a `warning` code (its `JobState` maps `WARNING` and
-  `WARNING_JOBDATA` onto `"success"`). The API therefore records **`success` for a
-  session that carries no treatment signal**, and every analysis that joins on job
-  status - which is most of them - reads it as clean treated data. The
-  contradicting evidence exists only inside a HAR payload nobody joins on. Keep
-  the window between (1) and (3) short and treat every `lambdaselect` job run
-  inside it as unverified.
-- **(3) without (1) is the safe direction.** `LambdaSelectJobResult` reads a
-  payload with no degradation report as *unknown*, not degraded, and keeps
-  reporting `success` exactly as it did before. You lose the new signal; you are
-  not told anything false.
-- **(6) before (1)-(3) - Grafana armed first.** Every rule evaluates against lines
-  that cannot exist yet, and `noDataState: OK` paints that green. A green board
-  over a window that was never measured is a wrong answer, not a missing one.
-- **Restarting `primemover-lambda` in the middle of a run changes the science.**
-  Until that restart the server keeps the cwd its systemd unit handed it and the
-  `pi=1` mainstream-media arm is inert (§7.3); after it, the arm works. A run
-  straddling the restart holds bots from two different treatments under one
-  experiment id. Restart between runs, not during one.
+```
+jobs    success 19860  failure 1607  failed 256  skipped 4419  warning  547  NULL 4885
+queues  success   358  failure   26  failed 277  skipped    1  warning   73
+```
 
-### The correlation-id spelling changes at step (3)
+547 `warning` jobs and 73 `warning` queues are states that could not be recorded
+at all before 2026-08-28. The 256 + 277 legacy `failed` rows are why every reader
+still has to go through the alias table (§3.4).
 
-The deployed jar writes `correlationId=cr-244|jl-838`; the rebuilt one writes the
-canonical `cr-244|q-838`, plus `|j-<id>` for the duration of a job (§1). **Both
-forms are handled by the query layer** - `correlation_line_filters()` in
-`orchestrator/clients/loki.py` emits a filter for each spelling, and the entry
-parser matches `(?:q|jl)-(\d+)` - so a search by id keeps working across the
-boundary and over archived logs. Anything that hard-codes one spelling does not;
-the Grafana alert-rule annotations name both, and
+**The mixed-version hazard of that rollout is therefore gone**, and the pairing
+worth remembering is the one that made the order matter: a **new decision
+function against an old runner jar** records `success` for a session whose
+payload says `treatment_lost: true`. If a jar is ever rolled back, that is what
+happens - the API keeps the wrong answer and every analysis joins on it.
+
+### The order for this change set (persisted decision verdict, §7.3)
+
+The current work adds four nullable columns to `jobs`, the rollup counts and
+filters in §3.4, and the runner-side writes that populate them. Three
+repositories - but **four** deploy events, because on ex63 "the API" is two of
+them, and the order between those two is the whole hazard.
+
+**The API source is bind-mounted, so "code is live" and "schema is migrated" are
+independent events that an operator has to sequence deliberately.** `docker
+inspect primemover-php8.1` shows `bind /opt/primemover/primemover_api ->
+/var/www/html`: no image, no build, no restart stands between a file landing on
+disk and Apache serving it. A checkout, a `git pull`, a merge, an editor save -
+each of those *is* the deploy, and it is instantaneous. `php artisan migrate` is
+a separate command that runs when somebody types it. Nothing couples the two, so
+their order is a decision rather than a default - and the natural reading of
+"deploy the API", pull first and migrate after, is the wrong way round.
+
+| # | deploy | why it sits here |
+|---|---|---|
+| 1a | **API migration** - `2026_09_07_000001_add_decision_columns_to_jobs_table`: `decision_degraded`, `decision_treatment_lost`, `decision_selection_mode`, `decision_report`, all nullable | The columns have to exist before any code that names them, and only this order is safe on a bind mount (below). Run it from the currently-deployed checkout, **before** the branch lands on disk. Alone it changes nothing anyone sees: every column is NULL and NULL reads as unknown. |
+| 1b | **API code** - the rollup counts, `filter[bad]`, `sortBy=severity`, `GET /experiments/{id}/health`, the runner PUT's four new fields | Reads and writes the columns 1a created. Landing this first is the one genuinely unsafe state in the whole rollout. |
+| 2 | **GUI** - "Treatment lost" / "Degraded" / "no verdict" badges, `filter[bad]`, health strip | Renders a verdict for the jobs that have one and "no verdict" for the rest - which, until step 3, is all of them. |
+| 3 | **runner jar** - the four fields on the status PUT | Starts producing verdicts. Build in a throwaway clone (the live runner executes from `target/`), restart while nothing is in flight. |
+
+**Never the runner first.** Its verdict travels on the same PUT as
+`status_code`, and what happens to it depends on which API it meets. Against the
+**old** API code the four keys are simply not in `RunnerJobUpdateRequest::rules()`,
+so `validated()` drops them and the verdict is lost with no trace - bad, but only
+the verdict. Against the **new** API code on an **un-migrated** schema they
+validate, are mass-assigned onto a `$guarded = []` model, and MySQL rejects the
+`UPDATE` with `Unknown column` - a 500 that `JobService.updateJobState` swallows,
+leaving the job it was reporting on at `running` for ever and its queue's rollups
+wrong for that window. §3.4 records that the API deliberately has no `in:` rule
+on `status_code` for exactly this reason - a status PUT must never be refusable.
+
+**NULL means unknown, not clean - which is what makes the version pairings
+safe.** Old runner + new API: NULL, rendered as "no verdict". New GUI + old API:
+the field is absent, which is the same answer. New runner + old GUI: the verdict
+is stored and simply not drawn yet, and `orchestrator debug job` and `trace job`
+will show it in the meantime. At no point does any of those assert that a
+treatment applied when nobody measured whether it did - which is the failure mode
+the whole overhaul exists to prevent, and the one a `NOT NULL DEFAULT false`
+migration would have re-created the moment it ran, across all 31,574 job rows
+already in the table.
+
+**The one state that is not safe is new API code against an un-migrated schema
+(1b before 1a).** It is not a version pairing between repositories at all, which
+is why it hid: it is a pairing between two halves of the same step. Symptom:
+every read that loads a `Crawler` or a `Queue` returns HTTP 500 with
+`SQLSTATE[42S22] Unknown column 'jobs.decision_treatment_lost'`, because the
+rollups ride on `Crawler::$withCount` (applied by `newQuery()`, so every list,
+show and eager load) and on `Queue::jobOutcomeCountRelations()`. That includes
+`GET /crawlers-unprocessed`, **the runner's only work feed**, polled every 60
+seconds: the fleet stops picking up queues and the GUI goes blank, while
+`GET /jobs` keeps answering and the API looks half-alive.
+
+**Evidence: the 107-minute outage of 2026-09-07/08.** This change set has
+already done exactly this once. The branch landed in
+`/opt/primemover/primemover_api`, the bind mount made it live in the same
+instant, `php artisan migrate` had not run, and `GET /crawlers-unprocessed`
+returned 500 from **2026-09-07 22:44:12 until 2026-09-08 00:31:24** - one hour
+and 47 minutes, continuous, six `SQLSTATE[42S22] Unknown column
+'decision_treatment_lost'` errors a minute, 1,314 of them across
+`storage/logs/laravel-2026-09-07.log` and `-09-08.log` and not one in any other
+daily log. It was ended by putting the API checkout **back on `master`**, not by
+running the migration: `/opt/primemover/primemover_api` is on `master` (5d115cf)
+today and the migration file is still not on its disk. (An earlier note here
+said "31 minutes on 2026-09-08"; that is only the part of the window that fell
+after midnight, and reading the current day's log alone is how the incident
+looked three times shorter than it was.) Nothing was wrong with the code and
+nothing was wrong with the migration; only their order.
+
+**The API now carries a schema guard, and it is a safety net, not a licence.**
+`Job::hasDecisionColumns()` resolves `Schema::hasColumn('jobs',
+'decision_treatment_lost')` once per request and, when the answer is no, the
+rollups are **omitted** rather than emitted as `0` - absent is unknown, and a
+`0` treatment-lost count is the positive claim "nothing was lost" about a study
+nobody has measured (§7.3). So 1b-before-1a now degrades to missing counts
+instead of an outage. It does not make the order optional: during that window the
+GUI shows "no verdict" for jobs that have one, `runs_bad_count` is wrong, and the
+runner's PUTs still hit a column that is not there. Run 1a first anyway; the
+guard exists because a bind mount cannot promise you did.
+
+The one thing the order does **not** make safe is **counting** with a nullable
+boolean. These columns have three states and SQL's three-valued logic silently
+drops the third from any `WHERE`: `decision_treatment_lost = 1` and
+`decision_treatment_lost = 0` are both correct as filters, but they do not
+partition the table, and `COUNT(*) - COUNT(lost)` is not "the ones that were
+fine". Tally all three explicitly -
+
+```sql
+SUM(decision_treatment_lost IS TRUE), SUM(decision_treatment_lost IS FALSE),
+SUM(decision_treatment_lost IS NULL)
+```
+
+- and check they sum to the total, the same rule §3.4 puts on the `unknown`
+bucket of `/experiments/{id}/health`. An unknown that vanishes from a
+denominator is the `status_code = 'failure'` mistake wearing a different hat.
+
+### The correlation-id spelling changed at the 2026-09-03 runner restart
+
+The jar deployed before it wrote `correlationId=cr-244|jl-838`; the one running
+now writes the canonical `cr-244|q-838`, plus `|j-<id>` for the duration of a job
+(§1). Archived logs hold both. **Both forms are handled by the query layer** -
+`correlation_line_filters()` in `orchestrator/clients/loki.py` emits a filter for
+each spelling, and the entry parser matches `(?:q|jl)-(\d+)` - so a search by id
+keeps working across the boundary. Anything that hard-codes one spelling does
+not; the Grafana alert-rule annotations name both, and
 `infrastructure/grafana/provisioning/dashboards/json/primemover-overview.json`
 still documents only `jl-` in two help strings and should be updated to say
 "`jl-838` or `q-838`".
@@ -316,14 +411,24 @@ should look at this" is `failure OR warning` (`status.is_bad`), not `failure`.
 | `skpped` | `skipped` | a typo in the runner's `JoblistState` for SKIPPED_INACTIVE / SKIPPED_REVIEWED |
 | `failed` | `failure` | older spelling |
 
-Readers must accept both. This is not hypothetical: on the ex63 database today
-the `jobs` table holds **256 rows of `failed`** (all written 2026-06-19) beside
-**170 of `failure`** (2026-08-18 onward), so any query written as
-`status_code = 'failure'` silently under-reports historical failures by more than
-half. `skpped` currently has 0 rows, but the enum still emits it, so it can
-reappear at any time.
+Readers must accept both. This is not hypothetical. Counted on the ex63 database
+on **2026-09-07**:
+
+| table | `success` | `failure` | `failed` | `skipped` | `warning` | NULL |
+|---|---|---|---|---|---|---|
+| `jobs` | 19860 | 1607 | 256 | 4419 | 547 | 4885 |
+| `queues` | 358 | 26 | 277 | 1 | 73 | 0 |
+
+So `WHERE status_code = 'failure'` misses 14% of failed jobs and, on queues,
+**misses 91% of them** - the legacy spelling is the *majority* there. `skpped`
+currently has 0 rows, but the enum still emits it, so it can reappear at any
+time. The API's `statusVariants()` helper and `orchestrator.status.normalize()`
+are the two implementations of this table; use one of them rather than writing
+the alias out again.
 
 An unrecognised value must be treated as **unknown**, never coerced to success.
+The 4885 jobs with a NULL `status_code` are unknown too: they are not failures,
+and they are certainly not successes.
 
 #### Message format
 
@@ -342,6 +447,117 @@ API and going to the logs. The runner now attaches the real cause. The detail
 must stay single-line (it travels through log lines and table cells) and
 truncated (it is a message, not a stack trace; the stack trace belongs in the
 runner log under the same correlation id).
+
+#### Rollup counts on the read endpoints (new 2026-09)
+
+The status of one run answers "is this run trustworthy". It does not answer "how
+much of it survived", and the two genuinely disagree: a `warning` run may have
+lost one job of 204 or, as measured on experiment 145 above, 196 of them. So the
+read endpoints append counts, and every consumer
+(GUI, orchestrator, analysis) must read the same names.
+
+**Per queue** (`GET /queues`, `GET /queues/{id}`, and the `queues-*` list
+endpoints), counting that run's jobs:
+
+| field | counts jobs where |
+|---|---|
+| `jobs_count` | all |
+| `jobs_succeeded_count` | `status_code` ∈ variants(`success`) |
+| `jobs_warning_count` | ∈ variants(`warning`) |
+| `jobs_failed_count` | ∈ variants(`failure`) - **includes the legacy `failed` spelling** |
+| `jobs_skipped_count` | ∈ variants(`skipped`) - includes `skpped` |
+| `jobs_degraded_count` | **new** - `decision_degraded = true` (§7.3) |
+| `jobs_treatment_lost_count` | **new** - `decision_treatment_lost = true` (§7.3) |
+
+The last two are counts of *verdicts*, not of statuses, and a NULL column is not
+counted in either direction: a run with `jobs_count = 40` and
+`jobs_treatment_lost_count = 0` may have forty verdicts saying "fine" or forty
+NULLs saying nothing. Do not render `0` as a clean bill of health without
+checking that a verdict exists.
+
+**Per crawler (bot)**, over a rolling window (24h by default; the window is a
+`?hours=` query parameter):
+
+| field | counts runs where |
+|---|---|
+| `latest_queues_count` | all runs in window |
+| `latest_queues_succeeded` | the run's own `status_code` ∈ variants(`success`) |
+| `latest_queues_failed` | ∈ variants(`failure`) |
+| `latest_queues_warning` | **new** - ∈ variants(`warning`), the run's **own** status |
+| `latest_queues_degraded` | the run has ≥ 1 job with `status_code` ∈ variants(`warning`) |
+| `latest_queues_treatment_lost` | **new** - the run has ≥ 1 job with `decision_treatment_lost = true` |
+
+`latest_queues_warning` and `latest_queues_degraded` are **different questions**,
+and the second one alone had a hole: `degraded` is derived from *jobs*, so a run
+that the runner marked `warning` at the queue level with no `warning` job among
+its children was counted by none of the four original fields, and a consumer
+reconstructing "what happened to this bot" from them got `running` - for ever.
+`warning` closes that hole; keep both, because a run can be one without the
+other.
+
+**Per experiment** (`GET /experiments`): `runs_bad_count` - **new** - runs in the
+window whose own `status_code` is `failure` **or** `warning`, i.e. the contract's
+`is_bad`, so an experiment card can show a dot without one request per bot.
+
+#### Filtering and sorting by status (new 2026-09)
+
+| parameter | meaning |
+|---|---|
+| `filter[status_code]=failure,warning` | comma-separated list, each term **expanded through the alias table** before matching, so `failure` also matches the 256 legacy `failed` job rows and the 277 queue ones |
+| `filter[bad]=1` | exactly `variants(failure) ∪ variants(warning)` - the contract's `is_bad`, in one parameter |
+| `sortBy=severity` / `sortBy=-severity` | orders by the severity rank below rather than by the raw string; `-severity` is worst-first, which is the one a triage view wants |
+
+`filter[bad]` exists so a client never has to know the alias table to ask the one
+question that matters. A GUI that builds `filter[status_code]=failure` by hand
+gets a list that is missing most of its failed runs, and nothing tells it so.
+
+**Severity sort rank** - and note it is *not* the same table as the one used to
+roll a parent status up from its children:
+
+| status | rank |
+|---|---|
+| `success` | 0 |
+| `skipped` | 1 |
+| `running` | 2 |
+| **unknown** | **3** |
+| `warning` | 4 |
+| `failure` | 5 |
+
+`unknown` covers an unrecognised code **and a NULL `status_code`** (4885 job rows
+today), and it sits above `running` deliberately: put it at 0 and every
+unreported row hides at the clean end of the list, which is where nobody looks.
+The executable copy is `orchestrator.status.SEVERITY_SORT_RANK` /
+`severity_rank()`. It differs on purpose from `orchestrator.status.SEVERITY`,
+which has no `unknown` entry because it answers a different question ("which
+child status does the parent inherit?") and other code pins its numbers -
+`SEVERITY` must not gain one.
+
+#### Experiment health (new 2026-09)
+
+```
+GET /api/v1/experiments/{id}/health?hours=24
+```
+
+`hours` defaults to 24 and is capped at 720 (30 days). One grouped, alias-aware
+query over the experiment's queues:
+
+```json
+{
+  "bots": 12,
+  "runs":  {"total": 48, "running": 2, "success": 31, "warning": 9,
+            "failure": 5, "skipped": 0, "unknown": 1},
+  "jobs":  {"total": 4820, "running": 0, "success": 4102, "warning": 547,
+            "failure": 90, "skipped": 60, "unknown": 21},
+  "bad_runs": 14,
+  "last_finished_at": "2026-09-06T22:14:03+02:00"
+}
+```
+
+`unknown` is a first-class bucket in both tallies, not a residue to be dropped:
+the counts must sum to `total`, otherwise the endpoint is quietly deciding that
+rows it does not understand did not happen. `bad_runs` is `warning + failure`
+after alias expansion - the same predicate as `filter[bad]` and
+`runs_bad_count`, computed once so the three cannot disagree.
 
 #### Note for API maintainers
 
@@ -569,9 +785,15 @@ ex63 before this was shipped:
 A `selection_mode`-only gate would therefore have marked ~82% of every
 `lambdaselect` job `warning` and held a `severity=critical` alert on permanently
 over entirely healthy traffic - burying the handful of real losses and training
-everyone to ignore the alert. It reads zero *today* only because the deployed
-decision function emits no `selection_mode` at all; it would have gone critical
-the moment step (1) of §0 landed.
+everyone to ignore the alert. When that was written it read zero only because
+the function deployed at the time emitted no `selection_mode` at all - it would
+have gone critical the moment the new one landed. It has since, and the archive
+now says by how much: of the 5901 payloads carrying a report (decoded
+2026-09-08), **every one** has a `selection_mode`, and **5865 of them say
+`"random"`** against 36 `"llm"`. A `selection_mode`-only alert would be firing on
+99.4% of this box's decisions right now. Exactly **one** of those 5901 reports
+`treatment_lost: true` - which is the size of the signal the mode-only gate would
+have buried.
 
 `treatment_lost` is that two-term gate - *degraded* **and** *nothing requested
 applied* - computed **once, at the source**, so no consumer can get it wrong.
@@ -583,14 +805,42 @@ part of the treatment did not happen, and `filters` names which part.
 #### Legacy payloads: absence is "unknown", never "degraded"
 
 A payload with **no degradation report at all** - no `degraded`, no
-`selection_mode`, no `filters`, no `treatment_lost` - came from the decision
-function currently deployed. Readers must report it as **unknown**. Reading
-absence as degradation turns every archived HAR into an incident; reading it as
-health asserts something nobody measured.
+`selection_mode`, no `filters`, no `treatment_lost` - came from a decision
+function deployed before the report existed. Its key set is
+`{present, procedure, selected, timestamps, warnings, xpath}`. Readers must
+report it as **unknown**. Reading absence as degradation turns every archived HAR
+into an incident; reading it as health asserts something nobody measured.
 
-All 358 payloads on this box today are exactly that shape - their key set is
-`{present, procedure, selected, timestamps, warnings, xpath}` - so this is the
-normal case until §0 step (1) is done, not an edge case.
+**This is the historical case, and it is a small one.** An earlier version of
+this paragraph dated the report's first appearance to the 2026-09-03 lambda
+restart and told readers that the archive predating it was large. Both halves
+were wrong, and wrong in the direction that writes off recoverable evidence.
+Measured 2026-09-08 by decoding **all 6682** `reports/lambda-jobdata-*` objects
+in MinIO:
+
+| shape | objects | span (payload timestamps) |
+|---|---|---|
+| carry the full report (`degraded` + `treatment_lost` + `filters`) | **5901** | payload timestamps `20260827-153849` .. `20260907-153436` |
+| report-less legacy shape | **361** | `20260819-160358` .. `20260827-081831`; 345 of them exactly `{present, procedure, selected, timestamps, warnings, xpath}` |
+| zero-byte object - no payload at all | **419** | object mtimes 2026-08-27 07:31 .. 2026-09-01 07:00; a reader gets nothing, which is also *unknown* |
+| zip holding only the lambda *input* | **1** | job 18095, `20260901-065023`; the call left no recorded output |
+
+Those four populations are the whole archive: 5901 + 361 + 419 + 1 = 6682. The
+two payload-bearing ones do not interleave: **zero** report-less payloads carry a
+timestamp at or after the first payload that has one. So the report has been
+emitted since **2026-08-27 ~15:38 CEST**, a week before the 09-03 restart, and
+the report-less set is ~5.8% of the readable archive rather than the bulk of it.
+The practical consequence is for anything that sizes a backfill or an "unknown"
+bucket: **5891 of the 5901** reported verdicts predate 2026-09-03 and are fully
+backfillable, so scoping a backfill to post-09-03 jobs would discard 99.8% of the
+treatment evidence there is. The
+runner logs on disk only reach back to 2026-09-01 and cannot witness the
+boundary; MinIO is the only surviving witness, which is why the count was taken
+there.
+
+The rule the distinction serves is unchanged: absence is *unknown*, never clean
+and never degraded, and `GET /jobs/{id}/decision` can still hand a reader either
+shape - or an empty object.
 
 #### Reading it in code
 
@@ -605,6 +855,83 @@ both: `lambda_is_degraded()` returns `False` for a payload with no report. When
 the difference matters - and for anything reading archived HAR it always does -
 use `lambda_report_present()`, or `lambda_verdict()`, which keeps the two apart in
 one value. The runner's `LambdaSelectJobResult` exposes the same distinction.
+
+Reading the same verdict off a **job row** rather than a payload:
+`job_decision_verdict()` (and `job_decision_reported()` /
+`job_decision_degraded()` / `job_decision_treatment_lost()`), with the column
+names as `status.DECISION_FIELDS`. They delegate to the helpers above, so there
+is one implementation of the rules and two sources for it.
+
+#### The verdict is persisted on the job row (new 2026-09)
+
+Until now the verdict existed in exactly two places: a line in the runner log,
+and the `reports/lambda-jobdata-*` object in MinIO. Neither is joinable, and the
+one every analysis *does* join on - the `jobs` table - said nothing at all. That
+is why 6682 archived decisions (counted 2026-09-07; one more lands with every
+`lambdaselect` job) had never been read: answering "did the treatment apply?"
+for one job meant fetching an artifact, and for a study meant fetching
+thousands.
+
+The runner now copies the verdict onto the status PUT and the API stores it on
+`jobs`:
+
+| column | type | source field | meaning |
+|---|---|---|---|
+| `decision_degraded` | bool, **nullable** | `degraded` | a requested filter did not apply |
+| `decision_treatment_lost` | bool, **nullable** | `treatment_lost` | the bot was treated and produced control-arm data - **the alarm** |
+| `decision_selection_mode` | varchar(32), nullable | `selection_mode` | `"llm"` / `"random"`. A descriptor. Never branch on it alone, in SQL either. |
+| `decision_report` | JSON, nullable | — | `{"filters": {...}, "llm": {...}, "warnings": [...], "applied": [...], "requested": [...]}` |
+
+The two booleans are indexed; the rollups in §3.4
+(`jobs_treatment_lost_count`, `jobs_degraded_count`,
+`latest_queues_treatment_lost`) are counted off them.
+
+**NULL means unknown. It never means clean, and it never means false.** Three
+different jobs are indistinguishable through these columns and all three are
+unknown:
+
+- a job that predates the migration (every one of the 31,574 rows already in the
+  table);
+- a job that never called the decision function at all (a `visit`, a `wait`, a
+  `type` job - most jobs);
+- a `lambdaselect` job run by a runner that has not been redeployed, or against a
+  decision function that emits no report (§ "Legacy payloads" above).
+
+A renderer must show "no verdict", not a green tick, and an analysis must count
+unknowns as their own bucket rather than letting them fall out of a `WHERE`
+clause (§0). `orchestrator.status.job_decision_verdict()` returns a
+`LambdaVerdict` whose `.unknown` is `True` for all three, and it gets there by
+rebuilding the payload from the columns and handing it to the same `lambda_*`
+helpers that read a MinIO object - one implementation of the rules, two sources,
+so a job row and the artifact it came from cannot disagree.
+
+**Reading the raw payload:**
+
+```
+GET /api/v1/jobs/{id}/decision
+```
+
+serves the parsed `lambda-jobdata` object for that job straight from MinIO. This
+is what makes the **historical** verdicts readable without a backfill: the
+columns only ever describe jobs run after the runner deploy, while the objects go
+back to the start.
+
+**Deploy order: API *migration*, then API *code*, then GUI, then the runner jar.
+Never the runner first, and never the API code before its migration.** §0 has the
+full table and the reasoning. The short version is two rules. The verdict travels
+on the same PUT as `status_code`, so a runner ahead of the API either loses every
+verdict silently (old API code) or leaves the job stuck at `running` (new API
+code, un-migrated schema). And the API is bind-mounted on ex63, so its code goes
+live the instant it lands on disk while `php artisan migrate` is a separate later
+command - which 500'd `GET /crawlers-unprocessed`, the runner's only work feed,
+for 107 minutes on 2026-09-07/08. `Job::hasDecisionColumns()` now degrades that to
+omitted counts, which read as unknown; it is a net, not a licence to reorder.
+Every *version* pairing in that order is safe for exactly one reason: the columns
+are nullable and null means unknown, so no layer is ever forced to invent a
+verdict it does not have. A `NOT NULL DEFAULT false` migration would have
+asserted, at the moment it ran, that all 31,574 historical jobs had applied their
+treatments - a claim nobody measured, in the one table everybody joins on. §0 has
+the counting rule that follows from a three-state column.
 
 #### Data files are part of this contract
 

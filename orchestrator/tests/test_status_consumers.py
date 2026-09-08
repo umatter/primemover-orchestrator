@@ -36,6 +36,7 @@ from orchestrator.debug.job_debugger import (
     JobDebugger,
     JobDebugReport,
     JobMetadata,
+    LambdaDecision,
     LogEntry,
 )
 from orchestrator.tracing.trace_builder import SpanStatus, TraceBuilder
@@ -53,13 +54,31 @@ REAL_JOB_PAYLOAD = {
 }
 
 # The decision-function response shape introduced 2026-08-27.
+#
+# ``already_watched`` is ``"not_implemented"`` because that is what the deployed
+# function actually writes -- unconditionally, on the success path -- and a
+# fixture saying ``"ok"`` here is what let a "failed filter" warning ride on
+# every healthy control job unnoticed. Verbatim from the MinIO object for job
+# 33947 (payload 20260902-144403).
 CLEAN_FILTERS = {
-    "already_watched": "ok",
+    "already_watched": "not_implemented",
     "mainstream_media": "ok",
     "children_entertainment": "ok",
     "similar": "ok",
     "political": "ok",
     "fringe": "ok",
+}
+
+#: A whole production control-arm payload, verbatim from job 33947. Nothing was
+#: requested, nothing was lost, and the one filter that is neither ``ok`` nor
+#: ``skipped`` is the always-on hygiene stub.
+PRODUCTION_CONTROL_FILTERS = {
+    "already_watched": "not_implemented",
+    "children_entertainment": "ok",
+    "fringe": "skipped",
+    "mainstream_media": "skipped",
+    "political": "skipped",
+    "similar": "skipped",
 }
 
 CLEAN_DECISION = {
@@ -702,3 +721,188 @@ class TestReporterStatusStyles:
 
         assert _STATUS_STYLES[job_status({"status_code": "failed"})] == "red"
         assert _STATUS_STYLES[job_status({"status_code": "skpped"})] == "dim"
+
+
+# The four decision columns the API persists on ``jobs`` (2026-09-07). Before
+# them, "did the treatment apply?" could only be answered from the job's MinIO
+# object -- and that store was unreachable for a month without anyone noticing,
+# during which every reader answered "nothing" instead of failing.
+
+ROW_TREATMENT_LOST = {
+    "id": 700,
+    "status_code": "success",
+    "status_message": "successfully finished job",
+    "decision_degraded": True,
+    "decision_treatment_lost": True,
+    "decision_selection_mode": "random",
+    "decision_report": {
+        "filters": {**CLEAN_FILTERS, "mainstream_media": "failed: KeyError: 'channel'"},
+        "llm": {"available": True, "error_type": None, "error": None},
+        "warnings": ["Aversion to mainstream media channels ignored"],
+        "requested": ["mainstream_media"],
+        "applied": [],
+    },
+}
+
+ROW_CONTROL_ARM = {
+    "id": 701,
+    "status_code": "success",
+    "decision_degraded": False,
+    "decision_treatment_lost": False,
+    "decision_selection_mode": "random",
+    "decision_report": {"filters": PRODUCTION_CONTROL_FILTERS, "warnings": []},
+}
+
+
+class TestJobSpanSurfacesThePersistedVerdict:
+    """A trace can now answer "did the treatment apply?" from the job row alone."""
+
+    def _span(self, row):
+        return _builder(FakeAggregator())._build_job_span(row)
+
+    def test_a_lost_treatment_is_named_even_though_the_row_says_success(self):
+        # A verdict backfilled onto a job whose status_code predates the runner
+        # reporting degradation at all. The verdict is the newer evidence.
+        span = self._span(ROW_TREATMENT_LOST)
+        assert span.status is SpanStatus.WARNING
+        assert span.metadata["decision"]["treatment_lost"] is True
+        assert any("treatment lost" in err for err in span.errors)
+        assert any("mainstream_media" in err for err in span.errors)
+
+    def test_a_control_arm_row_adds_no_finding(self):
+        span = self._span(ROW_CONTROL_ARM)
+        assert span.status is SpanStatus.SUCCESS
+        assert span.metadata["decision"]["degraded"] is False
+        assert span.errors == []
+
+    def test_a_row_with_no_verdict_carries_no_decision_metadata(self):
+        """Unknown is not rendered, and certainly not rendered as clean."""
+        span = self._span({"id": 702, "status_code": "success"})
+        assert "decision" not in span.metadata
+        assert span.status is SpanStatus.SUCCESS
+
+    def test_the_verdict_never_downgrades_a_failure(self):
+        span = self._span(
+            {**ROW_TREATMENT_LOST, "status_code": "failure", "status_message": "job failed"}
+        )
+        assert span.status is SpanStatus.FAILED
+
+
+class TestJobMetadataCarriesThePersistedVerdict:
+    def _meta(self, row) -> JobMetadata:
+        return JobDebugger._metadata_from_payload(object.__new__(JobDebugger), row["id"], row)
+
+    def test_a_lost_treatment_is_readable_without_any_artifact(self):
+        meta = self._meta(ROW_TREATMENT_LOST)
+        assert meta.decision.treatment_lost is True
+        assert meta.to_dict()["decision"]["selection_mode"] == "random"
+
+    def test_a_row_with_no_verdict_serialises_as_null_not_as_false(self):
+        meta = self._meta({"id": 702, "status_code": "success"})
+        assert meta.decision.unknown is True
+        assert meta.to_dict()["decision"] is None
+
+    def test_the_report_promotes_a_row_only_verdict_to_treatment_lost(self):
+        """The MinIO payload is the richer witness, but it is the one that goes
+        missing. The column answers when no artifact could be fetched."""
+        report = JobDebugReport(job_id=700, metadata=self._meta(ROW_TREATMENT_LOST))
+        assert report.lambda_decision is None
+        assert report.treatment_lost is True
+        assert report.to_dict()["treatment_lost"] is True
+
+    def test_a_control_arm_row_does_not_raise_the_alarm(self):
+        report = JobDebugReport(job_id=701, metadata=self._meta(ROW_CONTROL_ARM))
+        assert report.treatment_lost is False
+
+
+class TestFindingsFallBackToTheRowWhenTheArtifactIsMissing:
+    """MinIO went unreadable for a month and every reader answered "nothing".
+
+    An unreachable store is missing evidence about a job, never evidence that
+    the job was fine -- so when no payload can be parsed, the findings come off
+    the job row instead of going silent.
+    """
+
+    def _summarise(self, report: JobDebugReport) -> JobDebugReport:
+        _debugger()._generate_error_summary(report)
+        return report
+
+    def _meta(self, row) -> JobMetadata:
+        return JobDebugger._metadata_from_payload(object.__new__(JobDebugger), row["id"], row)
+
+    def test_the_row_verdict_is_reported_when_no_payload_was_read(self):
+        report = self._summarise(
+            JobDebugReport(job_id=700, metadata=self._meta(ROW_TREATMENT_LOST))
+        )
+        assert report.has_warnings
+        assert "TREATMENT LOST" in report.warning_summary
+        assert "mainstream_media" in report.warning_summary
+
+    def test_an_unreadable_payload_does_not_suppress_the_row_verdict(self):
+        # What ``_extract_lambda_decision`` returns when the zip is corrupt or
+        # the object could not be fetched at all.
+        decision = LambdaDecision(output_parsed=False, success=False, error="404 from MinIO")
+        report = self._summarise(
+            JobDebugReport(
+                job_id=700,
+                metadata=self._meta(ROW_TREATMENT_LOST),
+                lambda_decision=decision,
+            )
+        )
+        assert "TREATMENT LOST" in report.warning_summary
+
+    def test_a_readable_payload_is_not_double_counted(self):
+        report = self._summarise(
+            JobDebugReport(
+                job_id=700,
+                metadata=self._meta(ROW_TREATMENT_LOST),
+                lambda_decision=JobDebugger.decision_from_payload(RANDOM_DECISION),
+            )
+        )
+        assert report.warning_summary.count("TREATMENT LOST") == 1
+
+    def test_a_row_with_no_verdict_reports_nothing(self):
+        """Unknown is silent here -- it is not an alarm, and not a clean bill."""
+        report = self._summarise(
+            JobDebugReport(job_id=702, metadata=self._meta({"id": 702, "status_code": "success"}))
+        )
+        assert not report.has_errors and not report.has_warnings
+
+    def test_a_control_arm_row_reports_nothing(self):
+        report = self._summarise(JobDebugReport(job_id=701, metadata=self._meta(ROW_CONTROL_ARM)))
+        assert not report.has_warnings
+
+    def test_the_always_on_hygiene_stub_is_not_a_filter_casualty(self):
+        """The row fallback used to warn on every healthy lambdaselect job.
+
+        Without ``JOBDATA_S3_ACCESS_KEY``/``SECRET_KEY`` the payload is never
+        parsed, so this fallback is *the* path ``orchestrator debug job`` takes
+        -- and it listed every filter that was not ``ok``/``skipped``. The
+        deployed decision function writes ``already_watched:
+        "not_implemented"`` on every invocation (32 of 32 MinIO payloads since
+        2026-09-02, 31 of them with ``degraded: false``), so a clean control job
+        came back ``has_warnings=True`` with "Lambda filter already_watched:
+        not_implemented". Roughly half the current job table.
+        """
+        report = self._summarise(JobDebugReport(job_id=701, metadata=self._meta(ROW_CONTROL_ARM)))
+        assert not report.has_warnings
+        assert "already_watched" not in report.warning_summary
+
+    def test_a_real_filter_failure_on_the_row_is_still_named(self):
+        """The relaxation must not silence the state that does mean casualty."""
+        row = {
+            **ROW_CONTROL_ARM,
+            "id": 703,
+            "decision_degraded": True,
+            "decision_report": {
+                "filters": {
+                    **PRODUCTION_CONTROL_FILTERS,
+                    "mainstream_media": "failed: KeyError: 'channel'",
+                },
+                "warnings": [],
+            },
+        }
+        report = self._summarise(JobDebugReport(job_id=703, metadata=self._meta(row)))
+        assert report.has_warnings
+        assert "mainstream_media" in report.warning_summary
+        assert "already_watched" not in report.warning_summary
