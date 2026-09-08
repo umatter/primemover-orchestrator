@@ -120,7 +120,12 @@ def _run_cycle(env: dict[str, str], bots: int, cycle: int, log) -> None:
             headers={**h, "Accept": "application/json"},
             timeout=30,
         )
-        done = len(got.json().get("data", [])) if got.status_code == 200 else 0
+        # meta.total, not len(data): the queues-* lists are paginated (15 rows
+        # by default), so counting the page would stall this poll at 15 bots
+        # however many actually finished. meta is absent on older API builds,
+        # where the list was whole and len(data) was the count.
+        body = got.json() if got.status_code == 200 else {}
+        done = body.get("meta", {}).get("total", len(body.get("data", [])))
         if done >= bots:
             log(f"cycle {cycle}: all {bots} queues processed")
             return
