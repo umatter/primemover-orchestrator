@@ -63,31 +63,84 @@ happens - the API keeps the wrong answer and every analysis joins on it.
 
 The current work adds four nullable columns to `jobs`, the rollup counts and
 filters in §3.4, and the runner-side writes that populate them. Three
-repositories, one order:
+repositories - but **four** deploy events, because on ex63 "the API" is two of
+them, and the order between those two is the whole hazard.
+
+**The API source is bind-mounted, so "code is live" and "schema is migrated" are
+independent events that an operator has to sequence deliberately.** `docker
+inspect primemover-php8.1` shows `bind /opt/primemover/primemover_api ->
+/var/www/html`: no image, no build, no restart stands between a file landing on
+disk and Apache serving it. A checkout, a `git pull`, a merge, an editor save -
+each of those *is* the deploy, and it is instantaneous. `php artisan migrate` is
+a separate command that runs when somebody types it. Nothing couples the two, so
+their order is a decision rather than a default - and the natural reading of
+"deploy the API", pull first and migrate after, is the wrong way round.
 
 | # | deploy | why it sits here |
 |---|---|---|
-| 1 | **API** - migration adding `decision_degraded`, `decision_treatment_lost`, `decision_selection_mode`, `decision_report` (+ the new counts, filters, `sortBy=severity`, `/experiments/{id}/health`) | Somewhere for the verdict to land. Alone it changes nothing anyone sees: every column is NULL and NULL reads as unknown. |
+| 1a | **API migration** - `2026_09_07_000001_add_decision_columns_to_jobs_table`: `decision_degraded`, `decision_treatment_lost`, `decision_selection_mode`, `decision_report`, all nullable | The columns have to exist before any code that names them, and only this order is safe on a bind mount (below). Run it from the currently-deployed checkout, **before** the branch lands on disk. Alone it changes nothing anyone sees: every column is NULL and NULL reads as unknown. |
+| 1b | **API code** - the rollup counts, `filter[bad]`, `sortBy=severity`, `GET /experiments/{id}/health`, the runner PUT's four new fields | Reads and writes the columns 1a created. Landing this first is the one genuinely unsafe state in the whole rollout. |
 | 2 | **GUI** - "Treatment lost" / "Degraded" / "no verdict" badges, `filter[bad]`, health strip | Renders a verdict for the jobs that have one and "no verdict" for the rest - which, until step 3, is all of them. |
 | 3 | **runner jar** - the four fields on the status PUT | Starts producing verdicts. Build in a throwaway clone (the live runner executes from `target/`), restart while nothing is in flight. |
 
 **Never the runner first.** Its verdict travels on the same PUT as
-`status_code`. Against an API that has not migrated, the best case is that the
-four keys are dropped and every verdict in that window is lost with no trace;
-the worse case is that the PUT is rejected and the job it was reporting on stays
-`running` for ever. §3.4 records that the API deliberately has no `in:` rule on
-`status_code` for exactly this reason - a status PUT must never be refusable.
+`status_code`, and what happens to it depends on which API it meets. Against the
+**old** API code the four keys are simply not in `RunnerJobUpdateRequest::rules()`,
+so `validated()` drops them and the verdict is lost with no trace - bad, but only
+the verdict. Against the **new** API code on an **un-migrated** schema they
+validate, are mass-assigned onto a `$guarded = []` model, and MySQL rejects the
+`UPDATE` with `Unknown column` - a 500 that `JobService.updateJobState` swallows,
+leaving the job it was reporting on at `running` for ever and its queue's rollups
+wrong for that window. §3.4 records that the API deliberately has no `in:` rule
+on `status_code` for exactly this reason - a status PUT must never be refusable.
 
-**Why every intermediate state is safe: NULL means unknown, not clean.** That
-one rule is what removes the "wrong data" pairings from this rollout entirely.
-Old runner + new API: NULL, rendered as "no verdict". New GUI + old API: the
-field is absent, which is the same answer. New runner + old GUI: the verdict is
-stored and simply not drawn yet, and `orchestrator debug job` and `trace job`
-will show it in the meantime. At no point does any layer assert that a treatment
-applied when nobody measured whether it did - which is the failure mode the
-whole overhaul exists to prevent, and the one a `NOT NULL DEFAULT false`
+**NULL means unknown, not clean - which is what makes the version pairings
+safe.** Old runner + new API: NULL, rendered as "no verdict". New GUI + old API:
+the field is absent, which is the same answer. New runner + old GUI: the verdict
+is stored and simply not drawn yet, and `orchestrator debug job` and `trace job`
+will show it in the meantime. At no point does any of those assert that a
+treatment applied when nobody measured whether it did - which is the failure mode
+the whole overhaul exists to prevent, and the one a `NOT NULL DEFAULT false`
 migration would have re-created the moment it ran, across all 31,574 job rows
 already in the table.
+
+**The one state that is not safe is new API code against an un-migrated schema
+(1b before 1a).** It is not a version pairing between repositories at all, which
+is why it hid: it is a pairing between two halves of the same step. Symptom:
+every read that loads a `Crawler` or a `Queue` returns HTTP 500 with
+`SQLSTATE[42S22] Unknown column 'jobs.decision_treatment_lost'`, because the
+rollups ride on `Crawler::$withCount` (applied by `newQuery()`, so every list,
+show and eager load) and on `Queue::jobOutcomeCountRelations()`. That includes
+`GET /crawlers-unprocessed`, **the runner's only work feed**, polled every 60
+seconds: the fleet stops picking up queues and the GUI goes blank, while
+`GET /jobs` keeps answering and the API looks half-alive.
+
+**Evidence: the 107-minute outage of 2026-09-07/08.** This change set has
+already done exactly this once. The branch landed in
+`/opt/primemover/primemover_api`, the bind mount made it live in the same
+instant, `php artisan migrate` had not run, and `GET /crawlers-unprocessed`
+returned 500 from **2026-09-07 22:44:12 until 2026-09-08 00:31:24** - one hour
+and 47 minutes, continuous, six `SQLSTATE[42S22] Unknown column
+'decision_treatment_lost'` errors a minute, 1,314 of them across
+`storage/logs/laravel-2026-09-07.log` and `-09-08.log` and not one in any other
+daily log. It was ended by putting the API checkout **back on `master`**, not by
+running the migration: `/opt/primemover/primemover_api` is on `master` (5d115cf)
+today and the migration file is still not on its disk. (An earlier note here
+said "31 minutes on 2026-09-08"; that is only the part of the window that fell
+after midnight, and reading the current day's log alone is how the incident
+looked three times shorter than it was.) Nothing was wrong with the code and
+nothing was wrong with the migration; only their order.
+
+**The API now carries a schema guard, and it is a safety net, not a licence.**
+`Job::hasDecisionColumns()` resolves `Schema::hasColumn('jobs',
+'decision_treatment_lost')` once per request and, when the answer is no, the
+rollups are **omitted** rather than emitted as `0` - absent is unknown, and a
+`0` treatment-lost count is the positive claim "nothing was lost" about a study
+nobody has measured (§7.3). So 1b-before-1a now degrades to missing counts
+instead of an outage. It does not make the order optional: during that window the
+GUI shows "no verdict" for jobs that have one, `runs_bad_count` is wrong, and the
+runner's PUTs still hit a column that is not there. Run 1a first anyway; the
+guard exists because a bind mount cannot promise you did.
 
 The one thing the order does **not** make safe is **counting** with a nullable
 boolean. These columns have three states and SQL's three-valued logic silently
@@ -732,9 +785,15 @@ ex63 before this was shipped:
 A `selection_mode`-only gate would therefore have marked ~82% of every
 `lambdaselect` job `warning` and held a `severity=critical` alert on permanently
 over entirely healthy traffic - burying the handful of real losses and training
-everyone to ignore the alert. It reads zero *today* only because the deployed
-decision function emits no `selection_mode` at all; it would have gone critical
-the moment step (1) of §0 landed.
+everyone to ignore the alert. When that was written it read zero only because
+the function deployed at the time emitted no `selection_mode` at all - it would
+have gone critical the moment the new one landed. It has since, and the archive
+now says by how much: of the 5901 payloads carrying a report (decoded
+2026-09-08), **every one** has a `selection_mode`, and **5865 of them say
+`"random"`** against 36 `"llm"`. A `selection_mode`-only alert would be firing on
+99.4% of this box's decisions right now. Exactly **one** of those 5901 reports
+`treatment_lost: true` - which is the size of the signal the mode-only gate would
+have buried.
 
 `treatment_lost` is that two-term gate - *degraded* **and** *nothing requested
 applied* - computed **once, at the source**, so no consumer can get it wrong.
@@ -752,12 +811,36 @@ function deployed before the report existed. Its key set is
 report it as **unknown**. Reading absence as degradation turns every archived HAR
 into an incident; reading it as health asserts something nobody measured.
 
-**This is now the historical case, not the normal one.** Since the 2026-09-03
-restart (§0 step 1) the deployed function emits the full report on every
-invocation - verified 2026-09-07 on the MinIO object for job 34226, whose payload
-carries `degraded`, `treatment_lost`, `selection_mode`, `filters` and `llm`. But
-the archive predating that restart is large and is exactly what a
-`GET /jobs/{id}/decision` reader will hit, so the distinction stays load-bearing.
+**This is the historical case, and it is a small one.** An earlier version of
+this paragraph dated the report's first appearance to the 2026-09-03 lambda
+restart and told readers that the archive predating it was large. Both halves
+were wrong, and wrong in the direction that writes off recoverable evidence.
+Measured 2026-09-08 by decoding **all 6682** `reports/lambda-jobdata-*` objects
+in MinIO:
+
+| shape | objects | span (payload timestamps) |
+|---|---|---|
+| carry the full report (`degraded` + `treatment_lost` + `filters`) | **5901** | payload timestamps `20260827-153849` .. `20260907-153436` |
+| report-less legacy shape | **361** | `20260819-160358` .. `20260827-081831`; 345 of them exactly `{present, procedure, selected, timestamps, warnings, xpath}` |
+| zero-byte object - no payload at all | **419** | object mtimes 2026-08-27 07:31 .. 2026-09-01 07:00; a reader gets nothing, which is also *unknown* |
+| zip holding only the lambda *input* | **1** | job 18095, `20260901-065023`; the call left no recorded output |
+
+Those four populations are the whole archive: 5901 + 361 + 419 + 1 = 6682. The
+two payload-bearing ones do not interleave: **zero** report-less payloads carry a
+timestamp at or after the first payload that has one. So the report has been
+emitted since **2026-08-27 ~15:38 CEST**, a week before the 09-03 restart, and
+the report-less set is ~5.8% of the readable archive rather than the bulk of it.
+The practical consequence is for anything that sizes a backfill or an "unknown"
+bucket: **5891 of the 5901** reported verdicts predate 2026-09-03 and are fully
+backfillable, so scoping a backfill to post-09-03 jobs would discard 99.8% of the
+treatment evidence there is. The
+runner logs on disk only reach back to 2026-09-01 and cannot witness the
+boundary; MinIO is the only surviving witness, which is why the count was taken
+there.
+
+The rule the distinction serves is unchanged: absence is *unknown*, never clean
+and never degraded, and `GET /jobs/{id}/decision` can still hand a reader either
+shape - or an empty object.
 
 #### Reading it in code
 
@@ -833,17 +916,22 @@ is what makes the **historical** verdicts readable without a backfill: the
 columns only ever describe jobs run after the runner deploy, while the objects go
 back to the start.
 
-**Deploy order: API migration, then GUI, then the runner jar. Never the runner
-first.** §0 has the full table and the reasoning; the short version is that the
-verdict travels on the same PUT as `status_code`, so a runner ahead of the
-migration either loses every verdict silently or risks a rejected status PUT that
-leaves the job stuck at `running`. Every intermediate state of that order is safe
-for exactly one reason: the columns are nullable and null means unknown, so no
-layer is ever forced to invent a verdict it does not have. A `NOT NULL DEFAULT
-false` migration would have asserted, at the moment it ran, that all 31,574
-historical jobs had applied their treatments - a claim nobody measured, in the
-one table everybody joins on. §0 has the counting rule that follows from a
-three-state column.
+**Deploy order: API *migration*, then API *code*, then GUI, then the runner jar.
+Never the runner first, and never the API code before its migration.** §0 has the
+full table and the reasoning. The short version is two rules. The verdict travels
+on the same PUT as `status_code`, so a runner ahead of the API either loses every
+verdict silently (old API code) or leaves the job stuck at `running` (new API
+code, un-migrated schema). And the API is bind-mounted on ex63, so its code goes
+live the instant it lands on disk while `php artisan migrate` is a separate later
+command - which 500'd `GET /crawlers-unprocessed`, the runner's only work feed,
+for 107 minutes on 2026-09-07/08. `Job::hasDecisionColumns()` now degrades that to
+omitted counts, which read as unknown; it is a net, not a licence to reorder.
+Every *version* pairing in that order is safe for exactly one reason: the columns
+are nullable and null means unknown, so no layer is ever forced to invent a
+verdict it does not have. A `NOT NULL DEFAULT false` migration would have
+asserted, at the moment it ran, that all 31,574 historical jobs had applied their
+treatments - a claim nobody measured, in the one table everybody joins on. §0 has
+the counting rule that follows from a three-state column.
 
 #### Data files are part of this contract
 

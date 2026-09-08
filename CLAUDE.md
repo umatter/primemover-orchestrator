@@ -297,12 +297,24 @@ gate (`degraded` AND nothing applied) is computed **once, at the source**, and n
 consumer can get it wrong.
 
 A payload with **no** degradation report is a legacy payload: absence reads as
-*unknown*, never as degraded. That is no longer the *normal* case — since the
-2026-09-03 restart the deployed function emits the full report on every
-invocation (verified on job 34226, 2026-09-07) — but the MinIO archive is full of
-report-less payloads and every reader still has to tell "clean" from "cannot
-tell". Use `status.lambda_report_present()` / `lambda_verdict()`, never a bare
-boolean.
+*unknown*, never as degraded. It is also the *rare* case, and an earlier version
+of this file said otherwise. Decoding all **6682** `lambda-jobdata` objects in
+MinIO on 2026-09-08: **5901 carry the full report** (timestamps `20260827-153849`
+onward), **361 are the report-less** `{present, procedure, selected, timestamps,
+warnings, xpath}` shape (`20260819-160358` .. `20260827-081831`), **419 are
+zero-byte objects** with no payload at all, and one holds only the lambda input
+(5901 + 361 + 419 + 1 = 6682). The two shapes do not interleave, so the
+report has been emitted since **2026-08-27 ~15:38**, a week before the 09-03
+lambda restart this file used to credit it to — which matters if you are sizing a
+backfill, because those pre-09-03 objects are recoverable, not lost. Every reader
+still has to tell "clean" from "cannot tell": use
+`status.lambda_report_present()` / `lambda_verdict()`, never a bare boolean.
+
+`already_watched` is the filter state to watch out for. The deployed function
+reports it as **`not_implemented`** on every successful invocation (all 32
+payloads since `20260902-144403`), because the filter is an empty TO-DO stub and
+saying `ok` would be a lie. It is not a failure and must not be counted as one —
+`status._FILTER_OK_STATES` says so, and the API and runner match.
 
 Note the shape of the real failure: valid xpath, real video clicked, job
 finished, run completed. Every other indicator says fine.
@@ -328,14 +340,33 @@ on it. It is moving onto the job row as four **nullable** columns —
 `GET /api/v1/jobs/{id}/decision` serving the raw payload for the 6682 historical
 objects. **NULL means unknown, never clean and never false**: a pre-migration
 job, a non-lambda job and an un-redeployed runner are indistinguishable, and all
-three are "we cannot tell". That single rule is what makes every intermediate
-state of the rollout safe, and the rollout order is **API migration → GUI →
-runner jar, never the runner first** (the verdict rides the same PUT as
-`status_code`; ahead of the migration it is lost at best and can leave the job
-stuck at `running` at worst). When counting, remember the column has **three**
-states and SQL drops the third from any `WHERE`: tally `IS TRUE` / `IS FALSE` /
-`IS NULL` separately and check they sum to the total, rather than treating
-"not lost" as everything minus the losses.
+three are "we cannot tell". That single rule is what makes every *version*
+pairing of the rollout safe, and the rollout order is **API migration → API code
+→ GUI → runner jar, never the runner first** (the verdict rides the same PUT as
+`status_code`; ahead of the API it is lost at best and can leave the job stuck at
+`running` at worst).
+
+**The API step is two events, not one, and their order is the whole hazard.** The
+API source is **bind-mounted** into the running php container
+(`/opt/primemover/primemover_api → /var/www/html`), so its code is live the
+instant it lands on disk — a checkout *is* the deploy — while `php artisan
+migrate` is a separate command somebody has to type. New code against an
+un-migrated schema is the one state that is not safe: the rollups ride on
+`Crawler::$withCount`, so every crawler and queue read answers `SQLSTATE[42S22]
+Unknown column 'jobs.decision_treatment_lost'` → 500, including
+`GET /crawlers-unprocessed`, the runner's only work feed. That is not
+hypothetical — it took the API's crawler and queue reads down for **107 minutes,
+2026-09-07 22:44 to 2026-09-08 00:31**, ended by reverting the checkout rather
+than by migrating. The API now
+guards with `Job::hasDecisionColumns()` and **omits** the counts when the columns
+are missing (absent = unknown; never `0`, which would claim nothing was lost),
+but a guard is a net, not a licence: migrate first. `docs/integration-contract.md`
+§0 has the full table.
+
+When counting, remember the column has **three** states and SQL drops the third
+from any `WHERE`: tally `IS TRUE` / `IS FALSE` / `IS NULL` separately and check
+they sum to the total, rather than treating "not lost" as everything minus the
+losses.
 
 The same change set adds, on the read side: `latest_queues_warning` and
 `latest_queues_treatment_lost` per crawler, `jobs_degraded_count` and

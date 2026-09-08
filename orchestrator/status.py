@@ -57,14 +57,25 @@ have marked ~82% of all ``lambda_select`` jobs as ``warning`` and held a
 alarm nobody reads, which is the precise opposite of what this work is for.
 
 By the same measurement, ``"skipped"`` in the ``filters`` report means *not
-requested*, not *failed*: five of the six filters are ``skipped`` on every
-healthy control invocation. :func:`lambda_failed_filters` is the only correct way
-to count casualties.
+requested*, not *failed*: four or five of the six filters are ``skipped`` on
+every healthy control invocation. ``"not_implemented"`` is not a failure either -- it
+is the deployed function saying honestly that ``already_watched`` is still a
+stub. ``_FILTER_OK_STATES`` states the whole rule and is the copy the API's
+``DecisionVerdict`` and the runner's ``LambdaSelectJobResult`` are written
+against; :func:`lambda_failed_filters` is the only correct way to count
+casualties.
 
-Finally, a payload carrying **no** degradation report is a legacy payload from
-the decision function currently deployed, and the HAR archive is full of them.
-Absence reads as *unknown* -- never as degraded. :func:`lambda_report_present`
-and :class:`LambdaVerdict` keep "clean" and "we cannot tell" apart.
+Finally, a payload carrying **no** degradation report is a **legacy** payload
+from a decision function deployed before the report existed. Absence reads as
+*unknown* -- never as degraded, and never as clean.
+:func:`lambda_report_present` and :class:`LambdaVerdict` keep "clean" and "we
+cannot tell" apart. That shape is now the rare one: of the 6682 archived lambda
+payloads on ex63 (decoded 2026-09-08) 5901 carry the full report, emitted on
+every invocation since 2026-08-27 ~15:38; 361 are the report-less
+``{present, procedure, selected, timestamps, warnings, xpath}`` shape, the
+newest of them from 2026-08-27 08:18; 419 are zero-byte objects; and one holds
+only the lambda input. The last two are a third and fourth way of saying
+*unknown*.
 
 The same verdict is now **persisted on the job row** (``decision_degraded``,
 ``decision_treatment_lost``, ``decision_selection_mode``, ``decision_report``),
@@ -72,7 +83,13 @@ so a consumer no longer has to fetch a MinIO object to ask whether a treatment
 applied. The ``job_decision_*`` helpers read those columns, and they answer by
 rebuilding the payload and handing it to the ``lambda_*`` helpers above -- one
 implementation of the rules, two sources. A NULL column is *unknown*, never
-clean; that is what makes the API-then-GUI-then-runner deploy order safe.
+clean; that is what makes every *version* pairing of the
+API-then-GUI-then-runner rollout safe. It does not make the API's own two halves
+safe: on ex63 the API source is bind-mounted, so its code is live the moment it
+lands on disk while ``php artisan migrate`` is a separate later command, and new
+code on an un-migrated schema 500s every crawler and queue read -- 107 minutes
+of it, 2026-09-07 22:44 to 2026-09-08 00:31. Migration first, then code. See
+``docs/integration-contract.md`` section 0.
 """
 
 from __future__ import annotations
@@ -356,11 +373,46 @@ LAMBDA_FILTER_NAMES: tuple[str, ...] = (
     "fringe",
 )
 
-#: Filter states that are *not* failures. ``"skipped"`` means the filter was
-#: never requested -- the normal state of five of the six filters on a control
-#: crawler -- and counting it as a failure is the single most common way to turn
-#: this contract back into a false-alarm generator.
-_FILTER_OK_STATES = frozenset({"ok", "skipped", ""})
+#: THE FILTER-STATE RULE, stated once for the whole ecosystem.
+#:
+#: A filter state is a **casualty only when the decision function says it
+#: failed**. It writes exactly one failure spelling -- ``"failed: <ExcClass>:
+#: <msg>"`` -- and three non-failure ones:
+#:
+#: ``"ok"``
+#:     requested, and it applied.
+#: ``"skipped"``
+#:     **not requested.** The normal state of four or five of the six filters
+#:     on every healthy control-crawler invocation, and counting it as a failure is the
+#:     single most common way to turn this contract back into a false-alarm
+#:     generator.
+#: ``"not_implemented"``
+#:     the filter is a stub that cannot do anything yet, and the decision
+#:     function reports that honestly rather than lying with ``"ok"``
+#:     (``lambda_function.py``: ``filters['already_watched'] =
+#:     'not_implemented'``, on the unconditional success path). Nothing went
+#:     wrong; nothing was ever going to happen. ``already_watched`` is
+#:     always-on hygiene, never a configured treatment, so it is also absent
+#:     from the function's own ``requested_treatments`` denominator -- it can
+#:     neither degrade a decision nor lose a treatment.
+#: ``""`` / absent
+#:     nothing was said. Unknown, and unknown is not a finding.
+#:
+#: Anything else is treated as a failure, so an unrecognised *future* state errs
+#: towards being seen rather than towards silence.
+#:
+#: Measured on ex63 2026-09-08, decoding all 6682 archived lambda payloads:
+#: ``already_watched`` reads ``not_implemented`` in **every** payload since
+#: ``20260902-144403`` (32 of 32), with ``degraded: false`` in 31 of them. Before
+#: this set was corrected, that state alone put a "failed filter" warning on
+#: every healthy lambdaselect job the deployed function has produced since.
+#:
+#: The other two implementations of this rule are
+#: ``App\Modules\Job\Service\DecisionVerdict::FILTER_OK_STATES`` in
+#: primemover_api and ``LambdaSelectJobResult`` in primemover_runner. They must
+#: agree with this set; this module is the copy the other two are written
+#: against (docs/integration-contract.md 7.3).
+_FILTER_OK_STATES = frozenset({"ok", "skipped", "not_implemented", ""})
 
 
 @dataclass(frozen=True)
@@ -401,7 +453,11 @@ class LambdaVerdict:
 
     @property
     def failed_filters(self) -> dict[str, str]:
-        """Only filters that actually failed. ``"skipped"`` is not a failure."""
+        """Only filters that actually failed.
+
+        ``"skipped"`` (not requested) and ``"not_implemented"`` (a stub that
+        cannot apply) are not failures -- see :data:`_FILTER_OK_STATES`.
+        """
         return _failed_filters(self.filters)
 
     @property
@@ -460,9 +516,10 @@ def _ordered_filters(filters: dict[str, Any] | None) -> list[tuple[str, str]]:
 def _failed_filters(filters: dict[str, Any] | None) -> dict[str, str]:
     """Filters whose state is a genuine failure.
 
-    The wire values are ``"ok"``, ``"skipped"`` and ``"failed: <ExcClass>:
-    <msg>"``. Anything that is not ``ok``/``skipped``/empty is treated as a
-    failure so an unrecognised future state errs towards being seen.
+    :data:`_FILTER_OK_STATES` is the rule and carries the reasoning: ``"ok"``,
+    ``"skipped"``, ``"not_implemented"`` and the empty state are not casualties.
+    Anything else is treated as a failure so an unrecognised future state errs
+    towards being seen.
     """
     return {
         name: state
@@ -515,9 +572,13 @@ def lambda_report_present(payload: dict[str, Any] | None) -> bool:
     """True when the payload carries a degradation report of any version.
 
     ``False`` means the answer to "did this decision degrade?" is **unknown**,
-    not "no". Payloads written by the decision function currently deployed to
-    production have no report at all, and there are years of them in the HAR
-    archive.
+    not "no". The decision function deployed today emits the report on every
+    invocation, so ``False`` now means one of: a payload from before
+    2026-08-27 ~15:38 (361 of the 6682 objects in the MinIO archive, decoded
+    2026-09-08; newest 2026-08-27 08:18), a zero-byte object (419 more), or
+    something that is not a decision payload at all (one object holds only the
+    lambda input). Rare is not the same as gone: an archive reader still meets
+    all of them, and all of them are unknown.
     """
     if not payload:
         return False
@@ -627,8 +688,11 @@ def lambda_verdict(payload: dict[str, Any] | None) -> LambdaVerdict:
 # **NULL on any of them means UNKNOWN, never clean.** A legacy job, a non-lambda
 # job, and a job run by a runner that predates the change are all indistinguishable
 # from each other and all of them are "we cannot tell". That is precisely what
-# makes the staged deploy safe (API migration -> GUI -> runner jar): every
-# intermediate state produces nulls, and nulls render as "no verdict".
+# makes every *version* pairing of the staged deploy safe (API migration -> API
+# code -> GUI -> runner jar): each intermediate state produces nulls, and nulls
+# render as "no verdict". It says nothing about the API's own two halves --
+# code before migration is the one unsafe step, and it is an outage rather than
+# a null. See the module docstring and docs/integration-contract.md section 0.
 
 #: ``jobs.decision_degraded`` -- boolean, nullable. Mirrors the payload's
 #: ``degraded``: a *requested* filter failed, or selection failed outright.

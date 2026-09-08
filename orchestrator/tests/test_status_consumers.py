@@ -54,13 +54,31 @@ REAL_JOB_PAYLOAD = {
 }
 
 # The decision-function response shape introduced 2026-08-27.
+#
+# ``already_watched`` is ``"not_implemented"`` because that is what the deployed
+# function actually writes -- unconditionally, on the success path -- and a
+# fixture saying ``"ok"`` here is what let a "failed filter" warning ride on
+# every healthy control job unnoticed. Verbatim from the MinIO object for job
+# 33947 (payload 20260902-144403).
 CLEAN_FILTERS = {
-    "already_watched": "ok",
+    "already_watched": "not_implemented",
     "mainstream_media": "ok",
     "children_entertainment": "ok",
     "similar": "ok",
     "political": "ok",
     "fringe": "ok",
+}
+
+#: A whole production control-arm payload, verbatim from job 33947. Nothing was
+#: requested, nothing was lost, and the one filter that is neither ``ok`` nor
+#: ``skipped`` is the always-on hygiene stub.
+PRODUCTION_CONTROL_FILTERS = {
+    "already_watched": "not_implemented",
+    "children_entertainment": "ok",
+    "fringe": "skipped",
+    "mainstream_media": "skipped",
+    "political": "skipped",
+    "similar": "skipped",
 }
 
 CLEAN_DECISION = {
@@ -732,7 +750,7 @@ ROW_CONTROL_ARM = {
     "decision_degraded": False,
     "decision_treatment_lost": False,
     "decision_selection_mode": "random",
-    "decision_report": {"filters": CLEAN_FILTERS, "warnings": []},
+    "decision_report": {"filters": PRODUCTION_CONTROL_FILTERS, "warnings": []},
 }
 
 
@@ -853,3 +871,38 @@ class TestFindingsFallBackToTheRowWhenTheArtifactIsMissing:
     def test_a_control_arm_row_reports_nothing(self):
         report = self._summarise(JobDebugReport(job_id=701, metadata=self._meta(ROW_CONTROL_ARM)))
         assert not report.has_warnings
+
+    def test_the_always_on_hygiene_stub_is_not_a_filter_casualty(self):
+        """The row fallback used to warn on every healthy lambdaselect job.
+
+        Without ``JOBDATA_S3_ACCESS_KEY``/``SECRET_KEY`` the payload is never
+        parsed, so this fallback is *the* path ``orchestrator debug job`` takes
+        -- and it listed every filter that was not ``ok``/``skipped``. The
+        deployed decision function writes ``already_watched:
+        "not_implemented"`` on every invocation (32 of 32 MinIO payloads since
+        2026-09-02, 31 of them with ``degraded: false``), so a clean control job
+        came back ``has_warnings=True`` with "Lambda filter already_watched:
+        not_implemented". Roughly half the current job table.
+        """
+        report = self._summarise(JobDebugReport(job_id=701, metadata=self._meta(ROW_CONTROL_ARM)))
+        assert not report.has_warnings
+        assert "already_watched" not in report.warning_summary
+
+    def test_a_real_filter_failure_on_the_row_is_still_named(self):
+        """The relaxation must not silence the state that does mean casualty."""
+        row = {
+            **ROW_CONTROL_ARM,
+            "id": 703,
+            "decision_degraded": True,
+            "decision_report": {
+                "filters": {
+                    **PRODUCTION_CONTROL_FILTERS,
+                    "mainstream_media": "failed: KeyError: 'channel'",
+                },
+                "warnings": [],
+            },
+        }
+        report = self._summarise(JobDebugReport(job_id=703, metadata=self._meta(row)))
+        assert report.has_warnings
+        assert "mainstream_media" in report.warning_summary
+        assert "already_watched" not in report.warning_summary

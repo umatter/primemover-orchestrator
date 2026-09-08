@@ -208,11 +208,13 @@ def test_healthy_control_crawler_logs_no_error_despite_random_selection(
 def test_legacy_payload_without_a_report_is_unknown_not_degraded(
     client, fake_decision, caplog: pytest.LogCaptureFixture
 ):
-    """A payload from the currently deployed decision function carries no report.
+    """A payload from before 2026-08-27 ~15:38 carries no report at all.
 
-    Absence must read as *unknown*. It used to read as degraded (and, with
-    ``selection_mode == "random"``, as a lost treatment arm), which is exactly
-    backwards for the control-arm payloads that make up most of the archive.
+    The deployed function has emitted one on every invocation since; 361 of the
+    6682 archived payloads predate it (decoded 2026-09-08). Absence must read as
+    *unknown*. It used to read as degraded (and, with ``selection_mode ==
+    "random"``, as a lost treatment arm), which is exactly backwards for the
+    control-arm payloads that make up most of the archive.
     """
     caplog.set_level(logging.DEBUG)
     fake_decision["response"] = {"xpath": "//a[1]", "selection_mode": "random"}

@@ -86,10 +86,13 @@ class LambdaDecision:
     def failed_filters(self) -> dict[str, str]:
         """Only the filters that were requested and did not apply.
 
-        ``"skipped"`` means *not requested* and must never be counted here: it
-        is the state of five of the six filters on every healthy control
-        invocation, and counting it made ``debug job`` report filter casualties
-        on clean jobs.
+        The rule lives in ``status._FILTER_OK_STATES``, once, and this delegates
+        to it: ``"skipped"`` means *not requested* (four or five of the six
+        filters on every healthy control invocation) and ``"not_implemented"`` means the
+        filter is a stub that could never have applied -- the state the deployed
+        function reports for ``already_watched`` on **every** invocation.
+        Counting either made ``debug job`` report filter casualties on clean
+        jobs.
         """
         return status_contract.lambda_failed_filters({"filters": self.filters})
 
@@ -937,9 +940,13 @@ class JobDebugger:
         #
         # What is deliberately absent: any finding derived from
         # ``selection_mode`` alone. Random selection is the correct mode for a
-        # control crawler (82% of real payloads on this box), and a filter
-        # reported as "skipped" was never requested. Both used to be counted as
-        # casualties here, which put warnings on clean jobs.
+        # control crawler (82% of real payloads on this box); a filter reported
+        # as "skipped" was never requested; and one reported as
+        # "not_implemented" is a stub that could not have applied -- which is
+        # what the deployed function says about ``already_watched`` on every
+        # single invocation. All three used to be counted as casualties here,
+        # which put warnings on clean jobs. ``status._FILTER_OK_STATES`` is the
+        # one place that decides.
         ld = report.lambda_decision
         if ld:
             if not ld.output_parsed:
