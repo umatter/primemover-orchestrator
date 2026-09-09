@@ -48,16 +48,15 @@ import sys
 from datetime import date, datetime, time, timedelta
 from pathlib import Path
 from typing import Any
-from zoneinfo import ZoneInfo
 
 REPO = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO))
 
+from experiment_designer.spec.time_utils import API_TIMEZONE  # noqa: E402
 from orchestrator.config.settings import get_settings  # noqa: E402
 from orchestrator.e2e.proxy import substitute_proxy  # noqa: E402
 
 SCENARIO = REPO / "orchestrator" / "e2e" / "test_experiment_youtube_treatment.json"
-API_ZONE = ZoneInfo("Europe/Zurich")
 
 
 def local_start(day: date, at: time) -> str:
@@ -66,7 +65,7 @@ def local_start(day: date, at: time) -> str:
     The offset is stripped by the API, but a string that disagrees with the
     wall clock it encodes is a trap for the next reader.
     """
-    stamp = datetime.combine(day, at, tzinfo=API_ZONE)
+    stamp = datetime.combine(day, at, tzinfo=API_TIMEZONE)
     offset = stamp.strftime("%z")
     return stamp.strftime("%Y-%m-%dT%H:%M:%S.00") + offset[:3] + ":" + offset[3:]
 
@@ -134,7 +133,7 @@ def main() -> int:
     first = (
         date.fromisoformat(args.first)
         if args.first
-        else (datetime.now(API_ZONE).date() + timedelta(days=1))
+        else (datetime.now(API_TIMEZONE).date() + timedelta(days=1))
     )
 
     crawlers = build(args.days, at, first, settings=get_settings())

@@ -14,10 +14,10 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 from typing import Any, TypedDict
-from zoneinfo import ZoneInfo
 
 import httpx
 
+from experiment_designer.spec.time_utils import API_TIMEZONE
 from orchestrator import status as status_contract
 from orchestrator.clients.api import APIClient
 from orchestrator.config import get_settings
@@ -576,15 +576,20 @@ class E2ETestRunner:
         test_name = self.test_config["name"]
         experiment_name = f"{test_name} - {timestamp}"
 
-        # Schedule start time. The API (Laravel APP_TIMEZONE=Europe/Zurich) strips
-        # the offset and interprets the naive datetime as Europe/Zurich local time,
-        # so we send the current Zurich wall-clock time with its current offset.
-        # Using zoneinfo makes this DST-safe (CET +01:00 winter / CEST +02:00
-        # summer); the previous hard-coded +1h/+01:00 broke under summer DST — the
-        # queue landed an hour in the past and the runner marked the jobs "skipped".
-        # NOTE: the host VM runs in UTC, so we must use the API's zone explicitly,
-        # not the host's local time.
-        api_now = datetime.now(ZoneInfo("Europe/Zurich"))
+        # Schedule start time. The API keeps the wall-clock digits and discards
+        # the offset entirely, so we send the current Zurich wall clock with its
+        # current offset. Probed against the live API: "03:00Z" is stored as
+        # 03:00 and "05:00-05:00" as 05:00 — the zone is not read at all.
+        #
+        # zoneinfo makes this DST-safe (CET +01:00 winter / CEST +02:00 summer);
+        # the previous hard-coded +1h/+01:00 broke under summer DST — the queue
+        # landed an hour in the past and the runner marked the jobs "skipped".
+        #
+        # The API's zone explicitly, never the host's. Every machine that runs
+        # this today happens to be CEST, which is exactly why the bug would not
+        # show up until someone ran it from elsewhere. API_TIMEZONE is shared
+        # with the spec DSL so the two cannot disagree about what it is.
+        api_now = datetime.now(API_TIMEZONE)
         offset = api_now.strftime("%z")  # e.g. +0200
         offset = offset[:3] + ":" + offset[3:]  # -> +02:00
         start_time = api_now.strftime("%Y-%m-%dT%H:%M:%S.00") + offset

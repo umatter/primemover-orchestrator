@@ -1,7 +1,30 @@
-"""Time parsing utilities for experiment specs."""
+"""Time parsing utilities for experiment specs.
+
+Everything here exists to produce one thing correctly: a queue's ``start_at``.
+
+The API does NOT honour the offset it is sent. It keeps the wall-clock digits
+and discards the zone, so ``2030-07-15T03:00:00Z`` is stored as ``03:00`` and
+runs two hours early in summer, and ``2030-07-15T05:00:00-05:00`` is stored as
+``05:00`` and runs seven hours early. Probed against the live API, all six
+cases. Nothing errors; the queue simply starts at the wrong time, or lands in
+the past and has its jobs marked skipped.
+
+So the rule here is: whatever instant the caller means, emit the API's OWN wall
+clock. That used to be ``datetime.now().astimezone()`` -- the *host's* zone --
+which is right only because every machine that has run this so far happens to
+sit in CET/CEST. From a laptop in London it would schedule an hour early and
+from one in Boston six, silently.
+"""
 
 import re
 from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
+
+#: The zone the API interprets a naive ``start_at`` in.
+#:
+#: Laravel's APP_TIMEZONE. Named here rather than assumed, because the whole
+#: scheme rested on every client happening to share it.
+API_TIMEZONE = ZoneInfo("Europe/Zurich")
 
 
 def parse_relative_time(value: str, base_time: datetime | None = None) -> str:
@@ -29,8 +52,9 @@ def parse_relative_time(value: str, base_time: datetime | None = None) -> str:
         "2025-02-01T10:00:00Z"
     """
     if base_time is None:
-        # Use local time with timezone info - the API expects local time
-        base_time = datetime.now().astimezone()
+        # The API's zone, not the host's. See the module docstring: the offset
+        # is discarded on ingest, so the digits have to be the API's wall clock.
+        base_time = datetime.now(API_TIMEZONE)
 
     value = value.strip()
 
@@ -50,8 +74,40 @@ def parse_relative_time(value: str, base_time: datetime | None = None) -> str:
         delta = timedelta(**{units[unit]: amount})
         return format_iso8601(base_time + delta)
 
-    # Assume it's already an ISO 8601 timestamp - pass through unchanged
-    return value
+    # An absolute timestamp. Two readings, and they are not the same:
+    #
+    #   naive ("2026-09-10T05:00:00")  -- wall clock as written. Passed through,
+    #       because that is exactly how the API will read it.
+    #   offset-bearing ("...Z", "...-05:00") -- an INSTANT. Converted to the
+    #       API's wall clock, because storing its digits verbatim would schedule
+    #       it at that instant's time in the wrong zone.
+    #
+    # The second is the one that was silently wrong: an author writing Z meant a
+    # moment, and got those digits read as Zurich local.
+    return _to_api_wall_clock(value)
+
+
+def _to_api_wall_clock(value: str) -> str:
+    """Normalise an absolute ISO timestamp to the API's wall clock.
+
+    A naive string is returned unchanged -- it already means what the API will
+    read. A string carrying an offset is converted, so the instant survives.
+    Anything unparseable is passed through untouched: this is a convenience, and
+    refusing to schedule because a timestamp has an unusual shape would be worse
+    than letting the API's own validation answer.
+    """
+    text = value.strip()
+    candidate = text[:-1] + "+00:00" if text.endswith(("Z", "z")) else text
+
+    try:
+        parsed = datetime.fromisoformat(candidate)
+    except ValueError:
+        return value
+
+    if parsed.tzinfo is None:
+        return value
+
+    return format_iso8601(parsed.astimezone(API_TIMEZONE))
 
 
 def format_iso8601(dt: datetime) -> str:
