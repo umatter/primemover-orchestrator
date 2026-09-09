@@ -201,9 +201,28 @@ class APIClient:
         return queue
 
     def list_queues_by_status(self, status: str = "") -> list[dict]:
-        """List queues by status (pending, running, completed, failed)."""
+        """List queues by status (pending, running, completed, failed).
+
+        Note these lists are PAGINATED (15 rows by default, newest first), so
+        this returns one page and not the whole set. Use
+        :meth:`list_queues_for_crawler` whenever you are looking for a
+        particular crawler's queue rather than surveying recent ones.
+        """
         endpoint = f"queues-{status}" if status else "queues"
         result = self._request("GET", endpoint)
+        queues: list[dict] = result.get("data", []) if isinstance(result, dict) else result
+        return queues
+
+    def list_queues_for_crawler(self, crawler_id: int) -> list[dict]:
+        """Every queue belonging to one crawler, filtered by the API.
+
+        The alternative -- pulling a queues-* list and filtering client-side --
+        looks equivalent and is not: those lists are paginated, so it searches
+        the most recent 15 queues in the whole installation and silently finds
+        nothing when the one you want has fallen off the page. `filter[crawler]`
+        narrows before the page is cut.
+        """
+        result = self._request("GET", "queues", params={"filter[crawler]": crawler_id})
         queues: list[dict] = result.get("data", []) if isinstance(result, dict) else result
         return queues
 

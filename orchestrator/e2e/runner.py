@@ -734,20 +734,34 @@ class E2ETestRunner:
 
             crawler_id: int | None = crawlers[0].get("id")
 
-            # Get queue ID by querying /queues-unprocessed and filtering by crawler_id
-            # (The /crawlers/{id} endpoint doesn't include queues in its response)
-            unprocessed_queues = client.list_queues_by_status("unprocessed")
-            crawler_queues = [q for q in unprocessed_queues if q.get("crawler_id") == crawler_id]
+            # `id` is the primary key of the API's own crawler record, so it is
+            # always present on a record the API just handed us. Asserted here,
+            # before it is used to query, rather than cast at the return.
+            assert crawler_id is not None, f"crawler record without id: {crawlers[0]}"
+
+            # Ask the API for THIS crawler's queues rather than pulling a
+            # queues-* list and filtering client-side. (The /crawlers/{id}
+            # endpoint doesn't include queues in its response.)
+            #
+            # The client-side version worked only by luck of ordering: those
+            # lists are paginated, so it searched the newest 15 queues in the
+            # whole installation and happened to find this one because the e2e
+            # had just created it. Sixteen newer unprocessed queues between
+            # upload and lookup -- another run, a real study starting -- and it
+            # would have failed with "No unprocessed queues found" for a crawler
+            # whose queue exists and is fine.
+            crawler_queues = [
+                queue
+                for queue in client.list_queues_for_crawler(crawler_id)
+                if not queue.get("processed")
+            ]
 
             if not crawler_queues:
                 raise ValueError(f"No unprocessed queues found for crawler {crawler_id}")
 
             queue_id: int | None = crawler_queues[0].get("id")
 
-            # `id` is the primary key of the API's own crawler/queue records, so it is
-            # always present on a record the API just handed us. Assert it instead of
-            # casting, so the int return type below is honest.
-            assert crawler_id is not None, f"crawler record without id: {crawlers[0]}"
+            # Same for the queue, so the int return type below is honest.
             assert queue_id is not None, f"queue record without id: {crawler_queues[0]}"
 
             # Get job count from API
