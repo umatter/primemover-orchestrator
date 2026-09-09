@@ -22,6 +22,7 @@ from orchestrator import status as status_contract
 from orchestrator.clients.api import APIClient
 from orchestrator.config import get_settings
 from orchestrator.e2e.job_status import (
+    job_degradation_reason,
     job_degraded,
     job_duration_seconds,
     job_finished,
@@ -430,14 +431,24 @@ class E2ETestRunner:
         degraded_jobs = [j for j in jobs if job_degraded(j)]
 
         if degraded_jobs:
+            # Say WHICH degradation, per job, from the verdict on the row. The
+            # blanket "a treatment may have silently become a control" this used
+            # to print was written before the verdict was persisted and there was
+            # nothing better to say. There is now: most warnings are runner-side
+            # (a page reloaded, job data retried) and their decision is provably
+            # clean, so describing them all as possibly-lost treatments cries
+            # wolf on the majority and understates the minority that matters.
             self.reporter.console.print(
                 f"  [yellow]⚠[/yellow] {len(degraded_jobs)} job(s) completed in a degraded "
-                f"state — the run passed, but a treatment may have silently become a control:"
+                f"state — the run passed, and each one says why:"
             )
             for job in degraded_jobs:
                 job_type = job.get("type", job.get("job_type", "unknown"))
                 detail = job_status_message(job) or "no detail reported"
-                self.reporter.console.print(f"      [yellow]•[/yellow] {job_type}: {detail}")
+                reason = job_degradation_reason(job)
+                colour = "red" if status_contract.job_decision_treatment_lost(job) else "yellow"
+                self.reporter.console.print(f"      [{colour}]•[/{colour}] {job_type}: {reason}")
+                self.reporter.console.print(f"        runner said: {detail}")
 
         # A treated arm has to be checked for having actually been treated. Job
         # status cannot answer that: the decision function degrades by omission

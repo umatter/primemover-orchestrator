@@ -68,10 +68,52 @@ def job_succeeded(job: dict[str, Any]) -> bool:
 
 
 def job_degraded(job: dict[str, Any]) -> bool:
-    """Whether the job ran to completion but something the experiment cares
-    about degraded (job data not written, or a RANDOM instead of LLM-driven
-    video selection). Terminal, and not a failure."""
+    """Whether the runner marked the job ``warning``: it ran to completion, and
+    something the experiment cares about did not happen. Terminal, not a failure.
+
+    This is a *status* predicate and says nothing about which of the possible
+    somethings it was -- job data unwritten, a filter that would not apply, or a
+    page that had to be reloaded. :func:`job_degradation_reason` reads the
+    persisted verdict to tell those apart.
+
+    The docstring used to offer "a RANDOM instead of LLM-driven video selection"
+    as an example, which is exactly the reading the status contract forbids:
+    ``selection_mode`` is a descriptor, and ``random`` is the CORRECT answer for
+    a control crawler, which is most of them.
+    """
     return status_contract.is_warning(job_status(job))
+
+
+def job_degradation_reason(job: dict[str, Any]) -> str:
+    """Why a ``warning`` job is flagged, read off its persisted decision verdict.
+
+    A ``warning`` says only "look at this". It is worth saying WHICH thing,
+    because the same status covers outcomes that are not remotely equivalent --
+    a void treatment arm and a page that needed one reload both land here -- and
+    a reporter that describes every one of them as a possibly-lost treatment
+    cries wolf on the majority while under-stating the minority that matters.
+
+    Four answers, and the fourth is not the third:
+
+    * treatment lost -- the bot was configured to be treated and produced
+      control-arm data. The session is void.
+    * decision degraded -- a requested filter did not apply, but something else
+      requested did, so there is partial treatment signal.
+    * decision clean -- the verdict says the decision was fine, so the warning
+      came from somewhere else in the job (job data, a page reload).
+    * no verdict recorded -- a non-lambda job, a pre-migration row, or an
+      un-redeployed runner. **Unknown, never clean.**
+    """
+    if status_contract.job_decision_treatment_lost(job):
+        return "treatment lost — the bot was treated and produced control-arm data"
+
+    if status_contract.job_decision_degraded(job):
+        return "a requested filter did not apply"
+
+    if status_contract.job_decision_reported(job):
+        return "the decision itself was clean; the warning came from elsewhere in the job"
+
+    return "no decision verdict recorded — cannot tell whether a treatment applied"
 
 
 def job_skipped(job: dict[str, Any]) -> bool:
