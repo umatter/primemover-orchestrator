@@ -47,9 +47,15 @@ import json
 import sys
 from datetime import date, datetime, time, timedelta
 from pathlib import Path
+from typing import Any
 from zoneinfo import ZoneInfo
 
 REPO = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(REPO))
+
+from orchestrator.config.settings import get_settings  # noqa: E402
+from orchestrator.e2e.proxy import substitute_proxy  # noqa: E402
+
 SCENARIO = REPO / "orchestrator" / "e2e" / "test_experiment_youtube_treatment.json"
 API_ZONE = ZoneInfo("Europe/Zurich")
 
@@ -69,8 +75,14 @@ def sessions(first: date, days: int, at: time) -> list[str]:
     return [local_start(first + timedelta(days=n), at) for n in range(days)]
 
 
-def build(days: int, at: time, first: date) -> list[dict]:
-    """The canary's crawler: the treated scenario, one queue per day."""
+def build(days: int, at: time, first: date, settings: Any = None) -> list[dict]:
+    """The canary's crawler: the treated scenario, one queue per day.
+
+    ``settings`` is optional so the schedule can be built and inspected without
+    proxy credentials; pass them (as main() does) to fill the scenario's
+    placeholders. Building is pure, and only the thing that actually uploads
+    needs secrets.
+    """
     crawlers: list[dict] = json.loads(SCENARIO.read_text())
     crawler = crawlers[0]
 
@@ -91,6 +103,13 @@ def build(days: int, at: time, first: date) -> list[dict]:
         queue["description"] = f"Treated canary, {start_at[:10]}"
         queue["start_at"] = start_at
         crawler["queues"].append(queue)
+
+    # Same substitution the e2e does, from the same untracked settings. Without
+    # it the crawler ships PROXY_*_PLACEHOLDER, Multilogin fails the profile's
+    # proxy check on every session, and the canary reports a browser that never
+    # started rather than anything about treatments.
+    if settings is not None:
+        substitute_proxy(crawler, settings)
 
     crawler["name"] = f"treatment-canary-{first:%Y-%m-%d}"
     crawler["description"] = (
@@ -118,7 +137,7 @@ def main() -> int:
         else (datetime.now(API_ZONE).date() + timedelta(days=1))
     )
 
-    crawlers = build(args.days, at, first)
+    crawlers = build(args.days, at, first, settings=get_settings())
     payload = json.dumps(crawlers, indent=2)
 
     starts = [q["start_at"] for q in crawlers[0]["queues"]]
