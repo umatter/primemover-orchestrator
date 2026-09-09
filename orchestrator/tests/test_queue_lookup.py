@@ -21,7 +21,7 @@ from unittest.mock import MagicMock
 from orchestrator.clients.api import APIClient
 
 
-def a_client(payload: dict) -> tuple[APIClient, MagicMock]:
+def a_client(payload: dict | list) -> tuple[APIClient, MagicMock]:
     client = APIClient.__new__(APIClient)
     request = MagicMock(return_value=payload)
     client._request = request  # type: ignore[method-assign]
@@ -51,7 +51,7 @@ class TestListQueuesForCrawler:
 
     def test_a_bare_list_response_still_works(self):
         # Older API builds answered some list endpoints without the data wrapper.
-        client, _ = a_client([{"id": 9, "crawler_id": 7}])  # type: ignore[arg-type]
+        client, _ = a_client([{"id": 9, "crawler_id": 7}])
 
         assert client.list_queues_for_crawler(7) == [{"id": 9, "crawler_id": 7}]
 
