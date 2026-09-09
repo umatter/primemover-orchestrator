@@ -30,6 +30,7 @@ from orchestrator.e2e.job_status import (
     job_succeeded,
 )
 
+from .proxy import substitute_proxy
 from .reporter import E2EReporter
 
 
@@ -543,42 +544,18 @@ class E2ETestRunner:
     def _substitute_proxy(self, crawler: dict[str, Any]) -> None:
         """Fill the scenario's proxy placeholders from untracked configuration.
 
-        The scenario JSONs ship PROXY_*_PLACEHOLDER instead of real credentials so
-        that nothing sensitive is committed. Multilogin validates a profile's proxy
-        on start -- it fetches proxy.multilogin.com through it -- and refuses to
-        launch the browser if that fails, so an unsubstituted placeholder surfaces
-        as ``GET_PROXY_CONNECTION_IP_ERROR`` from the launcher and a crawler that
-        never gets past setup. Fail here instead, naming what to set.
+        Delegates to :func:`orchestrator.e2e.proxy.substitute_proxy`, which the
+        standing canary uses too -- the scenarios they upload are the same files
+        and an unsubstituted placeholder fails them the same way.
 
         The ``chrome`` test type drives plain Chrome without Multilogin, so it is
         exempt: it is the path that stays runnable without a proxy account.
         """
-        proxy = crawler.get("proxy")
-        if not proxy:
-            return
-
-        placeholders = {str(v) for v in proxy.values() if isinstance(v, str)}
-        if not any(p.endswith("_PLACEHOLDER") for p in placeholders):
-            return  # a real proxy is already baked in; leave it alone
-
-        if not self.settings.e2e_proxy_configured:
-            if self.test_config.get("identification_override") == "chrome":
-                return  # no Multilogin, so no proxy validation to fail
-            raise RuntimeError(
-                "This e2e scenario needs a residential proxy, but its credentials are "
-                "placeholders and none are configured.\n"
-                "Set E2E_PROXY_HOST, E2E_PROXY_PORT, E2E_PROXY_USERNAME and "
-                "E2E_PROXY_PASSWORD in .env (untracked), or run `orchestrator e2e "
-                "--chrome`, which drives plain Chrome and needs no proxy.\n"
-                "Without this, Multilogin fails the profile's proxy check with "
-                "GET_PROXY_CONNECTION_IP_ERROR and the crawler never starts."
-            )
-
-        proxy["hostname"] = self.settings.e2e_proxy_host
-        proxy["username"] = self.settings.e2e_proxy_username
-        proxy["password"] = self.settings.e2e_proxy_password
-        if self.settings.e2e_proxy_port:
-            proxy["port"] = self.settings.e2e_proxy_port
+        substitute_proxy(
+            crawler,
+            self.settings,
+            exempt=self.test_config.get("identification_override") == "chrome",
+        )
 
     def _upload_experiment(self) -> tuple[int, int, int, int, str, str]:
         """

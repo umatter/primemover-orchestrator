@@ -106,3 +106,34 @@ class TestItReusesTheTestScenario:
 
         assert int(params["pi"]) == 1
         assert int(params["kappa"]) == 1
+
+
+class TestProxy:
+    """A canary shipping PROXY_*_PLACEHOLDER never starts a browser."""
+
+    def test_placeholders_are_substituted(self):
+        class _Settings:
+            e2e_proxy_configured = True
+            e2e_proxy_host = "gate.example.net"
+            e2e_proxy_username = "user"
+            e2e_proxy_password = "secret"
+            e2e_proxy_port = 5432
+
+        proxy = canary.build(2, time(5, 0), date(2026, 9, 10), settings=_Settings())[0]["proxy"]
+
+        assert proxy["hostname"] == "gate.example.net"
+        assert not str(proxy["password"]).endswith("_PLACEHOLDER")
+
+    def test_it_refuses_rather_than_shipping_a_placeholder(self):
+        # Multilogin validates the proxy on profile start, so an unsubstituted
+        # canary would fail every session with GET_PROXY_CONNECTION_IP_ERROR --
+        # an error about IP lookup, nothing about treatments or credentials.
+        class _Settings:
+            e2e_proxy_configured = False
+            e2e_proxy_host = None
+            e2e_proxy_username = None
+            e2e_proxy_password = None
+            e2e_proxy_port = None
+
+        with pytest.raises(RuntimeError, match="residential proxy"):
+            canary.build(2, time(5, 0), date(2026, 9, 10), settings=_Settings())
