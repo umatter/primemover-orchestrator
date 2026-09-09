@@ -122,6 +122,8 @@ orchestrator lambda logs|metrics|errors      # CloudWatch
 # Tests
 orchestrator test [-v] [--quick] [-k PATTERN]   # e2e without Multilogin
 orchestrator e2e [-v] [--timeout 300]           # full browser automation
+orchestrator e2e --youtube                      # YouTube workflow, CONTROL arm
+orchestrator e2e --youtube-treatment            # TREATED arm; fails if untreated
 
 # Experiments (equivalently: pmspec <cmd>)
 orchestrator experiment validate|preview|generate|upload|list
@@ -533,10 +535,23 @@ invocation contract. This is **on by default** (`orchestrator up`); pass
   home is `LambdaServerComponent.validate()`, so `orchestrator up` refuses to
   start on a corrupted copy.
 
-  A second, pre-existing fragility on the same filter: the per-card xpath `[0]`
-  at `lambda_function.py:983` can raise `IndexError`, also silently losing a
-  treatment — correctly reported as `warning`/`treatment_lost` rather than
-  failing the job. Fix pending in `bot-decision-yt`.
+  A second fragility on the same filter, **fixed 2026-09-09** in `bot-decision-yt`
+  (#22, #23), and worth knowing because the symptom will recur if anything is
+  rolled back: the per-card channel xpath ended in `/text()[1]` — the first
+  *direct* text node — and a **collaboration** card ("The Daily Signal and
+  Victor Davis Hanson") keeps its channel name in a nested `<span>`, so the
+  selector matched nothing and `[0]` raised `IndexError`. That killed the whole
+  `mainstream_media` filter for the invocation: job `warning`, nothing failed,
+  the arm silently lost. Measured 1 in 3 lambda calls the day it was found; 7
+  such cards in 219 across the runs since.
+  The selector now ends in `//text()` and takes the first non-empty node, and
+  extraction is per card so one odd card can no longer cost the arm. Matching is
+  `_mainstream_flags` rather than a `pandas.merge`: exact match first, then the
+  **longest** leading segment that is itself a listed channel followed by
+  `" and "`. **Never "simplify" that to a split on `" and "`** — the CSV holds
+  channels whose own names contain it (`The Globe and Mail`, `Amanpour and
+  Company`, …), so splitting turns a mainstream channel into a non-match and
+  causes the contamination the arm exists to prevent.
 - **Lifecycle**: two different supervisors, and **they log to different places** —
   check which one is actually running before reading a log, or you will be
   reading a file that stopped being written weeks ago.
@@ -815,6 +830,26 @@ See `docs/experiment-designer.md` for full documentation.
 - `experiment_designer/tests/` has no conftest.py; its tests are self-contained
 - CI runs tests + lint + type-check on Python 3.10, 3.11, 3.12 (`.github/workflows/ci.yml`)
 
+**A green `--youtube` e2e says nothing about whether any treatment works.** That
+scenario is `pi=psi=kappa=tau=0`, a control crawler. It does call OpenAI — the
+`children_entertainment` rejection filter is requested unconditionally — but a
+rejection filter produces no rating column, so `selection_mode` is correctly
+`random` and no filter that *weights* the draw is exercised. Meanwhile the
+decision function degrades by **omission**: a filter it cannot apply is dropped,
+the recommendations stay plausible, the call is 200 and the job succeeds.
+
+`orchestrator e2e --youtube-treatment` is the one that can see it. It runs
+`pi=1` (mainstream_media, the CSV-backed filter, where the cwd and
+CSV-corruption failures land) and `kappa=1` (similar, an LLM **rating** filter,
+the only kind that makes `selection_mode` `llm` at all), then **fails the run
+unless the treatment actually applied** — checking that a verdict was recorded
+at all, the selection mode, each requested filter being `ok` (`skipped` means
+NOT REQUESTED, so a skipped filter in a scenario that asked for it is the silent
+failure itself), and the verdict's own `degraded` / `treatment_lost`.
+It found a real defect on its first run; see the collaboration-card note under
+"Local Lambda Server". Note `_job_ok()` counts `warning` as a pass by design, so
+without this check a treated run that lost its arm still goes green.
+
 ### CI across the ecosystem
 
 As of 2026-08-21 all five repos have GitHub Actions workflows. Before that only
@@ -1016,9 +1051,10 @@ grep -nE '127\.0\.0\.1:.*(3307|8889)|ALLOW_EMPTY' ../primemover_api/docker-compo
   repo root, not from `decision/`. `readlink /proc/$(systemctl show -p MainPID
   --value primemover-lambda)/cwd`. A passing CSV test plus a wrong cwd looks
   exactly like a healthy system.
-- The same filter can also silently lose a treatment via an `IndexError` at
-  `lambda_function.py:983` (per-card xpath `[0]`), unrelated to CSV corruption
-  — see "Data files are load-bearing" above.
+- The same filter used to silently lose a treatment via an `IndexError` on a
+  collaboration card's channel xpath, unrelated to CSV corruption. Fixed
+  2026-09-09 (`bot-decision-yt` #22/#23) — see "Data files are load-bearing"
+  above for what it was and what must not be re-simplified.
 - Port 5001 in use: stop the stale process (`.lambda_server.pid`) or check the
   `primemover-lambda` systemd unit isn't already running it
 
