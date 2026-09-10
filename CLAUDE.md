@@ -892,9 +892,19 @@ Non-obvious constraints, each of which cost a red build to find:
   history/PR-comment features it sells assume a team large enough for coverage
   to drift unnoticed. Read it from the job log, or run
   `pytest --cov=orchestrator --cov=experiment_designer` locally.
-  Worth knowing what it currently says: **~39% overall**, with
-  `mcp_server/server.py` at **0%** — every `pm_` write tool is untested —
-  `logs/aggregator.py` at 13% and `tracing/trace_builder.py` at 23%.
+  Worth knowing what it says — **measured 2026-09-10, and the previous figures
+  here were badly stale**: **70% overall**, `mcp_server/server.py` at **76%**
+  (the `pm_` write tools have 49 tests in `test_mcp_write_tools.py` and 20 more
+  in `test_mcp_write_guard.py`; the old note claiming 0% and "every `pm_` write
+  tool is untested" was wrong by the time anyone read it), `tracing/trace_builder.py`
+  at 82%, `logs/aggregator.py` at 43%, `clients/api.py` at 70%.
+
+  Where it is genuinely thin is `components/*` — `manager.py` 37%, `runner.py`
+  41%, `api.py` 24%, `lambda_server.py` 33% — which drive Docker and
+  subprocesses and are awkward to unit test, and
+  `experiment_designer/summary/visualizer.py` at 9%. Re-measure before acting on
+  any of these numbers: they drift, and a stale coverage note costs somebody an
+  afternoon writing tests for code that already had them.
 
 ## Formatting & Linting
 
