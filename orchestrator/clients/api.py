@@ -213,17 +213,47 @@ class APIClient:
         queues: list[dict] = result.get("data", []) if isinstance(result, dict) else result
         return queues
 
-    def list_queues_for_crawler(self, crawler_id: int) -> list[dict]:
-        """Every queue belonging to one crawler, filtered by the API.
+    def list_queues_for_crawler(self, crawler_id: int, *, max_pages: int = 20) -> list[dict]:
+        """EVERY queue belonging to one crawler, following the pages.
 
         The alternative -- pulling a queues-* list and filtering client-side --
         looks equivalent and is not: those lists are paginated, so it searches
         the most recent 15 queues in the whole installation and silently finds
         nothing when the one you want has fallen off the page. `filter[crawler]`
         narrows before the page is cut.
+
+        But `filter[crawler]` is still ONE page. A caller that counts the rows it
+        gets back counts 15 and believes it has counted everything -- which is
+        how the canary runway check first reported 15 sessions left out of 27.
+        Following the pages here means no caller has to remember, and `meta` is
+        the only reliable stopping condition: `data` being short of `per_page`
+        is not, since the last page may be exactly full.
         """
-        result = self._request("GET", "queues", params={"filter[crawler]": crawler_id})
-        queues: list[dict] = result.get("data", []) if isinstance(result, dict) else result
+        queues: list[dict] = []
+        page = 1
+
+        while page <= max_pages:
+            result = self._request(
+                "GET", "queues", params={"filter[crawler]": crawler_id, "page": page}
+            )
+
+            if not isinstance(result, dict):
+                return list(result)
+
+            rows = result.get("data") or []
+            queues.extend(rows)
+
+            meta = result.get("meta") or {}
+            last_page = meta.get("last_page")
+
+            if last_page is None:
+                # An API build without meta: one page is all there is to read.
+                break
+            if page >= int(last_page):
+                break
+
+            page += 1
+
         return queues
 
     # =========================================================================

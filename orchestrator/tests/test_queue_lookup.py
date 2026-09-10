@@ -37,7 +37,9 @@ class TestListQueuesForCrawler:
         method, endpoint = request.call_args.args
         assert method == "GET"
         assert endpoint == "queues"
-        assert request.call_args.kwargs["params"] == {"filter[crawler]": 7}
+        params = request.call_args.kwargs["params"]
+        assert params["filter[crawler]"] == 7
+        assert params["page"] == 1, "paging starts at the first page"
 
     def test_it_returns_the_rows(self):
         client, _ = a_client({"data": [{"id": 9, "crawler_id": 7}]})
@@ -54,6 +56,45 @@ class TestListQueuesForCrawler:
         client, _ = a_client([{"id": 9, "crawler_id": 7}])
 
         assert client.list_queues_for_crawler(7) == [{"id": 9, "crawler_id": 7}]
+
+    def test_it_follows_the_pages(self):
+        """The bug this caught: one page is not the answer.
+
+        filter[crawler] narrows before the page is cut, but the result is still
+        paginated. A caller that counts the rows it gets back counts 15 and
+        believes it counted everything -- which is exactly how the canary runway
+        check first reported 15 sessions left out of 27.
+        """
+        pages = {
+            1: {"data": [{"id": i} for i in range(15)], "meta": {"last_page": 2, "per_page": 15}},
+            2: {
+                "data": [{"id": i} for i in range(15, 27)],
+                "meta": {"last_page": 2, "per_page": 15},
+            },
+        }
+
+        def handler(method, endpoint, params=None, **kwargs):
+            return pages[(params or {}).get("page", 1)]
+
+        client = APIClient.__new__(APIClient)
+        client._request = handler
+
+        assert len(client.list_queues_for_crawler(7)) == 27
+
+    def test_a_full_last_page_still_terminates(self):
+        # `len(data) < per_page` is NOT a valid stopping condition: the last page
+        # can be exactly full. meta.last_page is the only reliable one.
+        page = {"data": [{"id": i} for i in range(15)], "meta": {"last_page": 1, "per_page": 15}}
+        client, request = a_client(page)
+
+        assert len(client.list_queues_for_crawler(7)) == 15
+        assert request.call_count == 1
+
+    def test_an_api_without_meta_reads_one_page_and_stops(self):
+        client, request = a_client({"data": [{"id": 1}]})
+
+        assert client.list_queues_for_crawler(7) == [{"id": 1}]
+        assert request.call_count == 1
 
     def test_it_does_not_hit_a_paginated_queues_star_endpoint(self):
         # The regression guard: any queues-<status> endpoint is a page of the

@@ -1415,6 +1415,63 @@ def doctor(ctx: click.Context) -> None:
             )
             all_ok = False
 
+    # The standing treatment canary, if this deployment runs one.
+    #
+    # It is a fixed list of daily sessions rather than a recurring job, because
+    # start_at already schedules work -- so it RUNS OUT, and when it does the
+    # canary goes quiet. Silence from a canary reads as health, which is the one
+    # failure it must not have. Warn while there is still time to top it up.
+    console.print("\n[bold]Checking the treatment canary...[/bold]\n")
+
+    from orchestrator.canary import find_canary
+    from orchestrator.clients.api import APIClient
+
+    try:
+        client = APIClient()
+        try:
+            canary = find_canary(client)
+        finally:
+            client.close()
+    except Exception as exc:  # noqa: BLE001 - the API check above already reported reachability
+        console.print(f"  [dim]-[/dim] could not check ({str(exc)[:60]})")
+        canary = None
+
+    if canary is None:
+        pass
+    elif canary.missing:
+        # Not a failure: most deployments do not run one.
+        console.print("  [dim]-[/dim] no treatment canary on this deployment")
+    else:
+        label = f'#{canary.experiment_id} "{canary.experiment_name}"'
+        if canary.remaining == 0:
+            console.print(f"  [red]✗[/red] canary {label} has NO sessions left — it is silent")
+            all_ok = False
+        elif canary.needs_attention:
+            console.print(
+                f"  [yellow]⚠[/yellow] canary {label}: {canary.remaining} session(s) left, "
+                f"last on {canary.last_start:%Y-%m-%d}"
+                if canary.last_start
+                else f"  [yellow]⚠[/yellow] canary {label}: {canary.remaining} session(s) left"
+            )
+            all_ok = False
+        else:
+            console.print(
+                f"  [green]✓[/green] canary {label}: {canary.remaining} session(s) left, "
+                f"last on {canary.last_start:%Y-%m-%d}"
+            )
+
+        if canary.needs_attention:
+            console.print(
+                "      top up with: ./venv/bin/python scripts/treatment-canary.py "
+                "--days 28 --out /tmp/canary.json"
+            )
+            console.print(
+                "      then POST it to a NEW experiment (see CLAUDE.md, " '"standing canary")'
+            )
+
+        for problem in canary.problems:
+            console.print(f"      [yellow]![/yellow] {problem}")
+
     console.print()
     if all_ok:
         console.print("[green bold]All checks passed![/green bold] Run 'orchestrator up' to start.")
