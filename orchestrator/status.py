@@ -59,8 +59,9 @@ alarm nobody reads, which is the precise opposite of what this work is for.
 By the same measurement, ``"skipped"`` in the ``filters`` report means *not
 requested*, not *failed*: four or five of the six filters are ``skipped`` on
 every healthy control invocation. ``"not_implemented"`` is not a failure either -- it
-is the deployed function saying honestly that ``already_watched`` is still a
-stub. ``_FILTER_OK_STATES`` states the whole rule and is the copy the API's
+is the deployed function saying honestly that it was given no history to filter
+against (until 2026-09-10 it meant the filter was a stub; now it means the caller
+sent none). ``_FILTER_OK_STATES`` states the whole rule and is the copy the API's
 ``DecisionVerdict`` and the runner's ``LambdaSelectJobResult`` are written
 against; :func:`lambda_failed_filters` is the only correct way to count
 casualties.
@@ -387,14 +388,15 @@ LAMBDA_FILTER_NAMES: tuple[str, ...] = (
 #:     single most common way to turn this contract back into a false-alarm
 #:     generator.
 #: ``"not_implemented"``
-#:     the filter is a stub that cannot do anything yet, and the decision
-#:     function reports that honestly rather than lying with ``"ok"``
-#:     (``lambda_function.py``: ``filters['already_watched'] =
-#:     'not_implemented'``, on the unconditional success path). Nothing went
-#:     wrong; nothing was ever going to happen. ``already_watched`` is
-#:     always-on hygiene, never a configured treatment, so it is also absent
-#:     from the function's own ``requested_treatments`` denominator -- it can
-#:     neither degrade a decision nor lose a treatment.
+#:     the filter had nothing to work with, and the decision function says so
+#:     rather than lying with ``"ok"``. Since 2026-09-10 this means the caller
+#:     supplied no ``already_watched`` history -- an un-redeployed runner, or one
+#:     whose history lookup failed -- and NOT that the filter is a stub, which is
+#:     what it meant for the first year of its life. Either way nothing went
+#:     wrong and nothing was filtered. ``already_watched`` is always-on hygiene,
+#:     never a configured treatment, so it is also absent from the function's own
+#:     ``requested_treatments`` denominator -- it can neither degrade a decision
+#:     nor lose a treatment.
 #: ``""`` / absent
 #:     nothing was said. Unknown, and unknown is not a finding.
 #:
@@ -402,10 +404,15 @@ LAMBDA_FILTER_NAMES: tuple[str, ...] = (
 #: towards being seen rather than towards silence.
 #:
 #: Measured on ex63 2026-09-08, decoding all 6682 archived lambda payloads:
-#: ``already_watched`` reads ``not_implemented`` in **every** payload since
+#: ``already_watched`` read ``not_implemented`` in **every** payload since
 #: ``20260902-144403`` (32 of 32), with ``degraded: false`` in 31 of them. Before
 #: this set was corrected, that state alone put a "failed filter" warning on
-#: every healthy lambdaselect job the deployed function has produced since.
+#: every healthy lambdaselect job the deployed function had produced.
+#:
+#: It reports ``"ok"`` as of 2026-09-10, when the history loop was closed
+#: (integration-contract 7.3.1). Both states are still healthy and neither may be
+#: counted as a failure -- which is precisely why this set, rather than a
+#: hard-coded expectation about one filter, is the rule.
 #:
 #: The other two implementations of this rule are
 #: ``App\Modules\Job\Service\DecisionVerdict::FILTER_OK_STATES`` in

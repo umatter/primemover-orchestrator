@@ -750,9 +750,54 @@ consumer that cares about arm integrity has to read the fields below.
 | `degraded` | bool | **new** | true iff at least one **requested** filter failed to apply, or selection failed outright (no video could be chosen). The authoritative "something went wrong" flag. |
 | `selection_mode` | `"llm"` \| `"random"` | **new** | a **neutral description** of how the video was chosen. `"random"` = no LLM rating informed the pick. Expected and correct for a control crawler. **Not an error signal on its own.** |
 | `treatment_lost` | bool | **new** | true iff `degraded` **and** no requested treatment actually applied - the bot was configured to be treated and produced control-arm data. The single unambiguous alarm condition. Always false for a control crawler. |
-| `filters` | object | **new** | `{name: "ok" \| "skipped" \| "failed: <ExcClass>: <msg>"}`, six keys in fixed order: `already_watched`, `mainstream_media`, `children_entertainment`, `similar`, `political`, `fringe`. **`"skipped"` means NOT REQUESTED and must never be counted as a failure.** |
+| `filters` | object | **new** | `{name: "ok" \| "skipped" \| "not_implemented" \| "failed: <ExcClass>: <msg>"}`, six keys in fixed order: `already_watched`, `mainstream_media`, `children_entertainment`, `similar`, `political`, `fringe`. **`"skipped"` means NOT REQUESTED and `"not_implemented"` means the caller supplied nothing to filter against - neither may be counted as a failure.** Only a `failed:` prefix is one. |
 | `llm` | object | **new** | `{available: bool, error_type: str\|null, error: str\|null}` |
 | `error` | string | **new** | present **only** on a hard 4xx/5xx from the lambda server |
+
+#### 7.3.1 The watch history loop - `already_watched`
+
+`already_watched` was an empty TO-DO from the beginning: the filter existed, the
+list it filtered against was `[]`, and nothing was ever removed. It reported
+`not_implemented` rather than `ok`, which was the honest answer - claiming `ok`
+would have made a treatment that does nothing look like one that worked.
+
+It could not be written until a bot's history was answerable in one query, which
+`jobs.decision_selected_id` made possible. Implemented 2026-09-10 as a loop
+across all three components:
+
+| step | component | contract |
+|---|---|---|
+| 1 | API | `GET /crawlers/{id}/watched` -> `{"data": ["<videoId>", ...]}`, distinct, most recently chosen first. Scope is **selected by this bot, EVER** - every run, every experiment. |
+| 2 | runner | reads it and sends it as `already_watched` in the lambda payload |
+| 3 | decision function | filters those ids out of the candidate set, reports `already_watched: "ok"` |
+| 4 | runner | reports `selected.id` back as `decision_selected_id` on the status PUT, so the history is current the moment the job ends |
+
+**The decision function does not call the API.** It is a pure function over the
+page source and the crawler's config and must stay one; the history arrives in
+the payload like everything else.
+
+##### `null` and `[]` are different answers
+
+This is the whole of the contract, and every layer keeps them apart:
+
+| the caller sent | meaning | filter reports | filtered |
+|---|---|---|---|
+| no `already_watched` key, or `null` | **unknown** - we could not tell | `not_implemented` | nothing |
+| `[]` | this bot has watched nothing | `ok` | nothing |
+| `["a", "b"]` | this bot has watched a and b | `ok` | a and b |
+
+Every failure path must produce the **first** row, never the second. The API
+answers **409, not an empty list**, when `decision_selected_id` does not exist;
+the runner returns null on any error and omits the field; the decision function
+treats a non-list as unknown. An empty list on failure would report a filter as
+applied while filtering nothing - the silent-success shape this entire section
+exists to prevent.
+
+Step 4 is what makes the scope honest. Before it, ids reached the table only via
+`decisions:backfill` out of MinIO, so the filter could not see a choice the same
+session had just made: a bot could re-watch, minutes later, a video it had picked
+itself. Measured before the loop was closed: **150 bot/video pairs had been
+watched more than once**.
 
 #### Consumer rules - identical at every layer
 
@@ -881,6 +926,14 @@ The runner now copies the verdict onto the status PUT and the API stores it on
 | `decision_treatment_lost` | bool, **nullable** | `treatment_lost` | the bot was treated and produced control-arm data - **the alarm** |
 | `decision_selection_mode` | varchar(32), nullable | `selection_mode` | `"llm"` / `"random"`. A descriptor. Never branch on it alone, in SQL either. |
 | `decision_report` | JSON, nullable | — | `{"filters": {...}, "llm": {...}, "warnings": [...], "applied": [...], "requested": [...]}` |
+| `decision_selected_id` | varchar(64), nullable | `selected.id` | **which video was chosen.** Added 2026-09-10 by `2026_09_10_000001_add_decision_selected_id_to_jobs_table`, indexed. NULL is unknown, **never "watched nothing"** - a decision that genuinely selected nothing is already reported by `degraded` with an empty `xpath`. |
+
+`decision_selected_id` arrives by a **separate migration** from the other four, so
+it can be absent while they are present. Anything that writes it must ask
+`Job::hasSelectedIdColumn()`, not `hasDecisionColumns()`: the latter answers for
+one migration and cannot speak for the other, and writing a column the schema
+lacks fails the runner's whole status PUT - a job going unreported, not a
+nicety.
 
 The two booleans are indexed; the rollups in §3.4
 (`jobs_treatment_lost_count`, `jobs_degraded_count`,
