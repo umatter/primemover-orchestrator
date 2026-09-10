@@ -312,11 +312,46 @@ backfill, because those pre-09-03 objects are recoverable, not lost. Every reade
 still has to tell "clean" from "cannot tell": use
 `status.lambda_report_present()` / `lambda_verdict()`, never a bare boolean.
 
-`already_watched` is the filter state to watch out for. The deployed function
-reports it as **`not_implemented`** on every successful invocation (all 32
-payloads since `20260902-144403`), because the filter is an empty TO-DO stub and
-saying `ok` would be a lie. It is not a failure and must not be counted as one —
-`status._FILTER_OK_STATES` says so, and the API and runner match.
+`already_watched` reported **`not_implemented`** on every successful invocation
+for the first year of its life — the filter was an empty TO-DO stub and saying
+`ok` would have been a lie. **It reports `ok` as of 2026-09-10**, when the
+history loop was closed (`docs/integration-contract.md` §7.3.1). Both states are
+healthy and neither may be counted as a failure: `status._FILTER_OK_STATES` says
+so, and the API and runner match.
+
+The meaning of `not_implemented` changed with it. It no longer means "the filter
+is a stub"; it means **the caller supplied no history** — an un-redeployed
+runner, or one whose lookup failed. Nothing was filtered either way, so the
+handling is unchanged, but a reader diagnosing one should look at the caller now
+rather than at the decision function.
+
+**The history loop, since it spans all three components** (contract §7.3.1):
+
+| step | component |
+|---|---|
+| `GET /crawlers/{id}/watched` → `{"data": ["<videoId>", …]}` | API |
+| reads it, sends it as `already_watched` in the lambda payload | runner |
+| filters those ids out, reports `already_watched: "ok"` | decision function |
+| reports `selected.id` back as `decision_selected_id` on the status PUT | runner |
+
+Scope is **"selected by this bot, ever"** — every run, every experiment. The
+decision function does **not** call the API; it is a pure function over page
+source and config and must stay one.
+
+**`null` and `[]` are different answers, and every layer keeps them apart.**
+Absent/`null` means the history is *unknown*: nothing is filtered and the filter
+reports `not_implemented`, exactly as an un-redeployed runner produces today. An
+empty **list** means "this bot has watched nothing" — a real answer, and the
+filter counts as applied. Every failure path produces the first, never the
+second: the API answers **409** rather than an empty list when the column is
+missing, the runner returns null on any error and omits the field, and the
+decision function treats a non-list as unknown. An empty list on failure would
+report a filter as applied while filtering nothing.
+
+The last step is what makes the scope honest. Before it the ids reached the table
+only via `decisions:backfill` out of MinIO, so the filter could not see a choice
+the same session had just made. Measured before the loop was closed: **150
+bot/video pairs had been watched more than once**.
 
 Note the shape of the real failure: valid xpath, real video clicked, job
 finished, run completed. Every other indicator says fine.
@@ -334,11 +369,12 @@ what every analysis joins on — is what to avoid if a jar is ever rolled back.
 `docs/integration-contract.md` **§0** has the verification table and the deploy
 order for the work now in flight; read it before restarting anything.
 
-**Persisting the verdict (in flight, `docs/proposals/gui-error-warning-surfacing.md`).**
-The verdict above lives only in a log line and a MinIO object, so nothing joins
-on it. It is moving onto the job row as four **nullable** columns —
+**Persisting the verdict (deployed 2026-09-07/10).**
+The verdict used to live only in a log line and a MinIO object, so nothing could
+join on it. It is on the job row now, as **nullable** columns —
 `decision_degraded`, `decision_treatment_lost`, `decision_selection_mode`,
-`decision_report` — read by `status.job_decision_verdict()` and friends, with
+`decision_report`, and since 2026-09-10 **`decision_selected_id`**, which records
+*which video was chosen* — read by `status.job_decision_verdict()` and friends, with
 `GET /api/v1/jobs/{id}/decision` serving the raw payload for the 6682 historical
 objects. **NULL means unknown, never clean and never false**: a pre-migration
 job, a non-lambda job and an un-redeployed runner are indistinguishable, and all
@@ -405,6 +441,24 @@ confusion is worth stating plainly, because the config keys are misleading.
 | local disk (`out/har/<jobId>/`) | **off** | historical buffer; only re-enable to debug the writer itself |
 | Nextcloud (via `har-drain.sh`) | off-host **archive** of MinIO | disaster recovery, long-term retention |
 | AWS S3 | **never used** | only if data must leave the box |
+
+**The API's OWN file storage is a different disk, and a different bucket.** Job
+data (above) is the `s3runner` disk, read-only, bucket `primemoverrunner`, served
+by `GET /file/{report}`. What the *API itself* creates — experiment export zips
+from `GET /experiments/{id}/download`, and `POST /upload` — is the plain `s3`
+disk, bucket **`primemover-api`**, with its own scoped read-write key (set up
+2026-09-10; runbook in `primemover_api/docs/minio-api-bucket.md`). Neither
+credential can touch the other's bucket, which is the point: the API has no
+business writing to 39 GB of experimental job data.
+
+`AWS_MOCK` is the trap in that config. Despite the name it is not a test double —
+it selects **where the API's own storage lives**: `false` = the `s3` disk,
+`true` = the local disk inside the php container. On a box with no AWS account
+`true` is a perfectly correct *production* value, and it was the setting for half
+a day before the MinIO bucket existed. `S3Service::getTargetDisk()` is its only
+reader and it keys on `filesystems.disks.s3.mock`, so `s3runner` is unaffected
+either way. `AWS_DEFAULT_REGION` is **required** by both disks even though MinIO
+ignores the value — the SDK refuses to construct a client without one.
 
 **The runner's `awsS3.*` settings are not AWS.** `awsS3.endpoint` in
 `config/secrets.properties` is `https://s3.qamelab.org`, which resolves to this
@@ -762,9 +816,20 @@ curl -s -X POST "$API/experiments/$EXP_ID/upload" \
 
 **Scenario JSON format:** array of crawler objects, each with `queues` containing `jobs`.
 
-**Important:** `start_at` must be in the future for the runner to pick up the queue. The API
-interprets timestamps as CET (+01:00). Reference implementation:
-`orchestrator/e2e/runner.py:_upload_experiment()`.
+**Important:** `start_at` must be in the future for the runner to pick up the queue.
+
+It is **Europe/Zurich wall clock**, not CET and not an instant. `APP_TIMEZONE` is
+pinned to `Europe/Zurich` (it was unset, defaulting to `Europe/Berlin`; they share
+offsets year-round, which is why nothing had ever broken). Since 2026-09-10 the
+API **converts an offset-bearing timestamp** to that zone rather than keeping the
+digits and discarding the zone — before, `2030-07-15T03:00:00Z` was stored as
+`03:00`, two hours early in summer, with no error anywhere.
+
+Generate times from the API's zone, never the host's: `datetime.now().astimezone()`
+is right only because every machine here happens to be CET/CEST, and would
+schedule an hour early from London. `experiment_designer.spec.time_utils.API_TIMEZONE`
+is the one declaration, shared by the DSL, the e2e and the canary. Reference
+implementation: `orchestrator/e2e/runner.py:_upload_experiment()`.
 
 ## Experiment Designer
 
@@ -849,6 +914,24 @@ failure itself), and the verdict's own `degraded` / `treatment_lost`.
 It found a real defect on its first run; see the collaboration-card note under
 "Local Lambda Server". Note `_job_ok()` counts `warning` as a pass by design, so
 without this check a treated run that lost its arm still goes green.
+
+**It also runs unattended, as a standing canary.** Experiment **177**
+("Treatment canary 2026-09") on ex63 is one treated bot (`pi=1`, `kappa=1`) with
+one session a day at 05:00 Europe/Zurich, generated by
+`scripts/treatment-canary.py`. No cron is involved and none is wanted: `start_at`
+already schedules work — a crawler carries many queues, each with its own start
+time — so the canary is one uploaded experiment and the runner picks up each
+session itself. Checking it is one request:
+
+```
+GET /api/v1/experiments/177/health?hours=24   # treatment_lost_jobs and degraded_jobs should be 0
+```
+
+The script reads its workflow from the same scenario `--youtube-treatment`
+uploads, so canary and test cannot drift, and it **refuses to build from a
+crawler that is not pi=1/kappa=1** — a canary built from a control passes for
+ever and means nothing. Sessions run out **2026-10-07**; topping up means
+generating a fresh batch and uploading it as a new experiment.
 
 ### CI across the ecosystem
 
