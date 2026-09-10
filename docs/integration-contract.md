@@ -177,7 +177,11 @@ still documents only `jl-` in two help strings and should be updated to say
 
 **Status:** Critical - used for cross-component tracing
 
-All components must use this format for correlation IDs:
+The full form, and the one **the API** writes. The **runner does not emit the
+`exp-` segment at all** -- measured 2026-09-10, zero occurrences in three hours
+of runner journal against 75 in the same day's Laravel log -- and it adds
+`|j-<id>` only for the duration of a job. So treat the segments as a prefix
+hierarchy to match on, not as a string every component produces whole:
 
 ```
 exp-{experiment_id}|cr-{crawler_id}|q-{queue_id}|j-{job_id}
@@ -286,13 +290,29 @@ YYYY-MM-DDTHH:MM:SS.mmm+ZZ:ZZ  LEVEL PID --- [application] [thread] logger  : me
 | `/api/v1/jobs/{id}` | GET | Get job details |
 | `/api/v1/experiments` | POST | Create experiment |
 
+**This is the subset the trace builder walks, not the API's endpoint list.** The
+API has ~105 `api/v1` routes; the authoritative list is the OpenAPI spec at
+`/api/documentation` (`storage/api-docs/api-docs.json`), which
+`ApiDocumentationTest` now keeps honest -- every route must be annotated, and
+every annotation must reach the generated spec. Do not read this table as
+coverage.
+
 **Orchestrator file:** `orchestrator/tracing/trace_builder.py`
 
 ### 3.3 Health Check
 
-**Endpoint:** `GET /api/v1/health` or `GET /`
+**There is no general API health endpoint.** `GET /api/v1/health` and `GET /`
+both answer **404**; this section described one that does not exist and, as far
+as the route table goes, never did. Checked 2026-09-10.
 
-**Expected:** HTTP 200 response
+To tell whether the API is up, use an endpoint that requires no state -- `POST
+/api/v1/login` answering at all, or `GET /api/v1/crawlers-unprocessed` with a
+token, which is what the runner itself relies on. `orchestrator status` and
+`orchestrator doctor` do the latter.
+
+The one route named `health` is **per experiment** and answers a different
+question: `GET /api/v1/experiments/{id}/health?hours=24` returns that
+experiment's run/job buckets and its bad/degraded/treatment-lost counts (§3.4).
 
 ### 3.4 Job & Queue Status Contract
 
@@ -418,6 +438,15 @@ on **2026-09-07**:
 |---|---|---|---|---|---|---|
 | `jobs` | 19860 | 1607 | 256 | 4419 | 547 | 4885 |
 | `queues` | 358 | 26 | 277 | 1 | 73 | 0 |
+
+**Counted 2026-09-07, and the totals move.** Re-measured 2026-09-10: `jobs` had
+grown to 32,034 rows with 5,425 NULL, and `queues` to 758 with 27 NULL. The two
+legacy counts did not move at all -- still 256 `failed` beside 1607 `failure` in
+`jobs`, 277 beside 26 in `queues` -- because nothing writes those spellings any
+more; they are a fixed archive, which is exactly why the alias table can never be
+dropped. Treat the absolute numbers as a dated observation and the RATIOS as the
+point: `WHERE status_code = 'failure'` still misses 14% of failed jobs and 91% of
+failed runs.
 
 So `WHERE status_code = 'failure'` misses 14% of failed jobs and, on queues,
 **misses 91% of them** - the legacy spelling is the *majority* there. `skpped`
@@ -569,9 +598,9 @@ corrected to the five values above.
 
 ---
 
-### 3.5 Runner assignment (API PR #59, not yet merged/rolled out)
+### 3.5 Runner assignment (live since 2026-09-02)
 
-With API PR #59, `experiments.runner_user_id` (nullable, FK → users) names the
+API PR #59 is merged (`0f0d935`) and deployed; `experiments.runner_user_id` (nullable, FK → users) names the
 runner account that executes an experiment. `NULL` means the default runner,
 `PM_DEFAULT_RUNNER_USER_ID` on the API (1 = ex63). Valid targets are exactly the
 accounts in `PM_SERVICE_ACCOUNT_IDS`; the rollout target on ex63 is `1,3` (ex63's
@@ -640,7 +669,7 @@ The API's docker-compose.yml must use these container name prefixes:
 | Service | Container Name |
 |---------|---------------|
 | Apache | `primemover-apache` |
-| PHP | `primemover-php` |
+| PHP | `primemover-php8.1` (the tag follows `PHPVERSION` in `.env`, so it is **not** `primemover-php`) |
 | MySQL | `primemover-mysql` |
 | Redis | `primemover-redis` |
 | Memcached | `primemover-memcached` |
@@ -704,7 +733,10 @@ The orchestrator waits for one of these log messages:
 
 ### 6.4 Java Version
 
-**Required:** Java 17 or higher
+**Required:** Java 17 or higher. **Production runs Java 25** (`25.0.4` on ex63,
+verified 2026-09-10) while the poms compile at `release=17`, which is why CI
+runs `mvn verify` on both -- the matrix exists so the JVM that actually runs the
+jar is the one tested.
 
 ---
 
