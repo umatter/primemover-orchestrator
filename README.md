@@ -470,6 +470,8 @@ This test:
 
 A `--youtube` variant (`orchestrator e2e --youtube`) drives the Lambda-select workflow instead. E2E experiments are always created unassigned, so they always run on ex63 regardless of which box they're launched from.
 
+`--youtube-treatment` runs the same workflow on a **treated** bot (`pi=1`, `kappa=1`) and **fails the run unless the treatment actually applied**. That is a different question from whether the jobs succeeded: the decision function degrades by omission — a filter it cannot apply is dropped, the recommendations stay plausible, the call is still 200 — so a bot configured to be treated can produce control-arm data through a completely green `--youtube` run, which is a control crawler and cannot see any of it. The treated variant found a real defect on its first execution.
+
 ## Experiment Designer (YAML DSL)
 
 The orchestrator includes a YAML-based Domain-Specific Language for defining experiments with factorial designs, parameter distributions, and data pools.
