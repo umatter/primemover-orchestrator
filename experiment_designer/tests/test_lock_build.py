@@ -210,6 +210,7 @@ def test_spec_path_is_relative_to_the_repo_toplevel(tmp_path: Path, monkeypatch)
 
     monkeypatch.chdir(tmp_path.parent)
     b = compile_spec(SPEC, base_dir=design, spec_path=str(spec.resolve()), seed=42)
+    assert b.lock is not None
     assert dump_lock(a.lock) == dump_lock(b.lock)
 
 
@@ -246,7 +247,10 @@ def test_unknown_pool_is_a_compile_error(spec_dir: Path):
     assert any("nope" in e for e in result.errors)
 
 
-def test_boolean_from_pool_passes_through(spec_dir: Path):
+def test_boolean_from_pool_is_refused(spec_dir: Path):
+    """`proxy: {from_pool: true}` is accepted by the parser and was silently
+    converted to a 127.0.0.1:8080 proxy. Until phase 2 implements it, a lock
+    must not be built from it."""
     text = SPEC + """
   - name: geo_bot
     proxy:
@@ -259,5 +263,5 @@ def test_boolean_from_pool_passes_through(spec_dir: Path):
         - wait: 1s
 """
     result = _compile(spec_dir, text)
-    assert result.lock is not None
-    assert not any("pool" in e.lower() for e in result.errors)
+    assert result.lock is None
+    assert any("crawlers[4].proxy.from_pool" in e and "phase 2" in e for e in result.errors)

@@ -25,19 +25,25 @@ from .test_lock_io import make_lock
 class FakeSession:
     base_url = "http://fake"
 
-    def __init__(self, fail_upload: bool = False) -> None:
+    def __init__(self, fail_upload: bool = False, live_mode: str | None = "real") -> None:
         self.calls: list[tuple[str, str, Any]] = []
         self.fail_upload = fail_upload
         self.next_id = 181
+        self.live_mode = live_mode  # pmspec.mode of the experiment appended to; None = absent
 
     def get(self, path, params=None):
         self.calls.append(("GET", path, params))
         if path.startswith("experiments/"):
+            prefs = [{"name": "pmspec.lock_sha256", "description": "upload 1", "value": "old"}]
+            if self.live_mode is not None:
+                prefs.append(
+                    {"name": "pmspec.mode", "description": "upload 1", "value": self.live_mode}
+                )
             return {
                 "id": int(path.split("/")[1]),
                 "name": "Study",
                 "user_id": 5,
-                "preferences": [{"name": "pmspec.lock_sha256", "value": "old"}],
+                "preferences": prefs,
             }
         return {}
 
@@ -163,14 +169,42 @@ def test_fixed_anchor_in_the_past_is_refused(store):
 
 def test_append_mode_puts_numbered_provenance_and_skips_create(store):
     session = FakeSession()
-    upload_lock(
+    result = upload_lock(
         dump_lock(make_lock()), session=session, store=store, options=_opts(experiment_id=42)
     )
     kinds = [c[0] for c in session.calls]
     assert kinds == ["GET", "PUT", "POST_FILE"]
     put = session.calls[1][2]
     assert put["name"] == "Study" and put["user_id"] == 5  # resent unchanged
+    assert "runner_user_id" not in put
     assert all(p["description"] == "upload 2" for p in put["preferences"])
+    assert result.runner_user_id is None and result.experiment_name == "Study"
+
+
+def test_append_in_test_mode_requires_a_test_experiment(store):
+    """test mode neither renames nor re-targets an existing experiment, so
+    appending test crawlers to a real study would run them on ex63 under its
+    name. Only an experiment that was itself uploaded in test mode accepts it."""
+    for live_mode in ("real", None):
+        session = FakeSession(live_mode=live_mode)
+        with pytest.raises(UploadRefused, match="pmspec.mode"):
+            upload_lock(
+                dump_lock(make_lock()),
+                session=session,
+                store=store,
+                options=_opts(mode="test", experiment_id=42),
+            )
+        assert [c[0] for c in session.calls] == ["GET"]  # nothing written
+
+    session = FakeSession(live_mode="test")
+    result = upload_lock(
+        dump_lock(make_lock()),
+        session=session,
+        store=store,
+        options=_opts(mode="test", experiment_id=42),
+    )
+    assert [c[0] for c in session.calls] == ["GET", "PUT", "POST_FILE"]
+    assert result.runner_user_id is None and result.experiment_name == "Study"
 
 
 def test_a_spec_is_rejected(store):

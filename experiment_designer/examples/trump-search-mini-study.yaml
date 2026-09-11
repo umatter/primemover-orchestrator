@@ -23,8 +23,8 @@ defaults:
   proxy:
     hostname: "PROXY_HOST_PLACEHOLDER"
     port: 5432
-    username: "PROXY_USER_PLACEHOLDER"
-    password: "PROXY_PASSWORD_PLACEHOLDER"
+    username: "${secret:trump_mini.username}"
+    password: "${secret:trump_mini.password}"
     type: http
 
 # =============================================================================

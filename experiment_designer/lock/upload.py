@@ -159,7 +159,18 @@ def upload_lock(
     else:
         experiment_id = options.experiment_id
         live = session.get(f"experiments/{experiment_id}")
-        existing = [p for p in live.get("preferences", []) if p.get("name") == "pmspec.lock_sha256"]
+        live_prefs = live.get("preferences", [])
+        if options.mode == "test":
+            # Append neither renames nor re-targets the experiment, so test
+            # crawlers added to a real study would run on ex63 under its name.
+            live_modes = {p.get("value") for p in live_prefs if p.get("name") == "pmspec.mode"}
+            if "test" not in live_modes:
+                raise UploadRefused(
+                    f"experiment {experiment_id} was not uploaded in test mode "
+                    f"(pmspec.mode is {', '.join(sorted(m for m in live_modes if m)) or 'absent'}); "
+                    "append test crawlers to a test experiment, or create one by omitting -e"
+                )
+        existing = [p for p in live_prefs if p.get("name") == "pmspec.lock_sha256"]
         label = f"upload {len(existing) + 1}"
         session.put(
             f"experiments/{experiment_id}",
@@ -180,6 +191,7 @@ def upload_lock(
             },
         )
         name = live["name"]
+        runner = None  # nothing is PUT for it: the experiment keeps its runner
 
     session.post_file(
         f"experiments/{experiment_id}/upload",

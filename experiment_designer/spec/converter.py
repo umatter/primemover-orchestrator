@@ -199,6 +199,14 @@ class SpecConverter:
         total_jobs = 0
 
         for i, crawler in enumerate(all_crawlers):
+            proxy = crawler.get("proxy")
+            if isinstance(proxy, dict) and proxy.get("from_pool") is True:
+                # The parser accepts this shape and _convert_proxy would quietly
+                # turn it into a 127.0.0.1:8080 proxy; refuse instead.
+                self.errors.append(
+                    f"crawlers[{i}].proxy.from_pool: proxy pools are not implemented yet "
+                    "(phase 2); give the proxy an explicit hostname/port or type: oxylabs"
+                )
             try:
                 api_crawler = self._convert_crawler(crawler, parsed.defaults)
                 api_crawlers.append(api_crawler)
