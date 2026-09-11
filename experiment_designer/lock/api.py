@@ -72,6 +72,16 @@ class ApiSession:
         self._raise_for(r, f"PUT {path}")
         return self._unwrap(r)
 
+    def get_bytes(self, path: str, params: dict[str, Any] | None = None) -> bytes:
+        r = requests.get(
+            f"{self.base_url}/{path}",
+            headers=self._headers(),
+            params=params,
+            timeout=max(self._timeout, 300.0),
+        )
+        self._raise_for(r, f"GET {path}")
+        return r.content
+
     def post_file(
         self, path: str, field: str, filename: str, content: str, content_type: str
     ) -> Any:
