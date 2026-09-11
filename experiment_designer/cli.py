@@ -5,8 +5,9 @@ PrimeMover Experiment Spec CLI (pmspec)
 Command-line tool for working with YAML experiment specifications.
 
 Commands:
-    pmspec validate <file.yaml>       Validate a specification
-    pmspec generate <file.yaml>       Convert to API JSON
+    pmspec validate <file.yaml|.lock.yaml>  Validate a specification or a lock
+    pmspec compile <file.yaml>         Compile a spec into a committable lock
+    pmspec generate <file.yaml|.lock.yaml>  Convert to API JSON
     pmspec preview <file.yaml>        Preview design expansion
     pmspec summary <file.yaml>        Generate experiment summary
     pmspec upload <file.yaml>         Upload to API
@@ -33,6 +34,10 @@ except ImportError:
     print("Error: 'click' package is required. Install with: pip install click")
     sys.exit(1)
 
+from .lock.build import compile_spec
+from .lock.io import LockError, dump_lock, is_lock_document, load_lock
+from .lock.resolve import resolve_for_upload
+from .lock.secrets import SecretStore, find_placeholders
 from .spec.converter import SpecConverter
 from .spec.design_expander import DesignExpander
 from .spec.job_registry import JobRegistry
@@ -77,6 +82,21 @@ def validate(file: str, format: str, strict: bool, seed: int | None):
 
     with open(file) as f:
         content = f.read()
+
+    if is_lock_document(content):
+        try:
+            lock = load_lock(content)
+        except LockError as e:
+            click.secho("Lock validation FAILED", fg="red", bold=True)
+            for error in e.errors:
+                click.secho(f"  ERROR: {error}", fg="red")
+            sys.exit(1)
+        click.secho("Lock: valid", fg="green", bold=True)
+        click.echo(f"Experiment: {lock.experiment['name']}")
+        click.echo(f"Crawlers:   {len(lock.crawlers)}")
+        click.echo(f"Total Jobs: {sum(len(q['jobs']) for c in lock.crawlers for q in c['queues'])}")
+        click.echo(f"Anchor:     {lock.schedule['anchor']}")
+        sys.exit(0)
 
     # Create custom YAML loader with !file tag support
     FileTagLoader, file_loader = create_file_tag_loader(base_dir=base_dir, seed=seed)
@@ -168,49 +188,92 @@ def validate(file: str, format: str, strict: bool, seed: int | None):
 
 @cli.command()
 @click.argument("file", type=click.Path(exists=True))
+@click.option("--output", "-o", type=click.Path(), help="Lock path (default: <stem>.lock.yaml)")
+@click.option("--seed", "-s", type=int, help="The one seed every draw derives from")
+@click.option("--anchor", help="Schedule anchor: 'upload' or a Europe/Zurich wall-clock ISO time")
+@click.option("--generator", help="Free-text provenance: what produced the spec")
+@click.option("--lax", is_flag=True, help="Downgrade strict-contract errors to warnings (recorded)")
+def compile(
+    file: str,
+    output: str | None,
+    seed: int | None,
+    anchor: str | None,
+    generator: str | None,
+    lax: bool,
+):
+    """Compile a spec into a self-contained, committable lock file."""
+    file_path = Path(file)
+    result = compile_spec(
+        file_path.read_text(),
+        base_dir=file_path.parent,
+        spec_path=str(file_path),
+        seed=seed,
+        anchor=anchor,
+        generator=generator,
+        lax=lax,
+    )
+    for warning in result.warnings:
+        click.secho(f"  WARNING: {warning}", fg="yellow")
+    if result.lock is None:
+        click.secho("Compile FAILED", fg="red", bold=True)
+        for error in result.errors:
+            click.secho(f"  ERROR: {error}", fg="red")
+        sys.exit(1)
+    out_path = Path(output) if output else file_path.with_name(f"{file_path.stem}.lock.yaml")
+    out_path.write_text(dump_lock(result.lock))
+    lock = result.lock
+    click.secho(f"Compiled: {out_path}", fg="green")
+    click.echo(f"  Crawlers: {len(lock.crawlers)}")
+    click.echo(f"  Seed:     {lock.provenance.seed}")
+    click.echo(f"  Anchor:   {lock.schedule['anchor']}")
+    click.echo(f"  Commit:   {lock.provenance.git_commit or 'none'}")
+
+
+@cli.command()
+@click.argument("file", type=click.Path(exists=True))
 @click.option("--output", "-o", type=click.Path(), help="Output file (default: stdout)")
 @click.option("--pretty/--compact", default=True, help="Pretty-print JSON")
-@click.option("--seed", "-s", type=int, help="Random seed for reproducible randomization")
-def generate(file: str, output: str | None, pretty: bool, seed: int | None):
-    """Generate API JSON from YAML spec.
-
-    Converts the specification to JSON format compatible with
-    the PrimeMover API upload endpoint.
-
-    Use --seed for reproducible file selections and parameter distributions.
-    """
+@click.option("--seed", "-s", type=int, help="Only when FILE is a spec: the seed to compile with")
+@click.option(
+    "--resolve-secrets", is_flag=True, help="Resolve ${secret:...} from the secrets store"
+)
+def generate(file: str, output: str | None, pretty: bool, seed: int | None, resolve_secrets: bool):
+    """Generate API upload JSON from a spec or a lock. Prefer `compile` + `upload`;
+    this output carries no provenance and is only for the GUI's upload form."""
     file_path = Path(file)
-    base_dir = file_path.parent
+    content = file_path.read_text()
+    if is_lock_document(content):
+        try:
+            lock = load_lock(content)
+        except LockError as e:
+            for error in e.errors:
+                click.secho(f"  ERROR: {error}", fg="red")
+            sys.exit(1)
+    else:
+        result = compile_spec(
+            content, base_dir=file_path.parent, spec_path=str(file_path), seed=seed
+        )
+        if result.lock is None:
+            click.secho("Cannot generate: compile errors", fg="red")
+            for error in result.errors:
+                click.secho(f"  {error}", fg="red")
+            sys.exit(1)
+        lock = result.lock
 
-    with open(file) as f:
-        content = f.read()
-
-    parser = SpecParser(base_dir=base_dir, seed=seed)
-    parsed = parser.parse(content)
-
-    if parsed.errors:
-        click.secho("Cannot generate: validation errors found", fg="red")
-        for error in parsed.errors:
-            click.secho(f"  {error}", fg="red")
-        sys.exit(1)
-
-    converter = SpecConverter()
-    result = converter.convert(parsed)
-
-    if result.errors:
-        click.secho("Conversion errors:", fg="red")
-        for error in result.errors:
-            click.secho(f"  {error}", fg="red")
-        sys.exit(1)
-
-    json_output = result.to_json(pretty=pretty)
-
+    store = SecretStore.load() if resolve_secrets else None
+    crawlers, _ = resolve_for_upload(lock, store=store)
+    if store is None and find_placeholders(crawlers):
+        n = len(find_placeholders(crawlers))
+        click.secho(
+            f"WARNING: {n} secret placeholder(s) left unresolved (pass --resolve-secrets)",
+            fg="yellow",
+            err=True,
+        )
+    json_output = json.dumps(crawlers, indent=2 if pretty else None, ensure_ascii=False)
     if output:
-        with open(output, "w") as f:
-            f.write(json_output)
+        Path(output).write_text(json_output)
         click.secho(f"Generated: {output}", fg="green")
-        click.echo(f"  Crawlers: {result.crawler_count}")
-        click.echo(f"  Jobs:     {result.total_jobs}")
+        click.echo(f"  Crawlers: {len(crawlers)}")
     else:
         click.echo(json_output)
 
