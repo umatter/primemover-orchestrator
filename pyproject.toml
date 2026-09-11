@@ -88,8 +88,14 @@ ignore = ["E501"]
 # comments, which black relocates when it wraps the call.
 # MissingSecret / InsecureSecretsFile are the fixed interface names later lock
 # tasks import verbatim (experiment_designer.lock.secrets); an *Error suffix
-# would be a breaking rename, not a style fix.
-extend-ignore-names = ["FileTagLoader", "MissingSecret", "InsecureSecretsFile"]
+# would be a breaking rename, not a style fix. UploadRefused
+# (experiment_designer.lock.upload) is the same situation.
+extend-ignore-names = [
+    "FileTagLoader",
+    "MissingSecret",
+    "InsecureSecretsFile",
+    "UploadRefused",
+]
 
 [tool.mypy]
 python_version = "3.10"
