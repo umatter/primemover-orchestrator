@@ -45,8 +45,11 @@ The **lock** is the reproducibility artifact: every crawler expanded, every rand
 draw fixed by the one seed, every data pool inlined, secrets left as
 `${secret:…}` placeholders, and session starts expressed as offsets from a
 `schedule.anchor`. It is committable by construction — `compile` refuses a literal
-credential — and byte-deterministic: the same spec and seed always produce the same
-file. Its header records the spec's sha256, the git commit it was compiled from
+credential — and deterministic: the same spec, pools and seed always produce the same
+crawlers, draws and offsets — only the `compiled_at` line in the provenance header
+differs between runs, so a recompile changes the lock's hash (and therefore its server
+binding) even when nothing else changed; commit the lock you uploaded rather than
+recompiling it. Its header records the spec's sha256, the git commit it was compiled from
 (`-dirty` if the tree was not clean), the generator, the pmspec version and the seed.
 
 ### Step 4: Upload the lock
