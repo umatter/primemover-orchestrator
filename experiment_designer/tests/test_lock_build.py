@@ -163,3 +163,47 @@ def test_experiment_block_and_runner(spec_dir: Path):
     text = SPEC.replace("  name: Compiled\n", "  name: Compiled\n  runner_user_id: 3\n")
     lock = _compile(spec_dir, text).lock
     assert lock.experiment == {"name": "Compiled", "description": "", "runner_user_id": 3}
+
+
+_POOL_REF = (
+    "    configuration:\n"
+    "      params:\n"
+    "        media_outlet_urls:\n"
+    "          from_pool: {pool}\n"
+    "          select: all\n"
+)
+
+
+def _with_pool_ref(pool_name: str = "outlets") -> str:
+    return SPEC.replace("    proxy:\n", _POOL_REF.format(pool=pool_name) + "    proxy:\n")
+
+
+def test_pool_reference_is_inlined(spec_dir: Path):
+    lock = _compile(spec_dir, _with_pool_ref()).lock
+    assert lock is not None
+    urls = lock.crawlers[0]["configuration"]["params"]["media_outlet_urls"]
+    assert isinstance(urls, list) and len(urls) == 2
+    assert "from_pool" not in dump_lock(lock)
+
+
+def test_unknown_pool_is_a_compile_error(spec_dir: Path):
+    result = _compile(spec_dir, _with_pool_ref("nope"))
+    assert result.lock is None
+    assert any("nope" in e for e in result.errors)
+
+
+def test_boolean_from_pool_passes_through(spec_dir: Path):
+    text = SPEC + """
+  - name: geo_bot
+    proxy:
+      from_pool: true
+      pool: x
+      match_field: location
+    session:
+      start: "+5m"
+      workflow:
+        - wait: 1s
+"""
+    result = _compile(spec_dir, text)
+    assert result.lock is not None
+    assert not any("pool" in e.lower() for e in result.errors)

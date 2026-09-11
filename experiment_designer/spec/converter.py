@@ -12,6 +12,7 @@ import json
 from dataclasses import dataclass, field
 from typing import Any
 
+from .data_pools import resolve_pool_references
 from .design_expander import DesignExpander
 from .parser import ParsedSpec, SpecParser
 from .time_utils import parse_relative_time
@@ -172,6 +173,26 @@ class SpecConverter:
                 self.warnings.extend(expander.warnings)
             else:
                 all_crawlers.append(crawler_template)
+
+        # Resolve data-pool references now that design expansion has fixed each
+        # crawler's params (pi, kappa, alpha, ...) -- pool scoring expressions
+        # read those from the crawler context.
+        if parsed.pool_manager is not None:
+            resolved_crawlers = []
+            for crawler in all_crawlers:
+                context = {
+                    k: v
+                    for k, v in crawler.get("configuration", {}).get("params", {}).items()
+                    if not isinstance(v, (dict, list))
+                }
+                resolved_crawlers.append(
+                    resolve_pool_references(crawler, parsed.pool_manager, context)
+                )
+            all_crawlers = resolved_crawlers
+            self.errors.extend(parsed.pool_manager.errors)
+            self.warnings.extend(parsed.pool_manager.warnings)
+            parsed.pool_manager.errors = []
+            parsed.pool_manager.warnings = []
 
         # Convert each crawler to API format
         api_crawlers = []

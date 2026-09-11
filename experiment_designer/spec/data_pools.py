@@ -353,8 +353,11 @@ def resolve_pool_references(
         Data structure with pool references replaced by resolved data
     """
     if isinstance(obj, dict):
-        if "from_pool" in obj:
-            # This is a pool reference
+        if isinstance(obj.get("from_pool"), str):
+            # This is a pool reference. A boolean `from_pool` (e.g.
+            # `proxy: {from_pool: true, pool: ...}`) is a different,
+            # unimplemented shape handled by a later phase -- pass it
+            # through untouched rather than erroring here.
             return pool_manager.resolve(obj, crawler_context)
         else:
             # Regular dict - recurse into values

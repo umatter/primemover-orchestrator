@@ -38,6 +38,7 @@ class ParsedSpec:
     raw: dict[str, Any]  # Original parsed YAML
     errors: list[str] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
+    pool_manager: DataPoolManager | None = None
 
 
 # System-level defaults (can be overridden by experiment defaults)
@@ -182,6 +183,7 @@ class SpecParser:
             raw=raw,
             errors=self.errors,
             warnings=self.warnings,
+            pool_manager=self.pool_manager,
         )
 
     def _merge_defaults(self, experiment_defaults: dict[str, Any]) -> dict[str, Any]:
