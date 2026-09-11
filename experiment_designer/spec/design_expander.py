@@ -202,7 +202,7 @@ class DesignExpander:
         warnings = []
 
         design_type = design.get("type", "factorial")
-        seed = design.get("seed", self.seed)
+        seed = self.seed if self.seed is not None else design.get("seed")
 
         # Parse parameter distributions
         parameters = design.get("parameters", {})

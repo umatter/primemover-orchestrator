@@ -109,9 +109,15 @@ class SpecConverter:
             api_json = result.to_json()
     """
 
-    def __init__(self) -> None:
+    def __init__(self, *, seed: int | None = None, resolve_times: bool = True) -> None:
         self.errors: list[str] = []
         self.warnings: list[str] = []
+        # An explicit seed wins over design.seed so a compile can pin every draw
+        # from one number; None keeps today's behaviour (design.seed or unseeded).
+        self.seed = seed
+        # False leaves queue start strings as written ("+5m", "now", ISO) so the
+        # lock compiler can express them as offsets from an anchor.
+        self.resolve_times = resolve_times
 
     def _runner_user_id(self, experiment: dict[str, Any]) -> int | None:
         """experiment.runner_user_id, validated; None when absent."""
@@ -154,7 +160,7 @@ class SpecConverter:
         # Expand design if present
         # Extract seed from design for reproducibility
         design_seed = parsed.design.get("seed") if parsed.design else None
-        expander = DesignExpander(seed=design_seed)
+        expander = DesignExpander(seed=self.seed if self.seed is not None else design_seed)
         all_crawlers = []
 
         for crawler_template in parsed.crawlers:
@@ -409,8 +415,9 @@ class SpecConverter:
         # Handle start_at - supports "now", relative offsets (+5m, +1h), or ISO 8601
         start_at = queue.get("start_at", queue.get("start"))
         if not start_at:
-            start_at = "now"  # Default to now
-        start_at = parse_relative_time(start_at)
+            start_at = "now"
+        if self.resolve_times:
+            start_at = parse_relative_time(start_at)
 
         api_queue = {
             "name": queue.get("name", "Session"),
