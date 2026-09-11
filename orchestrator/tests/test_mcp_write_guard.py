@@ -388,39 +388,34 @@ class TestEveryMutatingToolIsGuarded:
 class TestUploadExperimentIsGuarded:
     """upload_experiment writes without going through _write(), so it is pinned here.
 
-    It is the one mutating tool that talks to the API through ``requests``
-    directly rather than ``_api_request``. That means it gets neither of
-    ``_write()``'s guarantees for free, and it previously had neither: it
-    defaulted to ``dry_run=False`` and never consulted the local-only guard, so
-    a deployment pointed at a remote API could upload to it by default.
+    It is the one mutating tool that talks to the API through ``_McpSession``
+    (over ``_api_request``, plus ``httpx`` directly for the multipart upload
+    and the export download ``_api_request`` cannot do) rather than through
+    ``_write()``. That means it gets neither of ``_write()``'s guarantees for
+    free, and it previously had neither: it defaulted to ``dry_run=False`` and
+    never consulted the local-only guard, so a deployment pointed at a remote
+    API could upload to it by default.
 
     The structural scan above proves it now calls the guard. These tests prove
     the guard actually bites and that the default is a preview.
     """
 
-    MINIMAL_SPEC = """
-version: "1.0"
-experiment:
-  name: "Guard test"
-crawlers:
-  - name: "bot_01"
-    session:
-      workflow:
-        - visit: https://example.com
-"""
+    def _lock(self) -> str:
+        from experiment_designer.lock.io import dump_lock
+        from experiment_designer.tests.test_lock_io import make_lock
+
+        return dump_lock(make_lock())
 
     def test_defaults_to_a_preview_and_uploads_nothing(self, monkeypatch):
         """Called with no dry_run argument at all, it must not upload."""
         _point_api_at(monkeypatch, "http://localhost:8090/api/v1")
 
-        import requests
-
         def _explode(*args, **kwargs):
             raise AssertionError("upload_experiment performed a request during a default call")
 
-        monkeypatch.setattr(requests, "post", _explode)
+        monkeypatch.setattr(s, "_api_request", _explode)
 
-        out = json.loads(s.upload_experiment(self.MINIMAL_SPEC))
+        out = json.loads(s.upload_experiment(self._lock(), mode="test"))
 
         assert out.get("dry_run") is True
         assert "to_apply" in out
@@ -428,14 +423,12 @@ crawlers:
     def test_remote_target_is_refused_when_applying(self, monkeypatch):
         _point_api_at(monkeypatch, "https://pm-api.example.org/api/v1")
 
-        import requests
-
         def _explode(*args, **kwargs):
             raise AssertionError("upload_experiment reached the network for a remote target")
 
-        monkeypatch.setattr(requests, "post", _explode)
+        monkeypatch.setattr(s, "_api_request", _explode)
 
-        out = json.loads(s.upload_experiment(self.MINIMAL_SPEC, dry_run=False))
+        out = json.loads(s.upload_experiment(self._lock(), mode="test", dry_run=False))
 
         assert out["success"] is False
         assert "refusing to mutate" in out["error"]
@@ -444,12 +437,12 @@ crawlers:
         """Validation is pure local work, so the guard must not block it.
 
         Refusing a dry run against a remote target would make the tool useless
-        for checking a spec on any non-dev deployment, for no safety gain --
+        for checking a lock on any non-dev deployment, for no safety gain --
         nothing is written either way.
         """
         _point_api_at(monkeypatch, "https://pm-api.example.org/api/v1")
 
-        out = json.loads(s.upload_experiment(self.MINIMAL_SPEC, dry_run=True))
+        out = json.loads(s.upload_experiment(self._lock(), mode="test", dry_run=True))
 
         assert out["success"] is True
         assert out["dry_run"] is True
@@ -457,7 +450,9 @@ crawlers:
     def test_invalid_spec_is_rejected_before_any_guard_or_upload(self, monkeypatch):
         _point_api_at(monkeypatch, "http://localhost:8090/api/v1")
 
-        out = json.loads(s.upload_experiment("this: is: not: a: valid: spec", dry_run=False))
+        out = json.loads(
+            s.upload_experiment("this: is: not: a: valid: spec", mode="test", dry_run=False)
+        )
 
         assert out["success"] is False
-        assert out["errors"]
+        assert "compile" in out["error"]

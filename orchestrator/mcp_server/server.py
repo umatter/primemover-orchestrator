@@ -8,6 +8,7 @@ import json
 import os
 import re as _re
 import sys
+import tempfile
 import threading
 import time
 from collections.abc import Callable
@@ -15,6 +16,11 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from experiment_designer.lock.build import compile_spec
+from experiment_designer.lock.io import LockError, dump_lock, is_lock_document, load_lock
+from experiment_designer.lock.secrets import SecretStore, find_placeholders
+from experiment_designer.lock.upload import MODES, UploadOptions, UploadRefused, upload_lock
+from experiment_designer.lock.verify import verify_lock
 from orchestrator import status
 from orchestrator.config import get_settings
 
@@ -617,6 +623,80 @@ def _require_local_write_target() -> str | None:
 def _unwrap(result: dict[str, Any]) -> Any:
     """API resources come back as {'data': {...}}; return the inner object when present."""
     return result.get("data", result) if isinstance(result, dict) else result
+
+
+def _materialise_files(files: dict[str, str] | None) -> tempfile.TemporaryDirectory[str]:
+    """Pools passed as content become files in a temp dir used as the spec's base_dir.
+
+    Callers of the MCP tools have no filesystem in common with this process, so a
+    data pool's ``source:`` file has to arrive as text and be written out before
+    ``SpecParser``/``compile_spec`` (which resolve pool sources relative to a
+    ``base_dir`` path) can see it.
+    """
+    tmp = tempfile.TemporaryDirectory(prefix="pmspec-")
+    for name, content in (files or {}).items():
+        target = Path(tmp.name) / Path(name).name  # no directory traversal
+        target.write_text(content)
+    return tmp
+
+
+class _McpSession:
+    """ApiSession-shaped adapter over the MCP's own authenticated request path.
+
+    ``upload_lock``/``verify_lock`` are written against a small session protocol
+    (get/post/put/post_file/get_bytes/base_url) so they do not have to know how
+    this process authenticates. ``get``/``post``/``put`` delegate to
+    ``_api_request`` so they share its token cache and 401-retry; ``post_file``
+    and ``get_bytes`` are the two things ``_api_request`` cannot do (multipart
+    upload, raw bytes) and use ``httpx`` directly with the same token.
+    """
+
+    def __init__(self) -> None:
+        self.base_url = get_settings().pm_api_base_url
+
+    def get(self, path: str, params: dict[str, Any] | None = None) -> Any:
+        return _unwrap(_api_request("GET", path, params=params))
+
+    def post(self, path: str, json: dict[str, Any]) -> Any:
+        return _unwrap(_api_request("POST", path, data=json))
+
+    def put(self, path: str, json: dict[str, Any]) -> Any:
+        return _unwrap(_api_request("PUT", path, data=json))
+
+    def post_file(
+        self, path: str, field: str, filename: str, content: str, content_type: str
+    ) -> Any:
+        # Mutating and not expressible through _api_request (multipart). Not
+        # guarded here: the only caller, upload_experiment, checks
+        # _require_local_write_target() before it ever constructs a session --
+        # see the AST-scan note in test_mcp_write_guard.py for why that still
+        # counts as guarded.
+        import httpx
+
+        settings = get_settings()
+        with httpx.Client(timeout=300.0) as client:
+            token = _api_token(client, settings)
+            r = client.post(
+                f"{settings.pm_api_base_url}/{path}",
+                headers={"Authorization": f"Bearer {token}", "Accept": "application/json"},
+                files={field: (filename, content, content_type)},
+            )
+            r.raise_for_status()
+            return _unwrap(r.json()) if r.content else {}
+
+    def get_bytes(self, path: str, params: dict[str, Any] | None = None) -> bytes:
+        import httpx
+
+        settings = get_settings()
+        with httpx.Client(timeout=300.0) as client:
+            token = _api_token(client, settings)
+            r = client.get(
+                f"{settings.pm_api_base_url}/{path}",
+                params=params,
+                headers={"Authorization": f"Bearer {token}"},
+            )
+            r.raise_for_status()
+            return r.content
 
 
 def _write(
@@ -1997,22 +2077,102 @@ def get_lambda_recent_errors(time_range: str = "24h", limit: int = 20) -> str:
 
 
 @mcp.tool()
-def validate_experiment_spec(yaml_content: str, strict: bool = False) -> str:
-    """
-    Validate a YAML experiment specification.
+def compile_experiment_spec(
+    yaml_content: str,
+    files: dict[str, str] | None = None,
+    seed: int | None = None,
+    anchor: str | None = None,
+    generator: str | None = None,
+    lax: bool = False,
+) -> str:
+    """Compile a YAML spec into a lock: the self-contained, committable artifact
+    upload_experiment and verify_experiment read.
 
-    Performs structural, semantic, and design validation.
+    Because this compiles from content with no repository on this machine, the
+    resulting lock's provenance always has ``git_commit: null`` -- there is no
+    checkout for ``git_commit()`` to inspect. That means a `real`-mode
+    ``upload_experiment`` of an MCP-compiled lock will be refused unless you
+    pass ``allow_dirty``: for a real upload, compile with the pmspec CLI in the
+    committed repo instead, so the lock carries a real commit.
 
     Args:
-        yaml_content: YAML content to validate
-        strict: If True, treat warnings as errors
+        yaml_content: the spec
+        files: data-pool files by the bare filename the spec's `source:` names,
+            content as text -- this is how a pool reaches a content-only caller
+        seed: the one seed; required unless the spec sets design.seed
+        anchor: 'upload' or a Europe/Zurich wall-clock ISO time; default derived from the spec
+        generator: free-text provenance ("code/design/build_spec.R")
+        lax: downgrade strict-contract errors to warnings (recorded in the lock)
+
+    Returns:
+        JSON: {"lock": <text>, "crawler_count", "seed", "anchor", "warnings"} or {"errors": [...]}
+    """
+    with _materialise_files(files) as tmp:
+        result = compile_spec(
+            yaml_content,
+            base_dir=Path(tmp),
+            spec_path="<mcp>",
+            seed=seed,
+            anchor=anchor,
+            generator=generator,
+            lax=lax,
+            git_root=None,
+        )
+    if result.lock is None:
+        return json.dumps({"errors": result.errors, "warnings": result.warnings})
+    return json.dumps(
+        {
+            "lock": dump_lock(result.lock),
+            "crawler_count": len(result.lock.crawlers),
+            "seed": result.lock.provenance.seed,
+            "anchor": result.lock.schedule["anchor"],
+            "warnings": result.warnings,
+        }
+    )
+
+
+@mcp.tool()
+def validate_experiment_spec(
+    yaml_content: str, strict: bool = False, files: dict[str, str] | None = None
+) -> str:
+    """
+    Validate a YAML experiment specification, or a lock.
+
+    A lock (``pmspec_lock: ...``) is validated against the lock schema and
+    reported as ``{"valid", "kind": "lock", ...}``. A spec is validated
+    structurally, semantically, and against the design, reported as
+    ``{"valid", "kind": "spec", ...}``.
+
+    Args:
+        yaml_content: YAML spec content, or a lock
+        strict: If True, treat warnings as errors (spec only)
+        files: data-pool files by the bare filename the spec's `source:` names,
+            content as text -- materialised into a temp dir used as base_dir
 
     Returns:
         JSON with validation results including errors, warnings, and summary
     """
-    try:
-        from pathlib import Path
+    if is_lock_document(yaml_content):
+        try:
+            lock = load_lock(yaml_content)
+        except LockError as e:
+            return json.dumps({"valid": False, "kind": "lock", "errors": e.errors, "warnings": []})
+        return json.dumps(
+            {
+                "valid": True,
+                "kind": "lock",
+                "errors": [],
+                "warnings": [],
+                "summary": {
+                    "experiment_name": lock.experiment["name"],
+                    "crawler_count": len(lock.crawlers),
+                    "anchor": lock.schedule["anchor"],
+                    "seed": lock.provenance.seed,
+                },
+            }
+        )
 
+    try:
         import yaml as yaml_lib
 
         from experiment_designer.spec import SpecConverter, SpecParser, SpecValidator
@@ -2023,31 +2183,40 @@ def validate_experiment_spec(yaml_content: str, strict: bool = False) -> str:
     except ImportError as e:
         return json.dumps({"error": f"experiment_designer not available: {e}"})
 
-    # Parse YAML with custom loader
-    # SECURITY: FileTagLoader inherits from yaml.SafeLoader, which prevents
-    # arbitrary code execution. The only custom tag is !file for loading
-    # external data files (CSV/JSON), which are parsed safely.
-    # base_dir anchors relative !file paths. The spec arrives here as a string
-    # rather than a file, so there is no containing directory to inherit; the
-    # working directory is the closest equivalent to how the CLI resolves them.
-    FileTagLoader, file_loader = create_file_tag_loader(base_dir=Path.cwd())
+    with _materialise_files(files) as tmp:
+        base_dir = Path(tmp)
 
-    try:
-        raw_spec = yaml_lib.load(yaml_content, Loader=FileTagLoader)
-        raw_spec = resolve_file_references(raw_spec, file_loader)
-    except yaml_lib.YAMLError as e:
-        return json.dumps({"valid": False, "errors": [f"YAML parse error: {e}"], "warnings": []})
+        # Parse YAML with custom loader
+        # SECURITY: FileTagLoader inherits from yaml.SafeLoader, which prevents
+        # arbitrary code execution. The only custom tag is !file for loading
+        # external data files (CSV/JSON), which are parsed safely.
+        # base_dir anchors relative !file paths and data-pool `source:` files to
+        # the temp dir any `files` were materialised into.
+        FileTagLoader, file_loader = create_file_tag_loader(base_dir=base_dir)
 
-    # Run validator
-    validator = SpecValidator()
-    validation_result = validator.validate(raw_spec)
+        try:
+            raw_spec = yaml_lib.load(yaml_content, Loader=FileTagLoader)
+            raw_spec = resolve_file_references(raw_spec, file_loader)
+        except yaml_lib.YAMLError as e:
+            return json.dumps(
+                {
+                    "valid": False,
+                    "kind": "spec",
+                    "errors": [f"YAML parse error: {e}"],
+                    "warnings": [],
+                }
+            )
 
-    # Also parse and convert to catch additional errors
-    parser = SpecParser()
-    parsed = parser.parse(yaml_content)
+        # Run validator
+        validator = SpecValidator()
+        validation_result = validator.validate(raw_spec)
 
-    converter = SpecConverter()
-    result = converter.convert(parsed)
+        # Also parse and convert to catch additional errors
+        parser = SpecParser(base_dir=base_dir)
+        parsed = parser.parse(yaml_content)
+
+        converter = SpecConverter()
+        result = converter.convert(parsed)
 
     # Combine all errors and warnings
     all_errors = list(set(validation_result.errors + parsed.errors + result.errors))
@@ -2060,6 +2229,7 @@ def validate_experiment_spec(yaml_content: str, strict: bool = False) -> str:
     return json.dumps(
         {
             "valid": len(all_errors) == 0,
+            "kind": "spec",
             "errors": all_errors,
             "warnings": all_warnings,
             "summary": {
@@ -2130,6 +2300,10 @@ def convert_spec_to_json(yaml_content: str) -> str:
     """
     Convert YAML experiment spec to API-compatible JSON.
 
+    Prefer compile_experiment_spec: this output carries no provenance (no seed,
+    no git commit, no lock hash to bind an upload to), so it cannot be verified
+    later and should not be used as an experiment's system of record.
+
     Args:
         yaml_content: YAML content to convert
 
@@ -2167,209 +2341,147 @@ def convert_spec_to_json(yaml_content: str) -> str:
 
 @mcp.tool()
 def upload_experiment(
-    yaml_content: str,
+    lock_content: str,
+    mode: str,
     experiment_id: int | None = None,
     dry_run: bool = True,
-    runner_user_id: int | None = None,
+    deep_verify: bool = False,
 ) -> str:
-    """
-    Convert YAML spec and upload to PrimeMover API.
+    """Upload a LOCK (from compile_experiment_spec or `pmspec compile`) and verify it.
 
-    This tool validates the YAML specification, converts it to API-compatible
-    JSON format, and uploads it to create a new experiment or add crawlers
-    to an existing one.
-
-    Previews by default. Pass dry_run=false to actually upload, and note that
-    writes are refused unless the API target is the local dev server -- the same
-    two rules every pm_ tool follows.
+    Dry-run by default; local-only (the API target must be localhost:8090).
 
     Args:
-        yaml_content: YAML experiment specification
-        experiment_id: Optional experiment ID to add crawlers to (creates new if None)
-        dry_run: Validate and convert without uploading. Defaults to True; pass
-            False to apply.
-        runner_user_id: Which runner executes it: 1 = ex63 (the default when omitted),
-            3 = the runner-only VM. Must be a configured runner account on the API.
-            None means "not supplied", which lets a `runner_user_id` set in the YAML
-            spec's `experiment:` block through; there is no way to force the default
-            runner from this argument alone. Ignored entirely when experiment_id is
-            given -- runner assignment can only be set when an experiment is created.
+        lock_content: a lock, not a spec -- call compile_experiment_spec first
+        mode: 'test' -> VM runner, name becomes 'test-<name>-<date>', dirty commit
+            allowed; 'real' -> as named in the lock, refused without a clean commit
+        experiment_id: append to this experiment instead of creating one
+        dry_run: preview only. Defaults to True; pass False to apply.
+        deep_verify: also compare each queue's jobs/behaviours, not just schedule
+
+    Secrets: ${secret:...} placeholders resolve from PMSPEC_SECRETS_FILE on this host.
 
     Returns:
-        JSON with upload result including experiment ID and crawler count,
-        or validation errors if the spec is invalid
+        JSON with the upload result and a bound-and-identical verify, or an error
     """
+    if mode not in MODES:
+        return json.dumps({"success": False, "error": f"mode must be one of {MODES}"})
+    if not is_lock_document(lock_content):
+        return json.dumps(
+            {"success": False, "error": "not a lock: call compile_experiment_spec first"}
+        )
     try:
-        from datetime import datetime
+        lock = load_lock(lock_content)
+    except LockError as e:
+        return json.dumps({"success": False, "errors": e.errors})
 
-        import requests
-
-        from experiment_designer.spec import SpecConverter, SpecParser
-    except ImportError as e:
-        return json.dumps({"error": f"Required modules not available: {e}"})
-
-    settings = get_settings()
-
-    # Parse and validate
-    parser = SpecParser()
-    parsed = parser.parse(yaml_content)
-
-    if parsed.errors:
-        return json.dumps({"success": False, "errors": parsed.errors, "warnings": parsed.warnings})
-
-    # Convert
-    converter = SpecConverter()
-    result = converter.convert(parsed)
-
-    if result.errors:
-        return json.dumps({"success": False, "errors": result.errors, "warnings": result.warnings})
-
-    # Effective runner assignment: an explicit argument wins over a YAML value;
-    # None means neither source specified one, and the API's default runner applies.
-    effective_runner_id = (
-        runner_user_id if runner_user_id is not None else result.experiment_runner_user_id
-    )
-
-    # A runner assignment can only be set when an experiment is created, never when
-    # appending crawlers to an existing one -- silently dropping it would otherwise
-    # look like it took effect. Surface that here, not just where the create payload
-    # is built, so it shows up in the dry-run preview too.
-    runner_ignored = experiment_id is not None and effective_runner_id is not None
-    ignored_warnings = (
-        [
-            f"runner_user_id={effective_runner_id} ignored: it can only be set when "
-            "creating a new experiment, not when appending to an existing one "
-            "(experiment_id was given)."
-        ]
-        if runner_ignored
-        else []
-    )
-
+    needed = sorted(find_placeholders(lock.crawlers))
     if dry_run:
-        preview: dict[str, Any] = {
-            "success": True,
-            "dry_run": True,
-            "experiment_name": result.experiment_name,
-            "crawler_count": result.crawler_count,
-            "total_jobs": result.total_jobs,
-            "runner_user_id": effective_runner_id,
-            "warnings": result.warnings + ignored_warnings,
-            "to_apply": "call again with dry_run=false",
-        }
-        if runner_ignored:
-            preview["runner_user_id_ignored"] = effective_runner_id
-        return json.dumps(preview)
+        return json.dumps(
+            {
+                "success": True,
+                "dry_run": True,
+                "mode": mode,
+                "experiment_name": lock.experiment["name"],
+                "crawler_count": len(lock.crawlers),
+                "anchor": lock.schedule["anchor"],
+                "git_commit": lock.provenance.git_commit,
+                "secrets_needed": needed,
+                "to_apply": "call again with dry_run=false",
+            }
+        )
 
     # Local-only, like every other write on this surface. Checked here rather
-    # than at the top of the function because the dry-run branch above is pure
-    # local YAML validation and conversion -- it touches no API at all, so it is
-    # useful whatever the configured target is. This is the first line that can
-    # actually change something.
+    # than inside the dry-run branch above, which is pure local validation and
+    # touches no API at all -- this is the first line that can actually change
+    # something, and _McpSession's post_file relies on this having run first.
     guard = _require_local_write_target()
     if guard:
         return json.dumps({"success": False, "error": guard})
 
-    # Get credentials
-    api_url = settings.pm_api_base_url
-    email = settings.pm_api_email
-    password = settings.pm_api_password
-
-    if not all([api_url, email, password]):
-        return json.dumps(
-            {
-                "success": False,
-                "error": "API credentials not configured (PM_API_BASE_URL, PM_API_EMAIL, PM_API_PASSWORD)",
-            }
-        )
-
-    try:
-        # Authenticate
-        auth_response = requests.post(
-            f"{api_url}/login",
-            json={"email": email, "password": password},
-            headers={"Accept": "application/json"},
-        )
-        auth_response.raise_for_status()
-        token = auth_response.json().get("access_token")
-
-        if not token:
+    store = None
+    if needed:
+        try:
+            store = SecretStore.load()
+        except FileNotFoundError:
             return json.dumps(
-                {"success": False, "error": "Authentication failed: no token received"}
+                {
+                    "success": False,
+                    "error": "lock needs secrets but no secrets file exists on this "
+                    "host (PMSPEC_SECRETS_FILE)",
+                }
             )
+        except PermissionError as e:
+            return json.dumps({"success": False, "error": str(e)})
 
-        # Create experiment if needed
-        if not experiment_id:
-            exp_name = (
-                result.experiment_name or f"Experiment {datetime.now().strftime('%Y%m%d_%H%M%S')}"
-            )
+    session = _McpSession()
+    options = UploadOptions(
+        mode=mode, experiment_id=experiment_id, contact="PrimeMover Orchestrator MCP"
+    )
+    try:
+        result = upload_lock(lock_content, session=session, store=store, options=options)
+    except UploadRefused as e:
+        return json.dumps({"success": False, "error": str(e)})
+    except Exception as e:
+        return json.dumps({"success": False, "error": f"Upload failed: {e}"})
 
-            create_payload: dict[str, Any] = {
-                "name": exp_name,
-                "description": result.experiment_description or "Created via MCP",
-                "contact": "PrimeMover Orchestrator MCP",
-                "active": 1,
-            }
-            if effective_runner_id is not None:
-                create_payload["runner_user_id"] = effective_runner_id
-
-            create_response = requests.post(
-                f"{api_url}/experiments",
-                json=create_payload,
-                headers={
-                    "Authorization": f"Bearer {token}",
-                    "Accept": "application/json",
-                    "Content-Type": "application/json",
-                },
-            )
-            create_response.raise_for_status()
-            create_result = create_response.json()
-
-            experiment_id = create_result.get("data", {}).get("id") or create_result.get("id")
-
-            if not experiment_id:
-                return json.dumps(
-                    {"success": False, "error": "Failed to create experiment: no ID returned"}
-                )
-
-        # Upload crawlers
-        upload_response = requests.post(
-            f"{api_url}/experiments/{experiment_id}/upload",
-            files={
-                "json": (
-                    "crawlers.json",
-                    json.dumps(result.json_data, indent=2),
-                    "application/json",
-                )
-            },
-            headers={"Authorization": f"Bearer {token}", "Accept": "application/json"},
-        )
-        upload_response.raise_for_status()
-
-        success: dict[str, Any] = {
+    verdict = verify_lock(
+        lock_content, session=session, experiment_id=result.experiment_id, deep=deep_verify
+    )
+    return json.dumps(
+        {
             "success": True,
-            "experiment_id": experiment_id,
+            "experiment_id": result.experiment_id,
             "experiment_name": result.experiment_name,
             "crawler_count": result.crawler_count,
             "total_jobs": result.total_jobs,
-            "runner_user_id": effective_runner_id,
-            "warnings": result.warnings + ignored_warnings,
+            "mode": result.mode,
+            "runner_user_id": result.runner_user_id,
+            "lock_sha256": result.lock_sha256,
+            "anchor": result.anchor,
+            "record": result.record_line,
+            "verify": {
+                "ok": verdict.ok,
+                "bound": verdict.bound,
+                "differences": [d.__dict__ for d in verdict.differences],
+                "render": verdict.render(),
+            },
         }
-        if runner_ignored:
-            success["runner_user_id_ignored"] = effective_runner_id
-        return json.dumps(success)
+    )
 
-    except requests.exceptions.HTTPError as e:
-        error_detail = ""
-        if hasattr(e, "response") and e.response is not None:
-            try:
-                error_detail = json.dumps(e.response.json())
-            except Exception:
-                error_detail = e.response.text[:500]
-        return json.dumps(
-            {"success": False, "error": f"Upload failed: {e}", "detail": error_detail}
-        )
+
+@mcp.tool()
+def verify_experiment(experiment_id: int, lock_content: str, deep: bool = False) -> str:
+    """Is the live experiment bound to this lock (hash) and structurally identical to it?
+
+    Args:
+        experiment_id: the live experiment to check
+        lock_content: the lock it should match
+        deep: also compare each queue's jobs/behaviours, not just schedule (slower:
+            downloads the experiment export)
+
+    Returns:
+        JSON: {"ok", "bound", "local_sha256", "live_sha256s", "anchor", "differences", "render"}
+    """
+    try:
+        r = verify_lock(lock_content, session=_McpSession(), experiment_id=experiment_id, deep=deep)
+    except LockError as e:
+        return json.dumps({"error": "invalid lock", "errors": e.errors})
     except Exception as e:
-        return json.dumps({"success": False, "error": str(e)})
+        return json.dumps({"error": str(e)})
+    return json.dumps(
+        {
+            "experiment_id": r.experiment_id,
+            "ok": r.ok,
+            "bound": r.bound,
+            "local_sha256": r.local_sha256,
+            "live_sha256s": r.live_sha256s,
+            "anchor": r.anchor,
+            "deep": r.deep,
+            "differences": [d.__dict__ for d in r.differences],
+            "render": r.render(),
+        }
+    )
 
 
 @mcp.tool()
