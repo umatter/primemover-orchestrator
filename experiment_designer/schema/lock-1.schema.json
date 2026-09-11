@@ -8,7 +8,7 @@
     "pmspec_lock": {"const": 1},
     "provenance": {
       "type": "object",
-      "required": ["spec_path", "spec_sha256", "pmspec_version", "compiled_at", "seed"],
+      "required": ["spec_path", "spec_sha256", "pmspec_version", "seed"],
       "additionalProperties": false,
       "properties": {
         "spec_path": {"type": "string"},
@@ -16,7 +16,6 @@
         "generator": {"type": ["string", "null"]},
         "git_commit": {"type": ["string", "null"]},
         "pmspec_version": {"type": "string"},
-        "compiled_at": {"type": "string"},
         "seed": {"type": "integer"},
         "lax": {"type": "boolean"}
       }

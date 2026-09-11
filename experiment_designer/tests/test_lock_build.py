@@ -7,7 +7,7 @@ import pytest
 
 from experiment_designer.lock.build import compile_spec
 from experiment_designer.lock.io import dump_lock
-from experiment_designer.lock.provenance import git_commit
+from experiment_designer.lock.provenance import git_commit, git_toplevel
 
 SPEC = """
 version: "1.0"
@@ -63,8 +63,12 @@ def test_compile_is_byte_deterministic(spec_dir: Path):
     a = _compile(spec_dir)
     b = _compile(spec_dir)
     assert not a.errors and a.lock is not None
-    a.lock.provenance.compiled_at = b.lock.provenance.compiled_at = "fixed"
     assert dump_lock(a.lock) == dump_lock(b.lock)
+
+
+def test_lock_has_no_timestamp(spec_dir: Path):
+    text = dump_lock(_compile(spec_dir).lock)
+    assert "compiled_at" not in text
 
 
 def test_different_seed_changes_draws_not_structure(spec_dir: Path):
@@ -157,6 +161,56 @@ def test_git_commit_reports_dirty(tmp_path: Path):
 
 def test_git_commit_none_outside_a_repo(tmp_path: Path):
     assert git_commit(tmp_path) is None
+
+
+def _git_repo(path: Path) -> None:
+    subprocess.run(["git", "init", "-q", str(path)], check=True)
+    subprocess.run(
+        ["git", "-C", str(path), "-c", "user.email=t@t", "-c", "user.name=t", "add", "-A"],
+        check=True,
+    )
+    subprocess.run(
+        [
+            "git",
+            "-C",
+            str(path),
+            "-c",
+            "user.email=t@t",
+            "-c",
+            "user.name=t",
+            "commit",
+            "-q",
+            "--allow-empty",
+            "-m",
+            "s",
+        ],
+        check=True,
+    )
+
+
+def test_git_toplevel(tmp_path: Path):
+    assert git_toplevel(tmp_path) is None
+    _git_repo(tmp_path)
+    (tmp_path / "design").mkdir()
+    assert git_toplevel(tmp_path / "design") == tmp_path.resolve()
+
+
+def test_spec_path_is_relative_to_the_repo_toplevel(tmp_path: Path, monkeypatch):
+    design = tmp_path / "design"
+    design.mkdir()
+    (design / "outlets.csv").write_text("domain,lean\nnyt.com,L\nfox.com,R\n")
+    spec = design / "spec.yaml"
+    spec.write_text(SPEC)
+    _git_repo(tmp_path)
+
+    monkeypatch.chdir(design)
+    a = compile_spec(SPEC, base_dir=design, spec_path=str(spec.resolve()), seed=42)
+    assert a.lock is not None and a.lock.provenance.spec_path == "design/spec.yaml"
+    assert a.lock.provenance.git_commit and not a.lock.provenance.git_commit.endswith("-dirty")
+
+    monkeypatch.chdir(tmp_path.parent)
+    b = compile_spec(SPEC, base_dir=design, spec_path=str(spec.resolve()), seed=42)
+    assert dump_lock(a.lock) == dump_lock(b.lock)
 
 
 def test_experiment_block_and_runner(spec_dir: Path):

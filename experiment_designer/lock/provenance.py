@@ -31,6 +31,21 @@ def git_commit(path: Path) -> str | None:
     return f"{head}-dirty" if status.strip() else head
 
 
+def git_toplevel(path: Path) -> Path | None:
+    """Root of the repository containing `path`, or None when it is not in one."""
+    try:
+        out = subprocess.run(
+            ["git", "-C", str(path), "rev-parse", "--show-toplevel"],
+            capture_output=True,
+            text=True,
+            check=True,
+            timeout=10,
+        ).stdout.strip()
+    except (subprocess.CalledProcessError, FileNotFoundError, subprocess.TimeoutExpired, OSError):
+        return None
+    return Path(out).resolve() if out else None
+
+
 def pmspec_version() -> str:
     try:
         return metadata.version("primemover-orchestrator")

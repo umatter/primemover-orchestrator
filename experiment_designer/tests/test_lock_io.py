@@ -69,7 +69,6 @@ def make_lock(**overrides) -> Lock:
             generator="build_spec.R",
             git_commit="a2024c9",
             pmspec_version="0.1.0",
-            compiled_at="2026-09-11T14:02:11+02:00",
             seed=42,
         ),
         "experiment": {"name": "Study", "description": "", "runner_user_id": None},

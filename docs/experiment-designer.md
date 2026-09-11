@@ -37,20 +37,24 @@ Claude will generate a YAML spec using the DSL features documented below.
 ### Step 3: Compile to a lock
 
 ```bash
+git add my-study.yaml outlets.csv && git commit -m "study: spec v1"   # spec and pools first
 pmspec compile my-study.yaml --seed 42        # writes my-study.lock.yaml beside it
-git add my-study.yaml my-study.lock.yaml && git commit -m "study: lock v1"
+git add my-study.lock.yaml && git commit -m "study: lock v1"
 ```
+
+The order matters: **commit the spec and its pools, then compile, then commit the
+lock.** The lock records the commit it was compiled from, with a `-dirty` suffix when
+the tree was not clean, and `upload --mode real` refuses a dirty or unknown commit.
 
 The **lock** is the reproducibility artifact: every crawler expanded, every random
 draw fixed by the one seed, every data pool inlined, secrets left as
 `${secret:…}` placeholders, and session starts expressed as offsets from a
 `schedule.anchor`. It is committable by construction — `compile` refuses a literal
-credential — and deterministic: the same spec, pools and seed always produce the same
-crawlers, draws and offsets — only the `compiled_at` line in the provenance header
-differs between runs, so a recompile changes the lock's hash (and therefore its server
-binding) even when nothing else changed; commit the lock you uploaded rather than
-recompiling it. Its header records the spec's sha256, the git commit it was compiled from
-(`-dirty` if the tree was not clean), the generator, the pmspec version and the seed.
+credential — and byte-deterministic: the same spec, pools and seed produce the
+byte-identical lock, from any working directory, so its sha256 (the server-side binding)
+only changes when an input does. Its header records the spec's path relative to the
+repository root, the spec's sha256, the git commit it was compiled from, the generator,
+the pmspec version and the seed; there is no timestamp.
 
 ### Step 4: Upload the lock
 
@@ -124,7 +128,7 @@ spec; `pmspec validate my.lock.yaml` checks it against
 
 ```yaml
 pmspec_lock: 1
-provenance: {spec_path, spec_sha256, generator, git_commit, pmspec_version, compiled_at, seed, lax}
+provenance: {spec_path, spec_sha256, generator, git_commit, pmspec_version, seed, lax}
 experiment: {name, description, runner_user_id}
 schedule: {anchor: upload | "YYYY-MM-DDTHH:MM:SS"}   # Europe/Zurich wall clock
 crawlers:            # the API upload shape, except:

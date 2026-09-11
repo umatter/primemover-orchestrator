@@ -101,8 +101,7 @@ provenance:
   generator: code/design/build_spec.R       # free text: `experiment.generator` in the spec, or --generator
   git_commit: a2024c9                       # HEAD of the repo containing the spec; "-dirty" suffix if unclean
   pmspec_version: 0.2.0
-  compiled_at: "2026-09-11T14:02:11+02:00"
-  seed: 42                                  # the one seed
+  seed: 42                                  # the one seed; no timestamp, so the bytes are deterministic
   lax: false                                # true only when compiled with --lax (§4)
 experiment:
   name: Autocompleted (Mis-)Information
@@ -175,7 +174,9 @@ deterministic given `(spec bytes, pool bytes, seed)`:
    `{var}`; gather provenance: `git -C <spec repo> rev-parse --short HEAD` plus
    `git status --porcelain` for the dirty flag (no git → `git_commit: null`, and upload
    in `real` mode refuses, §5), `importlib.metadata.version("primemover-orchestrator")`,
-   sha256 of the spec bytes, `datetime.now(API_TIMEZONE)`.
+   sha256 of the spec bytes, and the spec path relative to that repo's toplevel
+   (`git rev-parse --show-toplevel`; relative to the cwd when there is no repo). No
+   timestamp: the lock's bytes depend on nothing but its inputs.
 4. **Serialize** canonically (§1).
 
 Existing commands are re-based on the lock rather than duplicated:

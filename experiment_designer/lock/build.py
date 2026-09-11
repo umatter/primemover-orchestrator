@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -12,7 +13,7 @@ from experiment_designer.spec.parser import SpecParser
 from .anchor import AnchorError, derive_anchor
 from .io import sha256_text
 from .model import Lock, Provenance
-from .provenance import git_commit, now_iso, pmspec_version
+from .provenance import git_commit, git_toplevel, pmspec_version
 from .secrets import find_literal_credentials
 
 
@@ -21,6 +22,20 @@ class CompileResult:
     lock: Lock | None
     errors: list[str] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
+
+
+def recorded_spec_path(spec_path: str, repo_dir: Path) -> str:
+    """The spec path as the lock records it: relative to the spec repo's toplevel,
+    so the same spec compiled from any cwd (or any checkout) yields the same bytes;
+    relative to the cwd when there is no repo; as given otherwise."""
+    resolved = Path(spec_path).resolve()
+    top = git_toplevel(repo_dir)
+    if top is not None and resolved.is_relative_to(top):
+        return os.path.relpath(resolved, top)
+    cwd = Path.cwd().resolve()
+    if resolved.is_relative_to(cwd):
+        return os.path.relpath(resolved, cwd)
+    return spec_path
 
 
 def compile_spec(
@@ -87,13 +102,13 @@ def compile_spec(
             queue.clear()
             queue.update(ordered)
 
+    repo_dir = git_root or base_dir
     provenance = Provenance(
-        spec_path=spec_path,
+        spec_path=recorded_spec_path(spec_path, repo_dir),
         spec_sha256=sha256_text(spec_text),
         generator=generator or parsed.experiment.get("generator"),
-        git_commit=git_commit(git_root or base_dir),
+        git_commit=git_commit(repo_dir),
         pmspec_version=pmspec_version(),
-        compiled_at=now_iso(),
         seed=int(effective_seed),
         lax=lax,
     )

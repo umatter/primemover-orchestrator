@@ -20,7 +20,6 @@ class Provenance:
     generator: str | None
     git_commit: str | None
     pmspec_version: str
-    compiled_at: str
     seed: int
     lax: bool = False
 
