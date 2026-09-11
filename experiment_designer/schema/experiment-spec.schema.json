@@ -58,6 +58,10 @@
         "runner_user_id": {
           "type": "integer",
           "description": "Runner account that executes this experiment; omit for the default runner (1 = ex63). 3 = the runner-only VM."
+        },
+        "generator": {
+          "type": "string",
+          "description": "Free-text provenance: what produced this spec"
         }
       }
     },
