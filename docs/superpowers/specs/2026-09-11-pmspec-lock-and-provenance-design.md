@@ -232,8 +232,8 @@ The write-guard AST test (`test_mcp_write_guard.py`) covers the new tools automa
 
 Reads **locks only**. Given a spec, it compiles to the sibling `<stem>.lock.yaml` first,
 uploads that, and prints "commit `<lock>`" — there is never an upload whose lock does not
-exist on disk. `--mode` is required (phase 3 defines it; until phase 3 lands it accepts
-only `real` and does nothing but stamp the preference).
+exist on disk. `--mode` is required and lands in phase 1 with the full §5 semantics (it is
+a few lines once the uploader exists).
 
 1. Load and schema-validate the lock. Refuse if `provenance.git_commit` is null or ends in
    `-dirty`, unless `--allow-dirty`.
@@ -250,8 +250,8 @@ only `real` and does nothing but stamp the preference).
    *appends*; the request also requires `name` and `user_id`, so the PUT resends the
    experiment's current values unchanged.) Then the existing multipart
    `POST /experiments/{id}/upload`.
-5. Run `verify` (below) on the result. Exit 1 on any mismatch; the experiment is left in
-   place and the diff is printed.
+5. Run `verify` (below) on the result (shallow; `--deep` to include jobs). Exit 1 on any
+   mismatch; the experiment is left in place and the diff is printed.
 6. Print one line and append it to `--record FILE` if given:
    `2026-09-11T14:10:03+02:00 exp=181 mode=test lock=9f3a… commit=a2024c9 api=localhost:8090`.
 
@@ -282,15 +282,22 @@ provenance with no API change. The GUI shows nothing until a panel is added; out
 1. **Binding.** sha256 of the local lock bytes ∈ the live `pmspec.lock_sha256` values →
    `BOUND`; else `UNBOUND`, reporting the local hash and every server-side hash. The
    usual cause is an edited-and-recompiled lock.
-2. **Structure.** Build an `ExperimentSummary` from the lock (anchor taken from the live
-   `pmspec.anchor`, secrets masked as their placeholders) and from the API
-   (`SummaryGenerator.from_api`, extended to load queues, jobs and behaviours), then diff
+2. **Structure.** Build a normalized *shape* from the lock (anchor taken from the live
+   `pmspec.anchor`, secrets masked as their placeholders) and from the API, then diff
    crawler-by-crawler matched on `name`: `configuration.params`, configuration
    preferences, agent location, proxy `type`/`hostname`/`port` (never credentials), queue
-   count, and per queue `start_at` and the ordered job list (type + behaviours). Ignored:
-   server-generated ids, timestamps, status fields, and the runner-populated fields.
-   `summary/comparator.py` gains the crawler-level and queue-level comparison; the
-   existing summary-level comparison stays.
+   count, and per queue `start_at` and — with `--deep` — the ordered job list (type +
+   behaviours). Ignored: server-generated ids, timestamps, status fields, and the
+   runner-populated fields. The shape builders and the diff live in
+   `experiment_designer/lock/verify.py`; the existing summary-level comparator is unchanged.
+
+   The live side has no single endpoint for the tree, so the reads are: `GET
+   experiments/{id}` (crawlers, agent, proxy, configuration preferences, experiment
+   preferences), `GET configurations/{id}` per crawler (params), the two paginated
+   `experiments/{id}/queues-*` lists (name, start, crawler), and for `--deep` the
+   `GET experiments/{id}/download` export — four CSVs carrying every job and behaviour in
+   one request. Deep is opt-in because each export writes a zip into the API's own bucket;
+   the post-upload verify is shallow unless `--deep` is passed.
 3. **Output.** `BOUND`/`UNBOUND`, then the grouped diff. Exit 0 only if bound and
    identical. `verify` says nothing about execution; that is `status` (§5).
 
