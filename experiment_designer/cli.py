@@ -10,7 +10,9 @@ Commands:
     pmspec generate <file.yaml|.lock.yaml>  Convert to API JSON
     pmspec preview <file.yaml>        Preview design expansion
     pmspec summary <file.yaml>        Generate experiment summary
-    pmspec upload <file.yaml>         Upload to API
+    pmspec upload <file.yaml|.lock.yaml>  Upload a lock (compiling a spec first) and verify it
+    pmspec verify <exp_id> <lock>     Check a live experiment is bound to, and identical to, a lock
+    pmspec secrets check <lock>       List a lock's secret placeholders and which are missing
     pmspec schema jobs                List all job types
     pmspec schema job <type>          Show job type details
 """
@@ -18,7 +20,6 @@ Commands:
 import json
 import sys
 from pathlib import Path
-from typing import Any
 
 # Load .env file if present
 try:
@@ -34,10 +35,13 @@ except ImportError:
     print("Error: 'click' package is required. Install with: pip install click")
     sys.exit(1)
 
+from .lock.api import ApiError, ApiSession
 from .lock.build import compile_spec
 from .lock.io import LockError, dump_lock, is_lock_document, load_lock
 from .lock.resolve import resolve_for_upload
-from .lock.secrets import SecretStore, find_placeholders
+from .lock.secrets import InsecureSecretsFile, MissingSecret, SecretStore, find_placeholders
+from .lock.upload import MODES, UploadOptions, UploadRefused, upload_lock
+from .lock.verify import verify_lock
 from .spec.converter import SpecConverter
 from .spec.design_expander import DesignExpander
 from .spec.job_registry import JobRegistry
@@ -278,203 +282,176 @@ def generate(file: str, output: str | None, pretty: bool, seed: int | None, reso
         click.echo(json_output)
 
 
-@cli.command()
-@click.argument("file", type=click.Path(exists=True))
-@click.option("--experiment-id", "-e", type=int, help="Add to existing experiment ID")
-@click.option("--dry-run", is_flag=True, help="Validate and convert without uploading")
-@click.option("--api-url", envvar="PM_API_BASE_URL", help="API base URL")
-@click.option("--email", envvar="PM_API_USERNAME", help="API username/email")
-@click.option("--password", envvar="PM_API_PASSWORD", help="API password")
-@click.option("--seed", "-s", type=int, help="Random seed for reproducible randomization")
-def upload(
-    file: str,
-    experiment_id: int | None,
-    dry_run: bool,
-    api_url: str | None,
-    email: str | None,
-    password: str | None,
-    seed: int | None,
-):
-    """Upload experiment spec to PrimeMover API.
-
-    Validates the YAML spec, converts to JSON, and uploads to the API.
-    Use --dry-run to validate without uploading.
-
-    Set PM_API_BASE_URL, PM_API_USERNAME, and PM_API_PASSWORD environment
-    variables or use the --api-url, --email, --password options.
-
-    Use --seed for reproducible file selections and parameter distributions.
-    """
+def _session_from_env() -> ApiSession:
     import os
 
-    # Robust fallbacks for credentials from environment
-    # Click's envvar doesn't always work reliably, so check os.getenv directly
-    if not api_url:
-        api_url = os.getenv("PM_API_BASE_URL")
-    if not email:
-        email = os.getenv("PM_API_USERNAME") or os.getenv("PM_API_EMAIL")
-    if not password:
-        password = os.getenv("PM_API_PASSWORD")
-
-    file_path = Path(file)
-    base_dir = file_path.parent
-
-    with open(file) as f:
-        content = f.read()
-
-    # Parse and validate
-    parser = SpecParser(base_dir=base_dir, seed=seed)
-    parsed = parser.parse(content)
-
-    if parsed.errors:
-        click.secho("Validation FAILED", fg="red", bold=True)
-        for error in parsed.errors:
-            click.secho(f"  {error}", fg="red")
-        sys.exit(1)
-
-    # Convert to JSON
-    converter = SpecConverter()
-    result = converter.convert(parsed)
-
-    if result.errors:
-        click.secho("Conversion FAILED", fg="red", bold=True)
-        for error in result.errors:
-            click.secho(f"  {error}", fg="red")
-        sys.exit(1)
-
-    if result.warnings:
-        for warning in result.warnings:
-            click.secho(f"  WARNING: {warning}", fg="yellow")
-
-    click.echo()
-    click.echo(f"Experiment: {result.experiment_name}")
-    click.echo(f"Crawlers:   {result.crawler_count}")
-    click.echo(f"Jobs:       {result.total_jobs}")
-    runner_id = result.experiment_runner_user_id
-    if experiment_id is not None and runner_id is not None:
-        click.echo(f"Runner:     {runner_id} (ignored: appending to existing experiment)")
-        click.secho(
-            "  WARNING: runner_user_id is ignored because you are appending to an "
-            "existing experiment (--experiment-id); it can only be set when the "
-            "experiment is created.",
-            fg="yellow",
-        )
-    else:
-        click.echo(f"Runner:     {runner_id if runner_id is not None else 'default'}")
-    click.echo()
-
-    if dry_run:
-        click.secho("Dry run - not uploading", fg="cyan")
-        click.echo("Use 'pmspec generate' to save JSON file")
-        sys.exit(0)
-
-    # Check credentials
+    api_url = os.getenv("PM_API_BASE_URL")
+    email = os.getenv("PM_API_USERNAME") or os.getenv("PM_API_EMAIL")
+    password = os.getenv("PM_API_PASSWORD")
     if not all([api_url, email, password]):
         click.secho("API credentials not configured", fg="red")
-        click.echo()
         click.echo("Set environment variables:")
         click.echo("  PM_API_BASE_URL=http://localhost:8090/api/v1")
         click.echo("  PM_API_USERNAME=admin@primemover.example")
         click.echo("  PM_API_PASSWORD=password")
-        click.echo()
-        click.echo("Or use --api-url, --email, --password options")
         sys.exit(1)
+    return ApiSession(str(api_url), str(email), str(password))
 
-    # Upload to API
+
+def _load_store(path: str | None) -> SecretStore | None:
     try:
-        import requests
+        return SecretStore.load(Path(path) if path else None)
+    except FileNotFoundError:
+        return None
+    except InsecureSecretsFile as e:
+        click.secho(f"Refusing secrets file: {e}", fg="red")
+        sys.exit(1)
 
-        # Authenticate
-        click.echo("Authenticating...")
-        auth_response = requests.post(
-            f"{api_url}/login",
-            json={"email": email, "password": password},
-            headers={"Accept": "application/json"},
-        )
-        auth_response.raise_for_status()
-        token = auth_response.json().get("access_token")
 
-        if not token:
-            click.secho("Authentication failed: no token received", fg="red")
-            sys.exit(1)
+def _lock_text_for(file: str, seed: int | None) -> str:
+    """A lock's text; a spec is compiled to its sibling lock first."""
+    file_path = Path(file)
+    content = file_path.read_text()
+    if is_lock_document(content):
+        return content
+    result = compile_spec(content, base_dir=file_path.parent, spec_path=str(file_path), seed=seed)
+    if result.lock is None:
+        click.secho("Compile FAILED", fg="red", bold=True)
+        for error in result.errors:
+            click.secho(f"  ERROR: {error}", fg="red")
+        sys.exit(1)
+    lock_path = file_path.with_name(f"{file_path.stem}.lock.yaml")
+    text = dump_lock(result.lock)
+    lock_path.write_text(text)
+    click.secho(
+        f"Compiled {lock_path} -- commit it: this hash is what the server records", fg="cyan"
+    )
+    return text
 
-        # Step 1: If no experiment_id, create a new experiment first
-        if not experiment_id:
-            click.echo("Creating new experiment...")
-            from datetime import datetime
 
-            exp_name = (
-                result.experiment_name or f"Experiment {datetime.now().strftime('%Y%m%d_%H%M%S')}"
-            )
+def _secrets_report(lock_text: str, store: SecretStore | None) -> list[str]:
+    """Print referenced keys with OK/MISSING; return the missing ones."""
+    needed = sorted(find_placeholders(load_lock(lock_text).crawlers))
+    if not needed:
+        click.echo("Secrets: none referenced")
+        return []
+    missing = store.missing(needed) if store else list(needed)
+    click.echo(f"Secrets ({store.source if store else 'no store found'}):")
+    for key in needed:
+        click.echo(f"  {'MISSING' if key in missing else 'OK':7} {key}")
+    return missing
 
-            create_payload: dict[str, Any] = {
-                "name": exp_name,
-                "description": result.experiment_description
-                or "Created via experiment designer CLI",
-                "contact": "Experiment Designer CLI",
-                "active": 1,
-            }
-            if result.experiment_runner_user_id is not None:
-                create_payload["runner_user_id"] = result.experiment_runner_user_id
 
-            create_response = requests.post(
-                f"{api_url}/experiments",
-                json=create_payload,
-                headers={
-                    "Authorization": f"Bearer {token}",
-                    "Accept": "application/json",
-                    "Content-Type": "application/json",
-                },
-            )
-            create_response.raise_for_status()
-            create_result = create_response.json()
+@cli.command()
+@click.argument("file", type=click.Path(exists=True))
+@click.option(
+    "--mode",
+    type=click.Choice(MODES),
+    required=True,
+    help="test = VM runner, test- name prefix; real = as in the lock",
+)
+@click.option("--experiment-id", "-e", type=int, help="Append crawlers to an existing experiment")
+@click.option("--dry-run", is_flag=True)
+@click.option("--record", type=click.Path(), help="Append the one-line upload record to this file")
+@click.option("--allow-dirty", is_flag=True)
+@click.option("--allow-past", is_flag=True)
+@click.option(
+    "--deep", is_flag=True, help="Post-upload verify down to jobs and behaviours (uses the export)"
+)
+@click.option(
+    "--secrets",
+    "secrets_path",
+    type=click.Path(),
+    help="Secrets TOML (default: $PMSPEC_SECRETS_FILE or ~/.config/primemover/secrets.toml)",
+)
+@click.option("--seed", "-s", type=int, help="Only when FILE is a spec: the seed to compile with")
+def upload(
+    file: str,
+    mode: str,
+    experiment_id: int | None,
+    dry_run: bool,
+    record: str | None,
+    allow_dirty: bool,
+    allow_past: bool,
+    deep: bool,
+    secrets_path: str | None,
+    seed: int | None,
+) -> None:
+    """Upload a lock (or compile a spec, then upload the lock) and verify the result."""
+    lock_text = _lock_text_for(file, seed)
+    store = _load_store(secrets_path)
+    missing = _secrets_report(lock_text, store)
+    if missing:
+        click.secho(f"{len(missing)} secret(s) missing", fg="red")
+        sys.exit(1)
+    if dry_run:
+        click.secho("Dry run - not uploading", fg="cyan")
+        sys.exit(0)
 
-            # Extract experiment ID from response (may be nested in 'data')
-            experiment_id = create_result.get("data", {}).get("id") or create_result.get("id")
-
-            if not experiment_id:
-                click.secho("Failed to create experiment: no ID returned", fg="red")
-                click.echo(f"Response: {json.dumps(create_result, indent=2)}")
-                sys.exit(1)
-
-            click.echo(f"Created experiment: {exp_name} (ID: {experiment_id})")
-        else:
-            click.echo(f"Adding to experiment {experiment_id}...")
-
-        # Step 2: Upload crawlers to the experiment using multipart form data
-        click.echo("Uploading crawlers...")
-
-        # Convert to JSON string for file upload
-        json_content = json.dumps(result.json_data, indent=2)
-
-        upload_response = requests.post(
-            f"{api_url}/experiments/{experiment_id}/upload",
-            files={"json": ("crawlers.json", json_content, "application/json")},
-            headers={"Authorization": f"Bearer {token}", "Accept": "application/json"},
-        )
-        upload_response.raise_for_status()
-
-        click.echo()
-        click.secho("Upload SUCCESS", fg="green", bold=True)
-        click.echo(f"Experiment ID: {experiment_id}")
-        click.echo(f"Crawlers created: {result.crawler_count}")
-
-    except requests.exceptions.HTTPError as e:
+    session = _session_from_env()
+    options = UploadOptions(
+        mode=mode, experiment_id=experiment_id, allow_dirty=allow_dirty, allow_past=allow_past
+    )
+    try:
+        result = upload_lock(lock_text, session=session, store=store, options=options)
+    except (UploadRefused, MissingSecret) as e:
+        click.secho(f"Refused: {e}", fg="red")
+        sys.exit(1)
+    except ApiError as e:
         click.secho(f"Upload failed: {e}", fg="red")
-        # Show response body for debugging
-        if hasattr(e, "response") and e.response is not None:
-            try:
-                error_detail = e.response.json()
-                click.echo(f"API Error: {json.dumps(error_detail, indent=2)}")
-            except Exception:
-                click.echo(f"Response: {e.response.text[:1000]}")
+        if e.detail:
+            click.echo(f"  {e.detail}")
         sys.exit(1)
-    except requests.exceptions.RequestException as e:
-        click.secho(f"Request failed: {e}", fg="red")
+
+    click.secho("Upload SUCCESS", fg="green", bold=True)
+    click.echo(
+        f"Experiment ID: {result.experiment_id}  ({result.experiment_name}, mode={result.mode})"
+    )
+    click.echo(
+        f"Crawlers: {result.crawler_count}  Jobs: {result.total_jobs}  Anchor: {result.anchor}"
+    )
+
+    verdict = verify_lock(lock_text, session=session, experiment_id=result.experiment_id, deep=deep)
+    click.echo(verdict.render())
+    if record:
+        with open(record, "a") as f:
+            f.write(result.record_line + "\n")
+    click.echo(result.record_line)
+    sys.exit(0 if verdict.ok else 1)
+
+
+@cli.command()
+@click.argument("experiment_id", type=int)
+@click.argument("lock", type=click.Path(exists=True))
+@click.option(
+    "--deep", is_flag=True, help="Also compare jobs and behaviours (uses the experiment export)"
+)
+def verify(experiment_id: int, lock: str, deep: bool) -> None:
+    """Check that a live experiment is bound to, and identical to, a lock."""
+    session = _session_from_env()
+    try:
+        result = verify_lock(
+            Path(lock).read_text(), session=session, experiment_id=experiment_id, deep=deep
+        )
+    except ApiError as e:
+        click.secho(f"Verify failed: {e}", fg="red")
         sys.exit(1)
-    except Exception as e:
-        click.secho(f"Error: {e}", fg="red")
-        sys.exit(1)
+    click.echo(result.render())
+    sys.exit(0 if result.ok else 1)
+
+
+@cli.group()
+def secrets() -> None:
+    """Secret placeholders in locks."""
+
+
+@secrets.command("check")
+@click.argument("lock", type=click.Path(exists=True))
+@click.option("--secrets", "secrets_path", type=click.Path())
+def secrets_check(lock: str, secrets_path: str | None) -> None:
+    """List the secrets a lock references and which are missing from the store."""
+    missing = _secrets_report(Path(lock).read_text(), _load_store(secrets_path))
+    sys.exit(1 if missing else 0)
 
 
 @cli.command()
