@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import csv
 import io
+import json
 import zipfile
 from collections import defaultdict
 from dataclasses import dataclass, field
@@ -16,6 +17,7 @@ from .io import load_lock, sha256_text
 from .model import Lock
 
 _PARAM_COLUMNS = ("pi", "psi", "alpha", "tau", "kappa", "beta")
+_PAGE_SIZE = 500
 
 
 @dataclass(frozen=True)
@@ -34,6 +36,9 @@ class VerifyResult:
     anchor: str | None
     differences: list[Difference] = field(default_factory=list)
     deep: bool = False
+    # Append mode (`upload --experiment-id`) adds crawlers to an experiment that
+    # already has some from an earlier lock; those are not this lock's business.
+    extra_live_crawlers: list[str] = field(default_factory=list)
 
     @property
     def ok(self) -> bool:
@@ -48,6 +53,13 @@ class VerifyResult:
             lines.append(f"UNBOUND  local lock {self.local_sha256[:12]}; server has {live}")
         if self.anchor:
             lines.append(f"anchor {self.anchor}")
+        else:
+            lines.append("no pmspec.anchor on the server: start times not compared")
+        if self.extra_live_crawlers:
+            names = ", ".join(self.extra_live_crawlers)
+            lines.append(
+                f"note: {len(self.extra_live_crawlers)} live crawler(s) not in this lock: {names}"
+            )
         if self.differences:
             lines.append(f"structure: {len(self.differences)} difference(s)")
         else:
@@ -71,8 +83,16 @@ def _params(raw: dict[str, Any] | None) -> dict[str, Any]:
         if raw.get(k) is not None:
             out[k] = _num(raw[k])
     for k in ("search_terms", "media_outlet_urls"):
-        if raw.get(k):
-            out[k] = list(raw[k])
+        value = raw.get(k)
+        if isinstance(value, str):
+            # The API's Param model casts search_terms to an array but serves
+            # media_outlet_urls as the JSON string it is stored as.
+            try:
+                value = json.loads(value)
+            except ValueError:
+                pass
+        if value:
+            out[k] = list(value) if isinstance(value, (list, tuple)) else value
     return out
 
 
@@ -115,14 +135,19 @@ def lock_shape(lock: Lock, anchor_dt: datetime, *, deep: bool) -> dict[str, Any]
 
 
 def _paginate(session: Any, path: str) -> list[dict[str, Any]]:
+    """Every row of a paginated listing.
+
+    Both real sessions unwrap ``data`` before returning, so the page's ``meta``
+    (and its ``last_page``) never reaches this function: a page is a plain list,
+    and the listing ends at the first page shorter than what was asked for."""
     rows: list[dict[str, Any]] = []
     page = 1
     while True:
-        body = session.get(path, params={"per_page": 500, "page": page})
+        body = session.get(path, params={"per_page": _PAGE_SIZE, "page": page})
         data = body.get("data", body) if isinstance(body, dict) else body
+        data = list(data or [])
         rows.extend(data)
-        last = (body.get("meta") or {}).get("last_page", 1) if isinstance(body, dict) else 1
-        if page >= int(last):
+        if len(data) < _PAGE_SIZE:
             return rows
         page += 1
 
@@ -213,6 +238,33 @@ def compare_shapes(expected: Any, actual: Any, path: str = "") -> list[Differenc
     return diffs
 
 
+def _live_anchor(prefs: list[dict[str, Any]], local_sha: str) -> str | None:
+    """The anchor that goes with this lock's upload.
+
+    Each upload writes its provenance preferences with the same ``description``
+    label ("upload 1", "upload 2", ...), so the anchor to resolve this lock's
+    offsets against is the one labelled like the ``pmspec.lock_sha256`` entry
+    that matches it. Unbound, the last anchor written is the best guess."""
+    anchors = [p for p in prefs if p.get("name") == "pmspec.anchor"]
+    if not anchors:
+        return None
+    labels = {
+        p.get("description")
+        for p in prefs
+        if p.get("name") == "pmspec.lock_sha256" and p.get("value") == local_sha
+    }
+    for p in reversed(anchors):
+        if p.get("description") in labels:
+            return str(p["value"])
+    return str(anchors[-1]["value"])
+
+
+def _drop_start_times(shape: dict[str, Any]) -> None:
+    for entry in shape["crawlers"].values():
+        for queue in entry["queues"]:
+            queue.pop("start_at", None)
+
+
 def verify_lock(
     lock_text: str, *, session: Any, experiment_id: int, deep: bool = False
 ) -> VerifyResult:
@@ -221,8 +273,7 @@ def verify_lock(
     actual, exp = live_shape(session, experiment_id, deep=deep)
     prefs = exp.get("preferences", [])
     live_shas = [p["value"] for p in prefs if p.get("name") == "pmspec.lock_sha256"]
-    anchors = [p["value"] for p in prefs if p.get("name") == "pmspec.anchor"]
-    anchor_iso = anchors[-1] if anchors else None
+    anchor_iso = _live_anchor(prefs, local_sha)
     anchor_dt = (
         resolve_anchor(anchor_iso[:19]) if anchor_iso else resolve_anchor(lock.schedule["anchor"])
     )
@@ -230,6 +281,19 @@ def verify_lock(
     # Queue order inside a crawler: lock order vs. live sorted by start; sort the lock side too.
     for entry in expected["crawlers"].values():
         entry["queues"].sort(key=lambda q: (q["start_at"], q["name"]))
+    if anchor_iso is None:
+        # Without the server's anchor the lock's offsets resolve to nothing
+        # comparable; the rest of the structure still is.
+        _drop_start_times(expected)
+        _drop_start_times(actual)
+    # Only this lock's crawlers are compared: in append mode the experiment
+    # legitimately holds crawlers from earlier uploads.
+    extra = sorted(set(actual["crawlers"]) - set(expected["crawlers"]))
+    actual = {
+        "crawlers": {
+            name: c for name, c in actual["crawlers"].items() if name in expected["crawlers"]
+        }
+    }
     return VerifyResult(
         experiment_id=experiment_id,
         bound=local_sha in live_shas,
@@ -238,4 +302,5 @@ def verify_lock(
         anchor=anchor_iso,
         differences=compare_shapes(expected, actual),
         deep=deep,
+        extra_live_crawlers=extra,
     )

@@ -2494,7 +2494,9 @@ def verify_experiment(experiment_id: int, lock_content: str, deep: bool = False)
             downloads the experiment export)
 
     Returns:
-        JSON: {"ok", "bound", "local_sha256", "live_sha256s", "anchor", "differences", "render"}
+        JSON: {"ok", "bound", "local_sha256", "live_sha256s", "anchor", "differences",
+        "extra_live_crawlers", "render"}. Only the lock's own crawlers are compared;
+        crawlers the experiment holds from other uploads are listed, not diffed.
     """
     try:
         r = verify_lock(lock_content, session=_McpSession(), experiment_id=experiment_id, deep=deep)
@@ -2513,6 +2515,7 @@ def verify_experiment(experiment_id: int, lock_content: str, deep: bool = False)
             "anchor": r.anchor,
             "deep": r.deep,
             "differences": [d.__dict__ for d in r.differences],
+            "extra_live_crawlers": r.extra_live_crawlers,
             "render": r.render(),
         }
     )
