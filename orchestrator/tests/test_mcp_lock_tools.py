@@ -63,6 +63,35 @@ def test_compile_records_no_commit_and_a_placeholder_path(monkeypatch, tmp_path)
     assert "git_commit: null" in out["lock"] and "spec_path: <mcp>" in out["lock"]
 
 
+def test_compile_records_client_supplied_provenance():
+    """The spec lives on the caller's machine; the caller knows its commit and path.
+    Passed in, they are recorded verbatim so a `real` upload of the lock is possible."""
+    out = json.loads(
+        s.compile_experiment_spec(
+            SPEC,
+            files=FILES,
+            seed=5,
+            git_commit="a2024c9",
+            spec_path="design/experiment_spec.yaml",
+        )
+    )
+    assert "git_commit: a2024c9" in out["lock"]
+    assert "spec_path: design/experiment_spec.yaml" in out["lock"]
+    assert out["git_commit"] == "a2024c9"
+
+
+def test_compile_refuses_a_malformed_client_commit():
+    out = json.loads(s.compile_experiment_spec(SPEC, files=FILES, seed=5, git_commit="not a sha"))
+    assert "errors" in out and any("git_commit" in e for e in out["errors"])
+
+
+def test_compile_records_a_dirty_client_commit_as_dirty():
+    out = json.loads(
+        s.compile_experiment_spec(SPEC, files=FILES, seed=5, git_commit="a2024c9-dirty")
+    )
+    assert "git_commit: a2024c9-dirty" in out["lock"]
+
+
 def test_compile_without_files_reports_the_missing_pool():
     out = json.loads(s.compile_experiment_spec(SPEC, seed=5))
     assert "errors" in out and any("outlets.csv" in e for e in out["errors"])

@@ -140,9 +140,14 @@ crawlers:            # the API upload shape, except:
 
 Through the MCP: `compile_experiment_spec(yaml_content, files={"pool.csv": "<content>"}, seed=…)`
 returns the lock text; `upload_experiment(lock_content, mode=…)` and
-`verify_experiment(experiment_id, lock_content)` take it from there. A lock compiled through the
-MCP carries no git commit (the repo is not on that host), so a `real` upload needs the CLI in the
-committed repo.
+`verify_experiment(experiment_id, lock_content)` take it from there. The MCP cannot see the
+repo the spec lives in, so provenance is the caller's to supply: pass
+`git_commit="<short HEAD>"` (suffix `-dirty` if the tree is not clean) and
+`spec_path="design/spec.yaml"` and the lock records them verbatim; without them it records
+`git_commit: null` and a `real` upload is refused. The complete loop from a laptop session is
+therefore: commit the spec and pools → `compile_experiment_spec(…, git_commit=…, spec_path=…)` →
+write the returned lock into the repo and commit it → `upload_experiment(lock, mode=…)` →
+`verify_experiment`.
 
 ## Installation
 

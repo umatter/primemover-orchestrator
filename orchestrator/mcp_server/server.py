@@ -2099,6 +2099,11 @@ def get_lambda_recent_errors(time_range: str = "24h", limit: int = 20) -> str:
 # =============================================================================
 
 
+# What compile_experiment_spec accepts as a caller-supplied commit: a short or
+# full hex SHA, optionally "-dirty" as the pmspec CLI records it.
+_CLIENT_COMMIT_RE = _re.compile(r"[0-9a-f]{7,40}(-dirty)?")
+
+
 @mcp.tool()
 def compile_experiment_spec(
     yaml_content: str,
@@ -2107,15 +2112,21 @@ def compile_experiment_spec(
     anchor: str | None = None,
     generator: str | None = None,
     lax: bool = False,
+    git_commit: str | None = None,
+    spec_path: str | None = None,
 ) -> str:
     """Compile a YAML spec into a lock: the self-contained, committable artifact
     upload_experiment and verify_experiment read.
 
-    No git commit is recorded: this compiles from content in a temporary
-    directory, not from a checkout, so ``provenance.git_commit`` is null and
-    ``spec_path`` is the placeholder ``<mcp>``. That means a `real`-mode
-    ``upload_experiment`` of an MCP-compiled lock is refused; compile with the
-    pmspec CLI in the committed repo instead, so the lock carries a real commit.
+    Provenance is the caller's to supply. This compiles from content in a
+    temporary directory, not from a checkout, so it cannot see the repo the
+    spec lives in: without ``git_commit`` the lock records ``git_commit: null``
+    and ``spec_path: <mcp>``, and a `real`-mode ``upload_experiment`` of it is
+    refused. Pass the spec repo's HEAD (``git rev-parse --short HEAD``, with a
+    ``-dirty`` suffix if ``git status --porcelain`` is non-empty) and the spec's
+    path relative to that repo, and the lock records them verbatim -- the same
+    facts the pmspec CLI would have gathered itself. A commit is a claim the
+    caller makes; `verify` checks the lock hash, not the commit.
 
     Args:
         yaml_content: the spec
@@ -2125,10 +2136,23 @@ def compile_experiment_spec(
         anchor: 'upload' or a Europe/Zurich wall-clock ISO time; default derived from the spec
         generator: free-text provenance ("code/design/build_spec.R")
         lax: downgrade strict-contract errors to warnings (recorded in the lock)
+        git_commit: the spec repo's short HEAD, optionally suffixed "-dirty"
+        spec_path: the spec's path relative to that repo's root
 
     Returns:
-        JSON: {"lock": <text>, "crawler_count", "seed", "anchor", "warnings"} or {"errors": [...]}
+        JSON: {"lock": <text>, "crawler_count", "seed", "anchor", "git_commit",
+        "spec_path", "warnings"} or {"errors": [...]}
     """
+    if git_commit is not None and not _CLIENT_COMMIT_RE.fullmatch(git_commit):
+        return json.dumps(
+            {
+                "errors": [
+                    f"git_commit {git_commit!r} is not a short or full SHA "
+                    "(optionally suffixed '-dirty')"
+                ],
+                "warnings": [],
+            }
+        )
     with _materialise_files(files) as tmp:
         result = compile_spec(
             yaml_content,
@@ -2142,15 +2166,18 @@ def compile_experiment_spec(
         )
     if result.lock is None:
         return json.dumps({"errors": result.errors, "warnings": result.warnings})
-    # Whatever the temp dir's parent happens to be, this lock came from no checkout.
-    result.lock.provenance.git_commit = None
-    result.lock.provenance.spec_path = "<mcp>"
+    # Whatever the temp dir's parent happens to be, this lock came from no
+    # checkout: only the caller's word is recorded, never the temp dir's git.
+    result.lock.provenance.git_commit = git_commit
+    result.lock.provenance.spec_path = spec_path or "<mcp>"
     return json.dumps(
         {
             "lock": dump_lock(result.lock),
             "crawler_count": len(result.lock.crawlers),
             "seed": result.lock.provenance.seed,
             "anchor": result.lock.schedule["anchor"],
+            "git_commit": result.lock.provenance.git_commit,
+            "spec_path": result.lock.provenance.spec_path,
             "warnings": result.warnings,
         }
     )

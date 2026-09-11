@@ -53,10 +53,12 @@ act on. Never guess an id — read it.
   `pm_add_bot(experiment_id, name, agent_id, proxy_id, configuration_id)` (dry-run → confirm). Then Step 3.
 - **Factorial / multi-arm design**: don't hand-build every cell. Write the YAML DSL and use the spec
   tools — `get_spec_template` → `validate_experiment_spec` → `preview_factorial_design` →
-  `compile_experiment_spec(yaml, files=…, seed=…)` →
+  `compile_experiment_spec(yaml, files=…, seed=…, git_commit=…, spec_path=…)` — the MCP cannot
+  see the spec's repo, so pass its short HEAD (`-dirty` if unclean) and the spec's repo-relative
+  path, then write the returned lock into that repo and commit it →
   `upload_experiment(lock, mode='test', dry_run=true)` then `dry_run=false`;
-  `verify_experiment(id, lock)` afterwards. Never upload a spec; `real` mode wants a lock compiled
-  by the CLI in the committed repo. The DSL, and the treatment-param traps
+  `verify_experiment(id, lock)` afterwards. Never upload a spec; `real` mode refuses a lock with
+  no commit. The DSL, and the treatment-param traps
   (pi/psi/kappa/tau are **0/1 switches**), are in the `doc://experiment-designer` and
   `doc://treatment-params` MCP resources.
 
