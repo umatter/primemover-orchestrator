@@ -42,7 +42,19 @@ orchestrator doctor      # diagnose setup + report every systemd unit's state
 orchestrator up / down   # dev laptop only
 ```
 
-## Where things live
+## Which stack this session talks to — read before running anything
+
+On Ulrich's laptop the MCP server (`primemover-me` in the global Claude config) is **not** a
+local process: it runs over SSH on **ex63** as the `primemover` user and talks to the
+**production** API there. So from any repo on the laptop — a research project under
+`~/projects/*` included — every `pm_*` write, upload, trace and log call already targets
+ex63. Do not look for a stack on `localhost`, do not start one, and do not assume the ports
+below exist locally: they describe a *dev laptop that cloned the stack*, which this laptop
+is not. The GUI for what the MCP shows is the ex63 console, not `:4200`. Which research
+project owns which experiment id is recorded in `~/control_room/CLAUDE.md`
+("PrimeMover experiments"); a session that creates an experiment adds a row there.
+
+## Where things live (dev laptop that runs the stack locally — not Ulrich's laptop, see above)
 | Service | URL |
 |---|---|
 | GUI (Angular dev) | http://localhost:4200 |
