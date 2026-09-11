@@ -4,6 +4,7 @@ from pathlib import Path
 
 import pytest
 
+from experiment_designer.lock.api import ApiError
 from experiment_designer.lock.io import dump_lock
 from experiment_designer.lock.upload import UploadResult
 from experiment_designer.tests.test_lock_io import make_lock
@@ -17,9 +18,32 @@ def lock_file(tmp_path: Path) -> Path:
     return p
 
 
-def test_upload_delegates_and_uses_settings_credentials(
-    cli_runner, lock_file, monkeypatch, mock_settings
-):
+class _FakeStore:
+    """Stands in for a fully-configured SecretStore: nothing reported missing.
+
+    `make_lock()`'s proxy carries real ${secret:...} placeholders, so a bare
+    `None` store (as if no secrets file existed) would make the CLI's own
+    pre-upload secrets gate report both as MISSING and exit 1 before
+    `upload_lock` is ever reached -- correct behaviour (it mirrors
+    `pmspec upload`'s refusal to send unresolved placeholders), but not what
+    these tests are exercising. A stand-in store keeps that gate green
+    without depending on a real secrets file on the machine running the
+    suite.
+    """
+
+    def missing(self, keys):
+        return []
+
+
+@pytest.fixture
+def patched_upload(monkeypatch, mock_settings):
+    """Patch settings, the secrets store, and a successful `upload_lock`.
+
+    `upload_lock`/`verify_lock` are imported lazily inside `experiment_upload`
+    (module-level imports of experiment_designer.lock.upload cost ~150ms and
+    would slow every `orchestrator` invocation), so they are patched at their
+    source module rather than on orchestrator.cli.
+    """
     seen = {}
 
     def fake_upload_lock(lock_text, *, session, store, options):
@@ -27,44 +51,73 @@ def test_upload_delegates_and_uses_settings_credentials(
         seen["mode"] = options.mode
         return UploadResult(9, "n", 1, 1, "f" * 64, "a", options.mode, None, "rec")
 
+    monkeypatch.setattr("experiment_designer.lock.upload.upload_lock", fake_upload_lock)
+    monkeypatch.setattr("orchestrator.cli.get_settings", lambda: mock_settings)
+    monkeypatch.setattr(
+        "experiment_designer.lock.secrets.SecretStore.load",
+        classmethod(lambda cls, p=None: _FakeStore()),
+    )
+    return seen
+
+
+def test_upload_delegates_and_uses_settings_credentials(
+    cli_runner, lock_file, monkeypatch, patched_upload
+):
     class _V:
         ok = True
 
         def render(self):
             return "BOUND"
 
-    class _FakeStore:
-        """Stands in for a fully-configured SecretStore: nothing reported missing.
-
-        `make_lock()`'s proxy carries real ${secret:...} placeholders, so a bare
-        `None` store (as if no secrets file existed) would make the CLI's own
-        pre-upload secrets gate report both as MISSING and exit 1 before
-        `upload_lock` is ever reached -- correct behaviour (it mirrors
-        `pmspec upload`'s refusal to send unresolved placeholders), but not what
-        this test is exercising. A stand-in store keeps that gate green without
-        depending on a real secrets file on the machine running the suite.
-        """
-
-        def missing(self, keys):
-            return []
-
-    # `upload_lock`/`verify_lock` are imported lazily inside experiment_upload
-    # (module-level imports of experiment_designer.lock.upload cost ~150ms and
-    # would slow every `orchestrator` invocation), so they are patched at
-    # their source module rather than on orchestrator.cli.
-    monkeypatch.setattr("experiment_designer.lock.upload.upload_lock", fake_upload_lock)
     monkeypatch.setattr("experiment_designer.lock.verify.verify_lock", lambda *a, **k: _V())
-    monkeypatch.setattr("orchestrator.cli.get_settings", lambda: mock_settings)
-    monkeypatch.setattr(
-        "experiment_designer.lock.secrets.SecretStore.load",
-        classmethod(lambda cls, p=None: _FakeStore()),
-    )
     out = cli_runner.invoke(cli, ["experiment", "upload", str(lock_file), "--mode", "test"])
     assert out.exit_code == 0, out.output
-    assert seen == {"base_url": "http://localhost:8090/api/v1", "mode": "test"}
+    assert patched_upload == {"base_url": "http://localhost:8090/api/v1", "mode": "test"}
     assert "rec" in out.output
 
 
 def test_upload_requires_mode(cli_runner, lock_file):
     out = cli_runner.invoke(cli, ["experiment", "upload", str(lock_file)])
     assert out.exit_code != 0 and "--mode" in out.output
+
+
+def test_upload_keeps_record_when_verify_raises(
+    cli_runner, lock_file, tmp_path, monkeypatch, patched_upload
+):
+    """A post-upload verify failure must not swallow the record of a server-side
+    success: the record line is written and printed *before* verify runs."""
+
+    def raising_verify_lock(*a, **k):
+        raise ApiError("GET x: HTTP 500", status=500, detail="boom")
+
+    monkeypatch.setattr("experiment_designer.lock.verify.verify_lock", raising_verify_lock)
+    record_path = tmp_path / "record.txt"
+    out = cli_runner.invoke(
+        cli,
+        [
+            "experiment",
+            "upload",
+            str(lock_file),
+            "--mode",
+            "test",
+            "--record",
+            str(record_path),
+        ],
+    )
+    assert out.exit_code == 1
+    assert "Verify failed after upload" in out.output
+    assert "rec" in record_path.read_text()
+
+
+def test_upload_exits_1_when_verify_not_ok(cli_runner, lock_file, monkeypatch, patched_upload):
+    class _V:
+        ok = False
+
+        def render(self):
+            return "UNBOUND"
+
+    monkeypatch.setattr("experiment_designer.lock.verify.verify_lock", lambda *a, **k: _V())
+    out = cli_runner.invoke(cli, ["experiment", "upload", str(lock_file), "--mode", "test"])
+    assert out.exit_code == 1
+    assert "UNBOUND" in out.output
+    assert "rec" in out.output

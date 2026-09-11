@@ -3391,6 +3391,7 @@ def experiment_upload(
     from experiment_designer.lock.io import dump_lock, is_lock_document, load_lock
     from experiment_designer.lock.secrets import (
         InsecureSecretsFile,
+        MissingSecret,
         SecretStore,
         find_placeholders,
     )
@@ -3440,18 +3441,27 @@ def experiment_upload(
     )
     try:
         result = upload_lock(lock_text, session=session, store=store, options=options)
-    except (UploadRefused, ApiError) as e:
+    except (UploadRefused, ApiError, MissingSecret) as e:
         console.print(f"[red]{e}[/red]")
         raise SystemExit(1) from e
     console.print(
         f"[green]Upload SUCCESS[/green] experiment {result.experiment_id} ({result.mode})"
     )
-    verdict = verify_lock(lock_text, session=session, experiment_id=result.experiment_id, deep=deep)
-    console.print(verdict.render())
     if record:
         with open(record, "a") as f:
             f.write(result.record_line + "\n")
     console.print(result.record_line)
+
+    try:
+        verdict = verify_lock(
+            lock_text, session=session, experiment_id=result.experiment_id, deep=deep
+        )
+    except ApiError as e:
+        console.print(f"[red]Verify failed after upload: {e}[/red]")
+        if e.detail:
+            console.print(f"  {e.detail}")
+        raise SystemExit(1) from e
+    console.print(verdict.render())
     if not verdict.ok:
         raise SystemExit(1)
 
