@@ -110,3 +110,6 @@ infrastructure/har-drain/har-drain.env
 infrastructure/har-drain/rclone.conf
 log/har-drain-staging/
 log/har-drain.log
+
+# SDD scratch (superpowers)
+.superpowers/
