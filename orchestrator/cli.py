@@ -3351,161 +3351,109 @@ def experiment_validate(
 
 @experiment.command("upload")
 @click.argument("file", type=click.Path(exists=True))
+@click.option(
+    "--mode",
+    # Hardcoded rather than importing experiment_designer.lock.upload.MODES at
+    # module load time: that import alone costs ~150ms and would slow every
+    # `orchestrator` invocation, not just this command. Keep in sync with
+    # MODES there.
+    type=click.Choice(("real", "test")),
+    required=True,
+    help="test = VM runner, test- name prefix; real = as in the lock",
+)
 @click.option("-e", "--experiment-id", type=int, help="Add to existing experiment")
 @click.option("--dry-run", is_flag=True, help="Validate and convert without uploading")
 @click.option("--seed", "-s", type=int, help="Random seed for reproducible randomization")
+@click.option("--record", type=click.Path(), help="Append the one-line upload record to this file")
+@click.option("--allow-dirty", is_flag=True)
+@click.option("--allow-past", is_flag=True)
+@click.option(
+    "--deep", is_flag=True, help="Post-upload verify down to jobs and behaviours (uses the export)"
+)
 @click.pass_context
 def experiment_upload(
-    ctx: click.Context, file: str, experiment_id: int | None, dry_run: bool, seed: int | None
+    ctx: click.Context,
+    file: str,
+    mode: str,
+    experiment_id: int | None,
+    dry_run: bool,
+    seed: int | None,
+    record: str | None,
+    allow_dirty: bool,
+    allow_past: bool,
+    deep: bool,
 ) -> None:
-    """Upload experiment from YAML spec to PrimeMover API."""
-    import json
-    from datetime import datetime
+    """Upload a lock (compiling a spec first) and verify the result, same as `pmspec upload`."""
     from pathlib import Path
 
-    try:
-        import requests
-
-        from experiment_designer.spec import SpecConverter, SpecParser
-    except ImportError as e:
-        console.print(f"[red]Error importing required modules: {e}[/red]")
-        return
+    from experiment_designer.lock.api import ApiError, ApiSession
+    from experiment_designer.lock.build import compile_spec
+    from experiment_designer.lock.io import dump_lock, is_lock_document, load_lock
+    from experiment_designer.lock.secrets import (
+        InsecureSecretsFile,
+        SecretStore,
+        find_placeholders,
+    )
+    from experiment_designer.lock.upload import UploadOptions, UploadRefused, upload_lock
+    from experiment_designer.lock.verify import verify_lock
 
     settings = ctx.obj["settings"]
-
     file_path = Path(file)
-    base_dir = file_path.parent
-
-    with open(file) as f:
-        content = f.read()
-
-    # Parse and validate
-    parser = SpecParser(base_dir=base_dir, seed=seed)
-    parsed = parser.parse(content)
-
-    if parsed.errors:
-        console.print("[red bold]Validation FAILED[/red bold]")
-        for error in parsed.errors:
-            console.print(f"  [red]{error}[/red]")
-        return
-
-    # Convert to JSON
-    converter = SpecConverter()
-    result = converter.convert(parsed)
-
-    if result.errors:
-        console.print("[red bold]Conversion FAILED[/red bold]")
-        for error in result.errors:
-            console.print(f"  [red]{error}[/red]")
-        return
-
-    if result.warnings:
-        for warning in result.warnings:
-            console.print(f"  [yellow]WARNING: {warning}[/yellow]")
-
-    console.print()
-    console.print(f"Experiment: {result.experiment_name}")
-    console.print(f"Crawlers:   {result.crawler_count}")
-    console.print(f"Jobs:       {result.total_jobs}")
-    console.print()
-
-    if dry_run:
-        console.print("[cyan]Dry run - not uploading[/cyan]")
-        console.print("[dim]Use 'orchestrator experiment generate' to save JSON file[/dim]")
-        return
-
-    # Get credentials
-    api_url = settings.pm_api_base_url
-    email = settings.pm_api_email
-    password = settings.pm_api_password
-
-    if not all([api_url, email, password]):
-        console.print("[red]API credentials not configured[/red]")
-        console.print()
-        console.print("Set environment variables:")
-        console.print("  PM_API_BASE_URL=http://localhost:8090/api/v1")
-        console.print("  PM_API_EMAIL=admin@primemover.example")
-        console.print("  PM_API_PASSWORD=password")
-        return
+    lock_text = file_path.read_text()
+    if not is_lock_document(lock_text):
+        compiled = compile_spec(
+            lock_text, base_dir=file_path.parent, spec_path=str(file_path), seed=seed
+        )
+        if compiled.lock is None:
+            for error in compiled.errors:
+                console.print(f"[red]  {error}[/red]")
+            raise SystemExit(1)
+        lock_path = file_path.with_name(f"{file_path.stem}.lock.yaml")
+        lock_text = dump_lock(compiled.lock)
+        lock_path.write_text(lock_text)
+        console.print(f"[cyan]Compiled {lock_path} -- commit it[/cyan]")
 
     try:
-        # Authenticate
-        console.print("Authenticating...")
-        auth_response = requests.post(
-            f"{api_url}/login",
-            json={"email": email, "password": password},
-            headers={"Accept": "application/json"},
-        )
-        auth_response.raise_for_status()
-        token = auth_response.json().get("access_token")
+        store = SecretStore.load()
+    except FileNotFoundError:
+        store = None
+    except InsecureSecretsFile as e:
+        console.print(f"[red]{e}[/red]")
+        raise SystemExit(1) from e
+    needed = sorted(find_placeholders(load_lock(lock_text).crawlers))
+    missing = store.missing(needed) if store else needed
+    for key in needed:
+        console.print(f"  {'MISSING' if key in missing else 'OK':7} {key}")
+    if missing:
+        raise SystemExit(1)
+    if dry_run:
+        console.print("[cyan]Dry run - not uploading[/cyan]")
+        return
 
-        if not token:
-            console.print("[red]Authentication failed: no token received[/red]")
-            return
-
-        # Create experiment if needed
-        if not experiment_id:
-            console.print("Creating new experiment...")
-            exp_name = (
-                result.experiment_name or f"Experiment {datetime.now().strftime('%Y%m%d_%H%M%S')}"
-            )
-
-            create_response = requests.post(
-                f"{api_url}/experiments",
-                json={
-                    "name": exp_name,
-                    "description": result.experiment_description or "Created via orchestrator CLI",
-                    "contact": "PrimeMover Orchestrator",
-                    "active": 1,
-                },
-                headers={
-                    "Authorization": f"Bearer {token}",
-                    "Accept": "application/json",
-                    "Content-Type": "application/json",
-                },
-            )
-            create_response.raise_for_status()
-            create_result = create_response.json()
-
-            experiment_id = create_result.get("data", {}).get("id") or create_result.get("id")
-
-            if not experiment_id:
-                console.print("[red]Failed to create experiment: no ID returned[/red]")
-                return
-
-            console.print(f"Created experiment: {exp_name} (ID: {experiment_id})")
-        else:
-            console.print(f"Adding to experiment {experiment_id}...")
-
-        # Upload crawlers
-        console.print("Uploading crawlers...")
-
-        json_content = json.dumps(result.json_data, indent=2)
-
-        upload_response = requests.post(
-            f"{api_url}/experiments/{experiment_id}/upload",
-            files={"json": ("crawlers.json", json_content, "application/json")},
-            headers={"Authorization": f"Bearer {token}", "Accept": "application/json"},
-        )
-        upload_response.raise_for_status()
-
-        console.print()
-        console.print("[green bold]Upload SUCCESS[/green bold]")
-        console.print(f"Experiment ID: {experiment_id}")
-        console.print(f"Crawlers created: {result.crawler_count}")
-
-    except requests.exceptions.HTTPError as e:
-        console.print(f"[red]Upload failed: {e}[/red]")
-        if hasattr(e, "response") and e.response is not None:
-            try:
-                error_detail = e.response.json()
-                console.print(f"API Error: {json.dumps(error_detail, indent=2)}")
-            except Exception:
-                console.print(f"Response: {e.response.text[:1000]}")
-    except requests.exceptions.RequestException as e:
-        console.print(f"[red]Request failed: {e}[/red]")
-    except Exception as e:
-        console.print(f"[red]Error: {e}[/red]")
+    session = ApiSession(settings.pm_api_base_url, settings.pm_api_email, settings.pm_api_password)
+    options = UploadOptions(
+        mode=mode,
+        experiment_id=experiment_id,
+        allow_dirty=allow_dirty,
+        allow_past=allow_past,
+        contact="orchestrator CLI",
+    )
+    try:
+        result = upload_lock(lock_text, session=session, store=store, options=options)
+    except (UploadRefused, ApiError) as e:
+        console.print(f"[red]{e}[/red]")
+        raise SystemExit(1) from e
+    console.print(
+        f"[green]Upload SUCCESS[/green] experiment {result.experiment_id} ({result.mode})"
+    )
+    verdict = verify_lock(lock_text, session=session, experiment_id=result.experiment_id, deep=deep)
+    console.print(verdict.render())
+    if record:
+        with open(record, "a") as f:
+            f.write(result.record_line + "\n")
+    console.print(result.record_line)
+    if not verdict.ok:
+        raise SystemExit(1)
 
 
 @experiment.command("generate")
