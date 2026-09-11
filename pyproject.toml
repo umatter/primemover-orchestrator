@@ -34,6 +34,7 @@ dependencies = [
     "boto3>=1.34.0",
     "requests>=2.28.0",
     "jsonschema>=4.0.0",
+    "tomli>=2.0.0; python_version < '3.11'",  # lock secrets store; tomllib is 3.11+
     # Local Lambda service dependencies
     "flask>=3.0.0",
     "waitress>=3.0.0",  # production WSGI server; werkzeug's dev server leaks epoll fds under concurrency
@@ -85,7 +86,10 @@ ignore = ["E501"]
 # create_file_tag_loader returns a class, so binding it to a PascalCase name is
 # correct rather than a naming violation. Kept here instead of per-line noqa
 # comments, which black relocates when it wraps the call.
-extend-ignore-names = ["FileTagLoader"]
+# MissingSecret / InsecureSecretsFile are the fixed interface names later lock
+# tasks import verbatim (experiment_designer.lock.secrets); an *Error suffix
+# would be a breaking rename, not a style fix.
+extend-ignore-names = ["FileTagLoader", "MissingSecret", "InsecureSecretsFile"]
 
 [tool.mypy]
 python_version = "3.10"
