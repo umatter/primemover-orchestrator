@@ -5,6 +5,7 @@ from click.testing import CliRunner
 
 from experiment_designer import cli as cli_module
 from experiment_designer.cli import cli
+from experiment_designer.lock.api import ApiError
 from experiment_designer.lock.io import dump_lock
 from experiment_designer.lock.upload import UploadResult
 
@@ -105,7 +106,7 @@ def test_upload_writes_record_and_verifies(lock_file, secrets_file, fake_upload,
     assert out.exit_code == 0, out.output
     assert fake_upload["options"].mode == "test" and fake_upload["has_store"]
     assert record.read_text().strip().endswith("api=x")
-    assert "BOUND" in out.output and out.output.strip().endswith("api=x")
+    assert "BOUND" in out.output and "exp=181" in out.output and "api=x" in out.output
 
 
 def test_upload_exits_1_when_post_upload_verify_fails(lock_file, secrets_file, fake_upload):
@@ -114,6 +115,33 @@ def test_upload_exits_1_when_post_upload_verify_fails(lock_file, secrets_file, f
         cli, ["upload", str(lock_file), "--mode", "test", "--secrets", str(secrets_file)]
     )
     assert out.exit_code == 1 and "UNBOUND" in out.output and "exp=181" in out.output
+
+
+def test_upload_keeps_record_when_verify_raises(
+    lock_file, secrets_file, fake_upload, tmp_path, monkeypatch
+):
+    record = tmp_path / "ledger.txt"
+
+    def _raise(*a, **k):
+        raise ApiError("GET x: HTTP 500", status=500, detail="boom")
+
+    monkeypatch.setattr(cli_module, "verify_lock", _raise)
+    out = CliRunner().invoke(
+        cli,
+        [
+            "upload",
+            str(lock_file),
+            "--mode",
+            "test",
+            "--secrets",
+            str(secrets_file),
+            "--record",
+            str(record),
+        ],
+    )
+    assert out.exit_code == 1
+    assert "Verify failed after upload" in out.output
+    assert record.read_text().strip().endswith("api=x")
 
 
 def test_upload_compiles_a_spec_first_and_says_to_commit(tmp_path, secrets_file, fake_upload):
@@ -148,3 +176,12 @@ def test_secrets_check(lock_file, secrets_file, tmp_path):
         cli, ["secrets", "check", str(lock_file), "--secrets", str(secrets_file)]
     )
     assert out.exit_code == 1 and "MISSING" in out.output
+
+
+def test_secrets_check_rejects_a_corrupt_lock(tmp_path):
+    bad = tmp_path / "bad.lock.yaml"
+    bad.write_text("pmspec_lock: 1\nprovenance: {}\n")
+    out = CliRunner().invoke(cli, ["secrets", "check", str(bad)])
+    assert out.exit_code == 1
+    assert "Lock invalid" in out.output
+    assert "Traceback" not in out.output

@@ -38,6 +38,7 @@ except ImportError:
 from .lock.api import ApiError, ApiSession
 from .lock.build import compile_spec
 from .lock.io import LockError, dump_lock, is_lock_document, load_lock
+from .lock.model import Lock
 from .lock.resolve import resolve_for_upload
 from .lock.secrets import InsecureSecretsFile, MissingSecret, SecretStore, find_placeholders
 from .lock.upload import MODES, UploadOptions, UploadRefused, upload_lock
@@ -329,9 +330,19 @@ def _lock_text_for(file: str, seed: int | None) -> str:
     return text
 
 
+def _load_lock_or_exit(lock_text: str) -> Lock:
+    try:
+        return load_lock(lock_text)
+    except LockError as e:
+        click.secho("Lock invalid", fg="red", bold=True)
+        for error in e.errors:
+            click.secho(f"  ERROR: {error}", fg="red")
+        sys.exit(1)
+
+
 def _secrets_report(lock_text: str, store: SecretStore | None) -> list[str]:
     """Print referenced keys with OK/MISSING; return the missing ones."""
-    needed = sorted(find_placeholders(load_lock(lock_text).crawlers))
+    needed = sorted(find_placeholders(_load_lock_or_exit(lock_text).crawlers))
     if not needed:
         click.echo("Secrets: none referenced")
         return []
@@ -411,12 +422,21 @@ def upload(
         f"Crawlers: {result.crawler_count}  Jobs: {result.total_jobs}  Anchor: {result.anchor}"
     )
 
-    verdict = verify_lock(lock_text, session=session, experiment_id=result.experiment_id, deep=deep)
-    click.echo(verdict.render())
     if record:
         with open(record, "a") as f:
             f.write(result.record_line + "\n")
     click.echo(result.record_line)
+
+    try:
+        verdict = verify_lock(
+            lock_text, session=session, experiment_id=result.experiment_id, deep=deep
+        )
+    except ApiError as e:
+        click.secho(f"Verify failed after upload: {e}", fg="red")
+        if e.detail:
+            click.echo(f"  {e.detail}")
+        sys.exit(1)
+    click.echo(verdict.render())
     sys.exit(0 if verdict.ok else 1)
 
 
@@ -435,6 +455,11 @@ def verify(experiment_id: int, lock: str, deep: bool) -> None:
         )
     except ApiError as e:
         click.secho(f"Verify failed: {e}", fg="red")
+        sys.exit(1)
+    except LockError as e:
+        click.secho("Lock invalid", fg="red", bold=True)
+        for error in e.errors:
+            click.secho(f"  ERROR: {error}", fg="red")
         sys.exit(1)
     click.echo(result.render())
     sys.exit(0 if result.ok else 1)
