@@ -119,6 +119,40 @@ def test_upload_applies_through_upload_lock(monkeypatch: pytest.MonkeyPatch):
     assert hasattr(seen["session"], "post_file") and hasattr(seen["session"], "get_bytes")
 
 
+def test_upload_returns_experiment_id_when_verify_raises(monkeypatch: pytest.MonkeyPatch):
+    """A raised verify_lock must not swallow a successful upload's experiment_id.
+
+    Otherwise the caller sees a bare tool error with no id and the natural next
+    move -- retry with dry_run=False -- creates a duplicate experiment.
+    """
+
+    def fake_upload_lock(lock_text, *, session, store, options):
+        from experiment_designer.lock.upload import UploadResult
+
+        return UploadResult(
+            181,
+            "test-Study-20260911",
+            1,
+            1,
+            "f" * 64,
+            "2026-10-01T10:00:00+02:00",
+            "test",
+            3,
+            "rec",
+        )
+
+    def fake_verify_lock(*a, **k):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(s, "upload_lock", fake_upload_lock)
+    monkeypatch.setattr(s, "verify_lock", fake_verify_lock)
+    monkeypatch.setattr(s.SecretStore, "load", classmethod(lambda cls, path=None: None))
+    out = json.loads(s.upload_experiment(dump_lock(make_lock()), mode="test", dry_run=False))
+    assert out["success"] is True
+    assert out["experiment_id"] == 181
+    assert "boom" in out["verify"]["error"]
+
+
 def test_verify_experiment_tool(monkeypatch: pytest.MonkeyPatch):
     from experiment_designer.lock.verify import Difference, VerifyResult
 
@@ -140,3 +174,30 @@ def test_verify_experiment_tool(monkeypatch: pytest.MonkeyPatch):
         {"path": "crawlers.bot_01.params.pi", "expected": 1.0, "actual": 0.0}
     ]
     assert out["render"].startswith("UNBOUND")
+
+
+def test_verify_experiment_redacts_secret_valued_differences(monkeypatch: pytest.MonkeyPatch):
+    from experiment_designer.lock.verify import Difference, VerifyResult
+
+    monkeypatch.setattr(
+        s,
+        "verify_lock",
+        lambda *a, **k: VerifyResult(
+            7,
+            True,
+            "a" * 64,
+            ["a" * 64],
+            None,
+            [Difference("crawlers.bot_01.preferences.token", "${secret:a.b}", "hunter2")],
+        ),
+    )
+    raw = s.verify_experiment(7, dump_lock(make_lock()))
+    assert "hunter2" not in raw
+    out = json.loads(raw)
+    assert out["differences"] == [
+        {
+            "path": "crawlers.bot_01.preferences.token",
+            "expected": "${secret:a.b}",
+            "actual": "<redacted>",
+        }
+    ]

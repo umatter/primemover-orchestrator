@@ -325,6 +325,23 @@ def _mutating_tools() -> dict[str, bool]:
                     if not touches_login:
                         mutates = True
 
+            # upload_lock(...): the lock-upload path (upload_experiment) mutates
+            # entirely inside experiment_designer.lock.upload.upload_lock via a
+            # session object -- no write-verb attribute call, _api_request call,
+            # or _write() call appears in this module's own source for it, so
+            # without this line it is invisible to every check above and the tool
+            # silently disappears from the scan (this happened once; see
+            # TestUploadExperimentIsGuarded).
+            if isinstance(sub.func, ast.Name) and sub.func.id == "upload_lock":
+                mutates = True
+
+            # session.post_file(...): _McpSession's own multipart write. Not
+            # reached from upload_experiment's own source today (it calls
+            # upload_lock, which calls this internally, in a different module),
+            # but a future tool calling it directly must not go undetected either.
+            if isinstance(sub.func, ast.Attribute) and sub.func.attr == "post_file":
+                mutates = True
+
         if mutates:
             result[node.name] = guarded
 
@@ -344,8 +361,12 @@ class TestEveryMutatingToolIsGuarded:
     #
     # It previously held upload_experiment, which POSTed via `requests` directly
     # -- bypassing _api_request and _write -- and defaulted to dry_run=False, so
-    # it applied by default and could write to a remote API. Both are fixed; see
-    # TestUploadExperimentIsGuarded below.
+    # it applied by default and could write to a remote API. It now takes a lock
+    # and a mode, and mutates through a _McpSession adapter (over _api_request,
+    # plus httpx directly for the multipart crawler upload) whose upload_lock()
+    # call is checked by _mutating_tools() above; the guard call itself is
+    # checked before that session is even constructed. Both original gaps are
+    # fixed; see TestUploadExperimentIsGuarded below.
     KNOWN_UNGUARDED: set[str] = set()
 
     def test_the_expected_pm_write_tools_all_exist(self):
@@ -369,6 +390,7 @@ class TestEveryMutatingToolIsGuarded:
             "pm_create_experiment",
             "pm_delete",
             "pm_add_job",
+            "upload_experiment",
         } <= detected, (
             f"the AST scan stopped recognising known write tools; it detected {sorted(detected)}"
         )
@@ -396,8 +418,9 @@ class TestUploadExperimentIsGuarded:
     never consulted the local-only guard, so a deployment pointed at a remote
     API could upload to it by default.
 
-    The structural scan above proves it now calls the guard. These tests prove
-    the guard actually bites and that the default is a preview.
+    The structural scan above (``_mutating_tools()``, which recognises the
+    ``upload_lock(...)`` call as the mutation) proves it now calls the guard.
+    These tests prove the guard actually bites and that the default is a preview.
     """
 
     def _lock(self) -> str:

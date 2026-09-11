@@ -18,9 +18,9 @@ from typing import Any
 
 from experiment_designer.lock.build import compile_spec
 from experiment_designer.lock.io import LockError, dump_lock, is_lock_document, load_lock
-from experiment_designer.lock.secrets import SecretStore, find_placeholders
+from experiment_designer.lock.secrets import PLACEHOLDER_RE, SecretStore, find_placeholders
 from experiment_designer.lock.upload import MODES, UploadOptions, UploadRefused, upload_lock
-from experiment_designer.lock.verify import verify_lock
+from experiment_designer.lock.verify import Difference, verify_lock
 from orchestrator import status
 from orchestrator.config import get_settings
 
@@ -681,7 +681,11 @@ class _McpSession:
                 headers={"Authorization": f"Bearer {token}", "Accept": "application/json"},
                 files={field: (filename, content, content_type)},
             )
-            r.raise_for_status()
+            # Mirror _api_request's error construction: a crawler-upload 422's body
+            # is the informative part (which job/behaviour failed validation), and
+            # raise_for_status() alone would discard it.
+            if r.status_code >= 400:
+                raise Exception(f"API request failed: {r.status_code} {r.text[:400]}")
             return _unwrap(r.json()) if r.content else {}
 
     def get_bytes(self, path: str, params: dict[str, Any] | None = None) -> bytes:
@@ -697,6 +701,25 @@ class _McpSession:
             )
             r.raise_for_status()
             return r.content
+
+
+def _redact_differences(differences: list[Difference]) -> list[Difference]:
+    """A verify Difference's ``actual`` side is a value read straight off the live
+    experiment. When ``expected`` is a secret placeholder (a lock keeps
+    ``${secret:...}`` for anything outside ``proxy.*`` too, e.g. a preference or
+    behaviour value), ``actual`` is that placeholder's *resolved* value -- the
+    literal secret. Nothing that serialises a Difference (a JSON tool result, a
+    rendered report) may carry that, so every placeholder-valued difference is
+    replaced before it is ever rendered or returned.
+    """
+    return [
+        (
+            Difference(d.path, d.expected, "<redacted>")
+            if isinstance(d.expected, str) and PLACEHOLDER_RE.search(d.expected)
+            else d
+        )
+        for d in differences
+    ]
 
 
 def _write(
@@ -2091,9 +2114,8 @@ def compile_experiment_spec(
     Because this compiles from content with no repository on this machine, the
     resulting lock's provenance always has ``git_commit: null`` -- there is no
     checkout for ``git_commit()`` to inspect. That means a `real`-mode
-    ``upload_experiment`` of an MCP-compiled lock will be refused unless you
-    pass ``allow_dirty``: for a real upload, compile with the pmspec CLI in the
-    committed repo instead, so the lock carries a real commit.
+    ``upload_experiment`` of an MCP-compiled lock is refused; compile with the
+    pmspec CLI in the committed repo instead, so the lock carries a real commit.
 
     Args:
         yaml_content: the spec
@@ -2373,7 +2395,7 @@ def upload_experiment(
     try:
         lock = load_lock(lock_content)
     except LockError as e:
-        return json.dumps({"success": False, "errors": e.errors})
+        return json.dumps({"success": False, "error": "invalid lock", "errors": e.errors})
 
     needed = sorted(find_placeholders(lock.crawlers))
     if dry_run:
@@ -2425,29 +2447,40 @@ def upload_experiment(
     except Exception as e:
         return json.dumps({"success": False, "error": f"Upload failed: {e}"})
 
-    verdict = verify_lock(
-        lock_content, session=session, experiment_id=result.experiment_id, deep=deep_verify
-    )
-    return json.dumps(
-        {
-            "success": True,
-            "experiment_id": result.experiment_id,
-            "experiment_name": result.experiment_name,
-            "crawler_count": result.crawler_count,
-            "total_jobs": result.total_jobs,
-            "mode": result.mode,
-            "runner_user_id": result.runner_user_id,
-            "lock_sha256": result.lock_sha256,
-            "anchor": result.anchor,
-            "record": result.record_line,
-            "verify": {
-                "ok": verdict.ok,
-                "bound": verdict.bound,
-                "differences": [d.__dict__ for d in verdict.differences],
-                "render": verdict.render(),
-            },
-        }
-    )
+    response: dict[str, Any] = {
+        "success": True,
+        "experiment_id": result.experiment_id,
+        "experiment_name": result.experiment_name,
+        "crawler_count": result.crawler_count,
+        "total_jobs": result.total_jobs,
+        "mode": result.mode,
+        "runner_user_id": result.runner_user_id,
+        "lock_sha256": result.lock_sha256,
+        "anchor": result.anchor,
+        "record": result.record_line,
+    }
+
+    # Outside any earlier try: the upload itself already succeeded, and an
+    # exception here (an httpx failure fetching the export under deep_verify,
+    # an unexpected API shape) must not turn into a raised tool error that
+    # loses the experiment_id -- an LLM seeing that error and no id is liable
+    # to retry with dry_run=False and create a duplicate experiment.
+    try:
+        verdict = verify_lock(
+            lock_content, session=session, experiment_id=result.experiment_id, deep=deep_verify
+        )
+    except Exception as e:
+        response["verify"] = {"error": str(e)}
+        return json.dumps(response)
+
+    verdict.differences = _redact_differences(verdict.differences)
+    response["verify"] = {
+        "ok": verdict.ok,
+        "bound": verdict.bound,
+        "differences": [d.__dict__ for d in verdict.differences],
+        "render": verdict.render(),
+    }
+    return json.dumps(response)
 
 
 @mcp.tool()
@@ -2469,6 +2502,7 @@ def verify_experiment(experiment_id: int, lock_content: str, deep: bool = False)
         return json.dumps({"error": "invalid lock", "errors": e.errors})
     except Exception as e:
         return json.dumps({"error": str(e)})
+    r.differences = _redact_differences(r.differences)
     return json.dumps(
         {
             "experiment_id": r.experiment_id,
