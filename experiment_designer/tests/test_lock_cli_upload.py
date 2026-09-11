@@ -185,3 +185,28 @@ def test_secrets_check_rejects_a_corrupt_lock(tmp_path):
     assert out.exit_code == 1
     assert "Lock invalid" in out.output
     assert "Traceback" not in out.output
+
+
+def test_upload_reports_an_anchor_error(lock_file, secrets_file, fake_upload, monkeypatch):
+    from experiment_designer.lock.anchor import AnchorError
+
+    def refusing(lock_text, *, session, store, options):
+        raise AnchorError("cannot parse start time 'x'")
+
+    monkeypatch.setattr(cli_module, "upload_lock", refusing)
+    out = CliRunner().invoke(
+        cli, ["upload", str(lock_file), "--mode", "test", "--secrets", str(secrets_file)]
+    )
+    assert out.exit_code == 1 and "Refused: cannot parse start time" in out.output
+
+
+def test_generate_reports_an_anchor_error(tmp_path, monkeypatch):
+    from experiment_designer.lock.anchor import AnchorError
+
+    lock = make_lock(schedule={"anchor": "not-a-time"})
+    p = tmp_path / "bad-anchor.lock.yaml"
+    p.write_text(dump_lock(lock))
+    out = CliRunner().invoke(cli, ["generate", str(p)])
+    assert out.exit_code == 1, out.output
+    assert "cannot parse start time" in out.output
+    assert not isinstance(out.exception, AnchorError)

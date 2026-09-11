@@ -121,3 +121,25 @@ def test_upload_exits_1_when_verify_not_ok(cli_runner, lock_file, monkeypatch, p
     assert out.exit_code == 1
     assert "UNBOUND" in out.output
     assert "rec" in out.output
+
+
+def test_upload_reports_an_invalid_lock_instead_of_a_traceback(
+    cli_runner, tmp_path, patched_upload
+):
+    bad = tmp_path / "bad.lock.yaml"
+    bad.write_text(dump_lock(make_lock()).replace("pmspec_lock: 1", "pmspec_lock: 99"))
+    out = cli_runner.invoke(cli, ["experiment", "upload", str(bad), "--mode", "test"])
+    assert out.exit_code == 1, out.output
+    assert "Lock invalid" in out.output and "pmspec_lock" in out.output
+    assert out.exception is None or isinstance(out.exception, SystemExit)
+
+
+def test_upload_reports_an_anchor_error(cli_runner, lock_file, monkeypatch, patched_upload):
+    from experiment_designer.lock.anchor import AnchorError
+
+    def refusing(lock_text, *, session, store, options):
+        raise AnchorError("cannot parse start time 'x'")
+
+    monkeypatch.setattr("experiment_designer.lock.upload.upload_lock", refusing)
+    out = cli_runner.invoke(cli, ["experiment", "upload", str(lock_file), "--mode", "test"])
+    assert out.exit_code == 1 and "cannot parse start time" in out.output

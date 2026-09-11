@@ -3386,9 +3386,10 @@ def experiment_upload(
     """Upload a lock (compiling a spec first) and verify the result, same as `pmspec upload`."""
     from pathlib import Path
 
+    from experiment_designer.lock.anchor import AnchorError
     from experiment_designer.lock.api import ApiError, ApiSession
     from experiment_designer.lock.build import compile_spec
-    from experiment_designer.lock.io import dump_lock, is_lock_document, load_lock
+    from experiment_designer.lock.io import LockError, dump_lock, is_lock_document, load_lock
     from experiment_designer.lock.secrets import (
         InsecureSecretsFile,
         MissingSecret,
@@ -3421,7 +3422,14 @@ def experiment_upload(
     except InsecureSecretsFile as e:
         console.print(f"[red]{e}[/red]")
         raise SystemExit(1) from e
-    needed = sorted(find_placeholders(load_lock(lock_text).crawlers))
+    try:
+        lock = load_lock(lock_text)
+    except LockError as e:
+        console.print("[red]Lock invalid[/red]")
+        for error in e.errors:
+            console.print(f"[red]  {error}[/red]")
+        raise SystemExit(1) from e
+    needed = sorted(find_placeholders(lock.crawlers))
     missing = store.missing(needed) if store else needed
     for key in needed:
         console.print(f"  {'MISSING' if key in missing else 'OK':7} {key}")
@@ -3441,7 +3449,7 @@ def experiment_upload(
     )
     try:
         result = upload_lock(lock_text, session=session, store=store, options=options)
-    except (UploadRefused, ApiError, MissingSecret) as e:
+    except (UploadRefused, AnchorError, ApiError, MissingSecret) as e:
         console.print(f"[red]{e}[/red]")
         raise SystemExit(1) from e
     console.print(

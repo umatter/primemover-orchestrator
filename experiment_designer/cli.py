@@ -35,6 +35,7 @@ except ImportError:
     print("Error: 'click' package is required. Install with: pip install click")
     sys.exit(1)
 
+from .lock.anchor import AnchorError
 from .lock.api import ApiError, ApiSession
 from .lock.build import compile_spec
 from .lock.io import LockError, dump_lock, is_lock_document, load_lock
@@ -266,7 +267,11 @@ def generate(file: str, output: str | None, pretty: bool, seed: int | None, reso
         lock = result.lock
 
     store = SecretStore.load() if resolve_secrets else None
-    crawlers, _ = resolve_for_upload(lock, store=store)
+    try:
+        crawlers, _ = resolve_for_upload(lock, store=store)
+    except AnchorError as e:
+        click.secho(f"Cannot generate: {e}", fg="red")
+        sys.exit(1)
     if store is None and find_placeholders(crawlers):
         n = len(find_placeholders(crawlers))
         click.secho(
@@ -405,7 +410,7 @@ def upload(
     )
     try:
         result = upload_lock(lock_text, session=session, store=store, options=options)
-    except (UploadRefused, MissingSecret) as e:
+    except (UploadRefused, AnchorError, MissingSecret) as e:
         click.secho(f"Refused: {e}", fg="red")
         sys.exit(1)
     except ApiError as e:
