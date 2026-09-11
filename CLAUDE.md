@@ -665,14 +665,20 @@ mutate**, not only the `pm_`-prefixed ones:
   `dry_run=false` (`upload_experiment`, which predates the convention and keeps its own parameter name).
 - **Local-only** — `_require_local_write_target()` refuses to mutate anything unless the API is
   `localhost:8090`, even with `confirm`.
-- All API calls go through `_api_request` (auth at `/login`, supports GET/POST/PUT/DELETE) — except
-  `upload_experiment`, which uses `requests` directly and therefore has to call the guard itself.
+- All API calls go through `_api_request` (auth at `/login`, supports GET/POST/PUT/DELETE).
+  `upload_experiment` reaches it through `_McpSession`, an `ApiSession`-shaped adapter whose
+  `get`/`post`/`put` delegate to `_api_request` and whose `post_file`/`get_bytes` (multipart
+  crawler upload, export download) use `httpx` with the same token; the tool calls
+  `_require_local_write_target()` before `upload_lock` can mutate anything.
 
-`upload_experiment` was the exception to all three until 2026-08-21: it defaulted to `dry_run=False`
-and never called the guard, so it applied by default and could write to a remote API. Both are fixed.
-`test_mcp_write_guard.py` now walks the AST for any tool calling a write verb at a non-login endpoint
-and asserts it is guarded, so a new tool cannot reintroduce the gap — a name-based check would not
-have caught this one, since the tool is not `pm_`-prefixed.
+`upload_experiment` takes a lock (from `compile_experiment_spec` or `pmspec compile`) plus a
+**required** `mode` (`test` = VM runner, `test-` name prefix; `real` = as in the lock, refuses a
+dirty or unknown commit) and is dry-run by default (`dry_run=false` to apply). Before 2026-08-21
+it defaulted to applying and never called the guard, so it could write to a remote API.
+`test_mcp_write_guard.py` walks the AST for any tool calling a write verb at a non-login endpoint —
+including an `upload_lock(...)` call or a `.post_file(...)` on a session — and asserts it is
+guarded, so a new tool cannot reintroduce the gap; a name-based check would not have caught this
+one, since the tool is not `pm_`-prefixed.
 
 **Claude skills** live in `.claude/skills/`: `primemover` (orient/start-stop), `primemover-compose`
 (build experiments/runs via the `pm_` tools), `primemover-debug` (diagnose failing runs/jobs). They
@@ -775,8 +781,10 @@ Consequences: as a **regular** (non-service) user, your MCP's read tools
 shared HTTP MCP or the CLI for cross-user/admin visibility. Your experiments
 **do run**: since 2026-09-02 execution is decided by `experiments.runner_user_id`,
 not by owner (see `docs/integration-contract.md` "Runner assignment"). Leave it
-unset and ex63 runs them; pass `runner_user_id=3` to `pm_create_experiment` /
-`upload_experiment` (or `experiment.runner_user_id: 3` in a YAML spec) to run them
+unset and ex63 runs them; pass `runner_user_id=3` to `pm_create_experiment`, or
+upload a lock with `mode='test'` (`upload_experiment` / `pmspec upload --mode test`,
+which forces the VM runner and a `test-` name prefix) or with
+`experiment.runner_user_id: 3` in the spec it was compiled from, to run them
 on the VM instead — handy for test runs while a real study occupies ex63. This
 user-scoped MCP is what lets Claude Code in any other repo on the laptop author,
 validate, upload and trace experiments; the `primemover*` skills are symlinked

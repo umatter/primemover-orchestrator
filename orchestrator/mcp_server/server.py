@@ -2111,9 +2111,9 @@ def compile_experiment_spec(
     """Compile a YAML spec into a lock: the self-contained, committable artifact
     upload_experiment and verify_experiment read.
 
-    Because this compiles from content with no repository on this machine, the
-    resulting lock's provenance always has ``git_commit: null`` -- there is no
-    checkout for ``git_commit()`` to inspect. That means a `real`-mode
+    No git commit is recorded: this compiles from content in a temporary
+    directory, not from a checkout, so ``provenance.git_commit`` is null and
+    ``spec_path`` is the placeholder ``<mcp>``. That means a `real`-mode
     ``upload_experiment`` of an MCP-compiled lock is refused; compile with the
     pmspec CLI in the committed repo instead, so the lock carries a real commit.
 
@@ -2142,6 +2142,9 @@ def compile_experiment_spec(
         )
     if result.lock is None:
         return json.dumps({"errors": result.errors, "warnings": result.warnings})
+    # Whatever the temp dir's parent happens to be, this lock came from no checkout.
+    result.lock.provenance.git_commit = None
+    result.lock.provenance.spec_path = "<mcp>"
     return json.dumps(
         {
             "lock": dump_lock(result.lock),

@@ -517,12 +517,14 @@ pmspec validate spec.yaml --seed 42
 # Preview factorial design expansion
 pmspec preview spec.yaml
 
-# Generate API-compatible JSON
+# Generate API-compatible JSON (no provenance; only for the GUI's upload form)
 pmspec generate spec.yaml -o output.json --seed 42
 
-# Upload to PrimeMover API
-pmspec upload spec.yaml --dry-run
-pmspec upload spec.yaml --seed 42
+# Compile to a lock (commit the spec first, then the lock), then upload it
+pmspec compile spec.yaml --seed 42          # writes spec.lock.yaml
+pmspec upload spec.lock.yaml --mode test --dry-run
+pmspec upload spec.lock.yaml --mode test    # VM runner, test- name prefix
+pmspec upload spec.lock.yaml --mode real    # as in the lock; refuses a dirty commit
 
 # Generate experiment summary
 pmspec summary spec.yaml
@@ -677,8 +679,8 @@ Claude Code can directly use the `pmspec` and `orchestrator` CLI tools:
 # Design experiments with Claude Code
 pmspec validate my-spec.yaml    # Validate YAML spec
 pmspec preview my-spec.yaml     # Preview factorial design
-pmspec generate my-spec.yaml    # Generate API JSON
-pmspec upload my-spec.yaml      # Upload to API
+pmspec compile my-spec.yaml --seed 42      # Compile to my-spec.lock.yaml
+pmspec upload my-spec.lock.yaml --mode test  # Upload the lock (or --mode real)
 
 # Monitor and debug
 orchestrator logs query -c runner -t 1h

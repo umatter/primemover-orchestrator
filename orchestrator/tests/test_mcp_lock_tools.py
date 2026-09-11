@@ -41,6 +41,28 @@ def test_compile_with_files_returns_a_lock():
     )
 
 
+def test_compile_records_no_commit_and_a_placeholder_path(monkeypatch, tmp_path):
+    """An MCP compile comes from no checkout, whatever directory the temp dir
+    lands in -- even one inside a git repository."""
+    import subprocess
+
+    subprocess.run(["git", "init", "-q", str(tmp_path)], check=True)
+    subprocess.run(
+        ["git", "-C", str(tmp_path), "-c", "user.email=t@t", "-c", "user.name=t"]
+        + ["commit", "-q", "--allow-empty", "-m", "x"],
+        check=True,
+    )
+    monkeypatch.setenv("TMPDIR", str(tmp_path))
+    import tempfile
+
+    tempfile.tempdir = None  # re-read TMPDIR
+    try:
+        out = json.loads(s.compile_experiment_spec(SPEC, files=FILES, seed=5))
+    finally:
+        tempfile.tempdir = None
+    assert "git_commit: null" in out["lock"] and "spec_path: <mcp>" in out["lock"]
+
+
 def test_compile_without_files_reports_the_missing_pool():
     out = json.loads(s.compile_experiment_spec(SPEC, seed=5))
     assert "errors" in out and any("outlets.csv" in e for e in out["errors"])
