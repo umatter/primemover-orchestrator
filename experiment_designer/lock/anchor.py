@@ -89,7 +89,13 @@ def _naive_delta(a: datetime, b: datetime) -> timedelta:
 
 def resolve_anchor(anchor: str, now: datetime | None = None) -> datetime:
     if anchor == UPLOAD_ANCHOR:
-        return (now or datetime.now(API_TIMEZONE)).replace(microsecond=0)
+        if now is None:
+            now = datetime.now(API_TIMEZONE)
+        elif now.tzinfo is None:
+            raise AnchorError("now must be timezone-aware")
+        else:
+            now = now.astimezone(API_TIMEZONE)
+        return now.replace(microsecond=0)
     return _parse_absolute(anchor)
 
 

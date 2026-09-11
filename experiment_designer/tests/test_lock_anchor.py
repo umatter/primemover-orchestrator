@@ -1,7 +1,7 @@
 """Queue starts in a lock are offsets from one anchor, so the same lock can be
 uploaded on any day and every session keeps its spacing."""
 
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 import pytest
 
@@ -76,6 +76,18 @@ def test_override_upload_keeps_spacing_of_absolute_starts():
 def test_resolve_anchor_upload_is_now_in_the_apis_zone():
     fixed = datetime(2026, 10, 1, 10, 0, tzinfo=API_TIMEZONE)
     assert resolve_anchor(UPLOAD_ANCHOR, now=fixed) == fixed
+
+
+def test_resolve_anchor_normalizes_an_aware_now_to_zurich():
+    now = datetime(2026, 10, 1, 8, 0, tzinfo=timezone.utc)
+    resolved = resolve_anchor(UPLOAD_ANCHOR, now=now)
+    assert resolved == datetime(2026, 10, 1, 10, 0, tzinfo=API_TIMEZONE)
+    assert resolved.utcoffset() == timedelta(hours=2)
+
+
+def test_resolve_anchor_rejects_naive_now():
+    with pytest.raises(AnchorError, match="aware"):
+        resolve_anchor(UPLOAD_ANCHOR, now=datetime(2026, 10, 1, 8, 0))
 
 
 def test_resolve_anchor_fixed_is_naive_wall_clock_in_zurich():
