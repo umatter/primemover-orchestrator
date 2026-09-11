@@ -66,6 +66,9 @@ Repository = "https://github.com/umatter/primemover-orchestrator"
 where = ["."]
 include = ["orchestrator*", "experiment_designer*"]
 
+[tool.setuptools.package-data]
+experiment_designer = ["schema/*.json"]
+
 [tool.black]
 line-length = 100
 target-version = ["py310", "py311", "py312"]

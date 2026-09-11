@@ -1,0 +1,68 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "pmspec lock, format 1",
+  "type": "object",
+  "required": ["pmspec_lock", "provenance", "experiment", "schedule", "crawlers"],
+  "additionalProperties": false,
+  "properties": {
+    "pmspec_lock": {"const": 1},
+    "provenance": {
+      "type": "object",
+      "required": ["spec_path", "spec_sha256", "pmspec_version", "compiled_at", "seed"],
+      "additionalProperties": false,
+      "properties": {
+        "spec_path": {"type": "string"},
+        "spec_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "generator": {"type": ["string", "null"]},
+        "git_commit": {"type": ["string", "null"]},
+        "pmspec_version": {"type": "string"},
+        "compiled_at": {"type": "string"},
+        "seed": {"type": "integer"},
+        "lax": {"type": "boolean"}
+      }
+    },
+    "experiment": {
+      "type": "object",
+      "required": ["name"],
+      "additionalProperties": false,
+      "properties": {
+        "name": {"type": "string", "minLength": 1},
+        "description": {"type": "string"},
+        "runner_user_id": {"type": ["integer", "null"]}
+      }
+    },
+    "schedule": {
+      "type": "object",
+      "required": ["anchor"],
+      "additionalProperties": false,
+      "properties": {"anchor": {"type": "string", "minLength": 1}}
+    },
+    "crawlers": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": ["name", "configuration", "queues"],
+        "properties": {
+          "name": {"type": "string", "minLength": 1},
+          "configuration": {"type": "object"},
+          "proxy": {"type": "object"},
+          "agent": {"type": "object"},
+          "queues": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": ["name", "start_offset", "jobs"],
+              "not": {"required": ["start_at"]},
+              "properties": {
+                "start_offset": {"type": "string", "pattern": "^[+-][0-9]+[smhd]$"},
+                "start_at": false,
+                "jobs": {"type": "array"}
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}
