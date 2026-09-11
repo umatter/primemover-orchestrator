@@ -790,6 +790,9 @@ into `~/.claude/skills` for the same reason.
 
 ## Uploading Experiments (JSON Scenario)
 
+For anything that is a study rather than a one-off scenario, use a **lock** (`pmspec compile` →
+`pmspec upload --mode …` → `pmspec verify`); the raw JSON path below records no provenance.
+
 The API supports uploading pre-built experiment JSON directly (as used by the e2e tests and
 scenario files). This is separate from the YAML DSL workflow (`pmspec upload`).
 
@@ -836,6 +839,10 @@ implementation: `orchestrator/e2e/runner.py:_upload_experiment()`.
 The experiment designer uses YAML to define experiments with factorial designs: factorial
 expansion, reusable templates, parameter distributions, data pools with scoring, and relative
 timestamps (`now`, `+5m`).
+
+The reproducibility artifact is the *lock* (`docs/experiment-designer.md` § Locks): committed,
+hashed, bound to the experiment via `pmspec.*` preferences, checked by `pmspec verify`.
+`upload_experiment` takes a lock and a required `mode`.
 
 > **The four selection parameters are switches, not intensities.** `pi`, `psi`,
 > `kappa` and `tau` are read by the decision function as

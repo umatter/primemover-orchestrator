@@ -34,55 +34,53 @@ using the PrimeMover experiment designer DSL. Use:
 
 Claude will generate a YAML spec using the DSL features documented below.
 
-### Step 3: Validate and Iterate
+### Step 3: Compile to a lock
 
 ```bash
-# Validate the YAML specification
-pmspec validate my-study.yaml --seed 42
-
-# Preview the design expansion
-pmspec preview my-study.yaml --seed 42
-
-# If there are issues, refine with Claude and re-validate
+pmspec compile my-study.yaml --seed 42        # writes my-study.lock.yaml beside it
+git add my-study.yaml my-study.lock.yaml && git commit -m "study: lock v1"
 ```
 
-### Step 4: Generate and Review JSON
+The **lock** is the reproducibility artifact: every crawler expanded, every random
+draw fixed by the one seed, every data pool inlined, secrets left as
+`${secret:…}` placeholders, and session starts expressed as offsets from a
+`schedule.anchor`. It is committable by construction — `compile` refuses a literal
+credential — and byte-deterministic: the same spec and seed always produce the same
+file. Its header records the spec's sha256, the git commit it was compiled from
+(`-dirty` if the tree was not clean), the generator, the pmspec version and the seed.
+
+### Step 4: Upload the lock
 
 ```bash
-# Generate API-compatible JSON
-pmspec generate my-study.yaml --seed 42 -o my-study.json
-
-# Review the output to verify crawler configurations
+pmspec secrets check my-study.lock.yaml       # which ${secret:…} keys it needs, none printed
+pmspec upload my-study.lock.yaml --mode test  # VM runner, name prefixed test-…, dirty commit ok
+pmspec upload my-study.lock.yaml --mode real  # as in the lock; refuses a dirty/unknown commit
 ```
 
-### Step 5: Upload to PrimeMover
+`--mode` is required. Upload resolves `${secret:key}` from `~/.config/primemover/secrets.toml`
+(mode 600; or `$PMSPEC_SECRETS_FILE`), resolves the anchor (`upload` = now, Europe/Zurich),
+creates the experiment with a **provenance record** as experiment preferences
+(`pmspec.lock_sha256`, `pmspec.seed`, `pmspec.anchor`, `pmspec.git_commit`, `pmspec.mode`, …),
+uploads the crawlers, then immediately runs `verify`. `--record ledger.txt` appends a one-line
+record (`<time> exp=<id> mode=… lock=… commit=… api=…`) you can commit next to the lock.
 
-**Option A: Upload via CLI** (recommended)
+### Step 5: Verify, any time later
+
 ```bash
-# Test with dry run first
-pmspec upload my-study.yaml --seed 42 --dry-run
-
-# Upload to create the experiment
-pmspec upload my-study.yaml --seed 42
+pmspec verify 181 my-study.lock.yaml          # BOUND/UNBOUND + structural diff
+pmspec verify 181 my-study.lock.yaml --deep   # also jobs and behaviours (via the export)
 ```
 
-**Option B: Upload via GUI**
-```bash
-# Generate JSON file
-pmspec generate my-study.yaml -o my-study.json --seed 42
+`BOUND` means the server's `pmspec.lock_sha256` matches this file. The structural diff
+compares params, configuration preferences, agent location, proxy host/port/type, and
+each queue's start time (credentials are never compared or printed). `verify` says nothing
+about execution — use `GET /experiments/{id}/health` for that.
 
-# Then upload the JSON file via the GUI at http://localhost:8090/gui
-# Navigate to Experiments → Upload and select my-study.json
-```
+### The seed
 
-### The `--seed` Option
-
-Use `--seed` for reproducible randomization. The same seed produces identical:
-- Parameter samples from distributions
-- Random file selections
-- Stratified sampling assignments
-
-This ensures your experiment can be reproduced exactly.
+There is exactly one: `--seed N` (or `design.seed` when no flag is given). `compile`
+refuses to produce an unseeded lock. Pools, file selections and design expansion all
+derive from it, so the same seed reproduces every draw.
 
 ---
 
@@ -114,6 +112,30 @@ The `experiment:` mapping accepts an optional runner choice:
 
 - `runner_user_id` (optional, integer): which runner executes the study. `1` = ex63
   (the default when omitted), `3` = the runner-only VM.
+
+### Locks, provenance and verify — for generators
+
+A lock can also be *written* directly by a generator (R, Python) instead of compiled from a
+spec; `pmspec validate my.lock.yaml` checks it against
+`experiment_designer/schema/lock-1.schema.json`. Shape:
+
+```yaml
+pmspec_lock: 1
+provenance: {spec_path, spec_sha256, generator, git_commit, pmspec_version, compiled_at, seed, lax}
+experiment: {name, description, runner_user_id}
+schedule: {anchor: upload | "YYYY-MM-DDTHH:MM:SS"}   # Europe/Zurich wall clock
+crawlers:            # the API upload shape, except:
+  - …
+    proxy: {…, username: "${secret:k.u}", password: "${secret:k.p}"}   # placeholders, never literals
+    queues:
+      - start_offset: "+5m"                                            # not start_at
+```
+
+Through the MCP: `compile_experiment_spec(yaml_content, files={"pool.csv": "<content>"}, seed=…)`
+returns the lock text; `upload_experiment(lock_content, mode=…)` and
+`verify_experiment(experiment_id, lock_content)` take it from there. A lock compiled through the
+MCP carries no git commit (the repo is not on that host), so a `real` upload needs the CLI in the
+committed repo.
 
 ## Installation
 
@@ -670,10 +692,13 @@ crawlers:
 
 | Command | Description |
 |---------|-------------|
-| `validate <file> [--seed N]` | Validate YAML spec |
-| `generate <file> [-o output.json] [--seed N]` | Convert to API JSON |
+| `validate <file> [--seed N]` | Validate a spec or a lock |
+| `compile <file> [-o out] --seed N [--anchor] [--generator] [--lax]` | Compile a spec into a committable lock |
+| `upload <lock> --mode real\|test [-e ID] [--dry-run] [--record] [--allow-dirty] [--allow-past] [--deep] [--secrets] [--seed N]` | Upload a lock (or compile a spec, then upload) and verify |
+| `verify <experiment_id> <lock> [--deep]` | Check a live experiment is bound to, and identical to, a lock |
+| `secrets check <lock> [--secrets]` | List the secrets a lock references and which are missing |
+| `generate <file> [-o output.json] [--seed N] [--resolve-secrets]` | Convert a spec or lock to API JSON (GUI upload only; carries no provenance) |
 | `preview <file> [--seed N]` | Preview factorial design |
-| `upload <file> [--dry-run] [-e ID] [--seed N]` | Upload to API |
 | `schema jobs` | List all job types |
 | `schema job <type>` | Show job type details |
 | `init [-t template]` | Create from template |
