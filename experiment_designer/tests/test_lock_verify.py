@@ -6,6 +6,8 @@ import zipfile
 from datetime import datetime
 from typing import Any
 
+import pytest
+
 from experiment_designer.lock.io import dump_lock, sha256_text
 from experiment_designer.lock.verify import Difference, compare_shapes, lock_shape, verify_lock
 from experiment_designer.spec.time_utils import API_TIMEZONE
@@ -203,6 +205,21 @@ def test_shallow_verify_does_not_download_and_ignores_jobs():
     assert r.ok and not any("download" in c for c in s.calls)
 
 
+def test_export_jobs_raises_a_clear_error_when_the_behaviors_csv_is_missing():
+    from experiment_designer.lock.verify import _export_jobs
+
+    class MissingBehaviorsSession:
+        def get_bytes(self, path, params=None):
+            buf = io.BytesIO()
+            with zipfile.ZipFile(buf, "w") as z:
+                z.writestr("7_primemover_jobs.csv", "ID,Order,Type,Queue ID\n900,1,visitjob,500\n")
+                z.writestr("7_primemover_crawlers.csv", "ID\n30\n")
+            return buf.getvalue()
+
+    with pytest.raises(ValueError, match=r"export zip has no \*_jobs\.csv/\*_behaviors\.csv"):
+        _export_jobs(MissingBehaviorsSession(), 7)
+
+
 def test_deep_verify_compares_job_behaviours():
     text = dump_lock(make_lock())
     s = FakeSession(text, mutate={"url": "https://other"})
@@ -287,6 +304,44 @@ def test_paginate_stops_on_an_empty_first_page():
     s = FakeSession(text)
     assert verify_mod._paginate(s, "experiments/7/queues-processed") == []
     assert len(s.pages) == 1
+
+
+def test_live_shape_fetches_a_shared_configuration_only_once():
+    from experiment_designer.lock.verify import live_shape
+
+    calls: list[str] = []
+
+    class SharedConfigSession:
+        def get(self, path, params=None):
+            calls.append(path)
+            if path == "experiments/7":
+                return {
+                    "id": 7,
+                    "crawlers": [
+                        {
+                            "id": 30,
+                            "name": "bot_a",
+                            "agent": {},
+                            "proxy": {},
+                            "configuration": {"id": 90, "preferences": []},
+                        },
+                        {
+                            "id": 31,
+                            "name": "bot_b",
+                            "agent": {},
+                            "proxy": {},
+                            "configuration": {"id": 90, "preferences": []},
+                        },
+                    ],
+                }
+            if path == "configurations/90":
+                return {"params": [{"pi": "1"}]}
+            if path.startswith("experiments/7/queues-"):
+                return []
+            raise AssertionError(path)
+
+    live_shape(SharedConfigSession(), 7, deep=False)
+    assert calls.count("configurations/90") == 1
 
 
 def test_live_crawlers_absent_from_the_lock_are_a_note_not_a_difference():

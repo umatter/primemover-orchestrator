@@ -469,6 +469,12 @@ class TestDataPoolManager(unittest.TestCase):
         self.assertFalse(self.manager.is_pool_reference({"url": "https://example.com"}))
         self.assertFalse(self.manager.is_pool_reference("string"))
 
+    def test_is_pool_reference_requires_a_string_from_pool(self):
+        """A boolean `from_pool` (e.g. `proxy: {from_pool: true, ...}`) is a different,
+        unimplemented shape -- must agree with resolve_pool_references, which passes it
+        through untouched rather than resolving it."""
+        self.assertFalse(self.manager.is_pool_reference({"from_pool": True}))
+
 
 class TestDesignExpanderWithDistributions(unittest.TestCase):
     """Tests for DesignExpander with distribution sampling."""

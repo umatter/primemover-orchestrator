@@ -179,8 +179,12 @@ def _export_jobs(session: Any, experiment_id: int) -> dict[int, list[dict[str, A
     behaviours: dict[int, dict[str, str]] = defaultdict(dict)
     with zipfile.ZipFile(io.BytesIO(blob)) as z:
         names = z.namelist()
-        beh_name = next(n for n in names if n.endswith("_behaviors.csv"))
-        job_name = next(n for n in names if n.endswith("_jobs.csv"))
+        beh_name = next((n for n in names if n.endswith("_behaviors.csv")), None)
+        job_name = next((n for n in names if n.endswith("_jobs.csv")), None)
+        if beh_name is None or job_name is None:
+            raise ValueError(
+                "export zip has no *_jobs.csv/*_behaviors.csv; files: " + ", ".join(names)
+            )
         for row in csv.DictReader(io.TextIOWrapper(z.open(beh_name), encoding="utf-8")):
             behaviours[int(row["Job ID"])][row["Name"]] = row["Value"]
         for row in csv.DictReader(io.TextIOWrapper(z.open(job_name), encoding="utf-8")):
@@ -208,12 +212,21 @@ def live_shape(
         by_crawler[int(q["crawler_id"])].append(q)
     jobs = _export_jobs(session, experiment_id) if deep else {}
 
+    # Two crawlers can share a configuration id (a template applied to both); fetch each
+    # id at most once rather than once per crawler.
+    config_cache: dict[int, dict[str, Any]] = {}
+
+    def _configuration(config_id: int) -> dict[str, Any]:
+        if config_id not in config_cache:
+            config_cache[config_id] = session.get(f"configurations/{config_id}") or {}
+        return config_cache[config_id]
+
     crawlers: dict[str, Any] = {}
     for c in exp.get("crawlers", []):
         config = c.get("configuration") or {}
         params_rows: list[dict[str, Any]] = []
         if config.get("id") is not None:
-            params_rows = (session.get(f"configurations/{config['id']}") or {}).get("params") or []
+            params_rows = _configuration(config["id"]).get("params") or []
         proxy = c.get("proxy") or {}
         entry: dict[str, Any] = {
             "params": _params(params_rows[0] if params_rows else None),

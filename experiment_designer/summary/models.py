@@ -312,6 +312,12 @@ class ExperimentSummary:
             },
         }
 
+        # Lock provenance: the commit and seed the lock recorded, for a source that
+        # is a lock. Mirrors to_text()'s "Source: lock (seed X, commit Y)" line.
+        if self.source == DataSource.LOCK:
+            result["metadata"]["source_commit"] = self.source_commit
+            result["metadata"]["source_seed"] = self.design_seed
+
         # Add runtime identity for API sources
         if self.experiment_id is not None:
             result["metadata"]["experiment_id"] = self.experiment_id

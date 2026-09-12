@@ -32,6 +32,15 @@ def test_spec_and_lock_summaries_agree(name):
     assert from_lock.design_seed == 7
 
 
+def test_to_dict_metadata_carries_lock_provenance():
+    from experiment_designer.tests.test_lock_io import make_lock
+
+    summary = SummaryGenerator().from_lock(make_lock())
+    metadata = summary.to_dict()["metadata"]
+    assert metadata["source_commit"] == "a2024c9"
+    assert metadata["source_seed"] == 42
+
+
 def test_lock_summary_text_names_its_source():
     path = EXAMPLES / COMPILABLE[0]
     result = compile_spec(path.read_text(), base_dir=path.parent, spec_path="x", seed=7)

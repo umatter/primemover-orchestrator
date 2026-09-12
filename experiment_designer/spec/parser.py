@@ -20,7 +20,7 @@ from typing import Any
 
 import yaml
 
-from .data_pools import DataPoolManager, resolve_pool_references
+from .data_pools import DataPoolManager
 from .drops import Drops
 from .file_loader import FileLoader, create_file_tag_loader, resolve_file_references
 from .job_registry import JobRegistry
@@ -218,53 +218,6 @@ class SpecParser:
     def get_pool_manager(self) -> DataPoolManager | None:
         """Get the data pool manager (available after parse() is called)."""
         return self.pool_manager
-
-    def resolve_pool_references_in_crawler(
-        self, crawler: dict[str, Any], crawler_context: dict[str, Any] | None = None
-    ) -> dict[str, Any]:
-        """
-        Resolve data pool references in a crawler configuration.
-
-        This method should be called after design expansion when crawler
-        parameters (like pi, kappa, alpha) are known.
-
-        Args:
-            crawler: Crawler definition with potential pool references
-            crawler_context: Crawler parameters for scoring expressions
-                (e.g., {"pi": -0.5, "kappa": 1, "alpha": 0.35})
-
-        Returns:
-            Crawler with pool references resolved to actual data
-
-        Example pool reference in crawler:
-            configuration:
-              params:
-                media_outlet_urls:
-                  from_pool: outlets
-                  select: top
-                  count: 10
-                  score: "{alpha} - {tau} * pow(abs({crawler.pi} - {item.pi}), 2)"
-        """
-        if not self.pool_manager:
-            return crawler
-
-        context = crawler_context or {}
-
-        # Build context from crawler params if not provided
-        if not context and "configuration" in crawler:
-            params = crawler["configuration"].get("params", {})
-            context = {k: v for k, v in params.items() if not isinstance(v, (dict, list))}
-
-        # Resolve pool references recursively
-        resolved: dict[str, Any] = resolve_pool_references(crawler, self.pool_manager, context)
-
-        # Propagate any errors/warnings
-        self.errors.extend(self.pool_manager.errors)
-        self.warnings.extend(self.pool_manager.warnings)
-        self.pool_manager.errors = []
-        self.pool_manager.warnings = []
-
-        return resolved
 
     def _expand_crawler(
         self,

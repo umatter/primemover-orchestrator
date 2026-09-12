@@ -310,8 +310,14 @@ class DataPoolManager:
         return result
 
     def is_pool_reference(self, value: Any) -> bool:
-        """Check if a value is a pool reference."""
-        return isinstance(value, dict) and "from_pool" in value
+        """Check if a value is a pool reference.
+
+        Matches ``resolve_pool_references``'s own test: ``from_pool`` must be a string. A
+        boolean ``from_pool`` (e.g. ``proxy: {from_pool: true, pool: ...}``) is a different,
+        unimplemented shape that resolve_pool_references passes through untouched, so this
+        must not call it a reference either.
+        """
+        return isinstance(value, dict) and isinstance(value.get("from_pool"), str)
 
     def get_pool_names(self) -> list[str]:
         """Get list of loaded pool names."""
