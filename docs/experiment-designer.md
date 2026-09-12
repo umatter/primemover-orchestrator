@@ -83,6 +83,32 @@ compares params, configuration preferences, agent location, proxy host/port/type
 each queue's start time (credentials are never compared or printed). `verify` says nothing
 about execution — use `GET /experiments/{id}/health` for that.
 
+### Step 6: Day to day
+
+```bash
+pmspec status 181                                    # provenance + health, no lock needed
+pmspec status 181 my-study.lock.yaml --deep          # + verify: BOUND, and jobs/behaviours too
+pmspec diff my-study.lock.yaml my-study-v2.lock.yaml # what changed between two locks
+pmspec cleanup --dry-run                             # list test-mode experiments eligible for deletion
+pmspec cleanup --older-than 7d --yes                 # delete them
+```
+
+`status` is a superset of `verify`: without a lock it reports provenance (the `pmspec.*`
+preferences the experiment was uploaded with) and the `--hours`-windowed health; give it a lock and
+it also runs the same BOUND/structural check as `verify`, `--deep` included. It is the one command
+to reach for when checking in on an experiment later, lock in hand or not.
+
+`diff` compares two locks directly — provenance side by side, the anchor, and crawler-level
+structural differences — with no live experiment or API call. Use it before uploading a revision,
+to see exactly what would change relative to the lock already bound to a live experiment.
+
+`cleanup` never deletes by name. A candidate must have a name starting `test-` **and**
+`pmspec.mode == "test"` in its preferences — the prefix only narrows which experiments are fetched;
+the preference is what actually authorises deletion. `--dry-run` lists candidates and deletes
+nothing; `--older-than 7d|36h|90m` keeps only experiments whose latest `pmspec.uploaded_at` is at
+least that old (omit it and an experiment with no parseable timestamp is still a candidate);
+`--yes` skips the confirmation prompt.
+
 ### The seed
 
 There is exactly one: `--seed N` (or `design.seed` when no flag is given). `compile`
@@ -148,6 +174,12 @@ repo the spec lives in, so provenance is the caller's to supply: pass
 therefore: commit the spec and pools → `compile_experiment_spec(…, git_commit=…, spec_path=…)` →
 write the returned lock into the repo and commit it → `upload_experiment(lock, mode=…)` →
 `verify_experiment`.
+
+For checking in later, two more MCP tools mirror the CLI's day-to-day commands:
+`experiment_status(experiment_id, hours=24, lock_content=None, deep=False)` reports provenance and
+health always, and — when `lock_content` is given — the same BOUND/structural verify as
+`verify_experiment`, `deep` included, all in one call; `diff_locks(lock_a, lock_b)` compares two
+locks' provenance, anchor and crawler structure with no live experiment or API call at all.
 
 ## The strict contract
 
@@ -789,6 +821,9 @@ crawlers:
 | `compile <file> [-o out] --seed N [--anchor] [--generator] [--lax]` | Compile a spec into a committable lock |
 | `upload <lock> --mode real\|test [-e ID] [--dry-run] [--record] [--allow-dirty] [--allow-past] [--deep] [--secrets] [--seed N]` | Upload a lock (or compile a spec, then upload) and verify |
 | `verify <experiment_id> <lock> [--deep]` | Check a live experiment is bound to, and identical to, a lock |
+| `status <experiment_id> [lock] [--hours N] [--deep]` | Provenance + health of a live experiment; with a lock, also verify |
+| `diff <lock_a> <lock_b>` | Diff two locks: provenance, anchor, crawler-level structural differences |
+| `cleanup [--older-than 7d] [--dry-run] [--yes]` | Delete pmspec TEST experiments only (`test-` name **and** `pmspec.mode=test`) |
 | `secrets check <lock> [--secrets]` | List the secrets a lock references and which are missing |
 | `generate <file> [-o output.json] [--seed N] [--resolve-secrets]` | Convert a spec or lock to API JSON (GUI upload only; carries no provenance) |
 | `preview <file> [--seed N]` | Preview factorial design |

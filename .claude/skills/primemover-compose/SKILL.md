@@ -82,6 +82,12 @@ call again with `confirm=true`. Report the created `run_id` and job ids.
 Granular alternative (when editing an existing run): `pm_create_run` → `pm_add_job` (repeat, it
 auto-orders and chains) → `pm_set_behaviour` per parameter.
 
+### Checking on it after upload
+Once a pmspec upload has gone through, `experiment_status(experiment_id, lock_content=<lock text>)`
+is the one call worth reaching for: provenance (what was uploaded), health, and — because a lock is
+in hand — whether the live experiment is still bound to, and identical to, it, all in one response.
+It supersedes a separate `verify_experiment` call for this purpose.
+
 ### Step 4 — Get the job parameters right
 Each job type needs specific behaviours. Check `get_job_type_schema(<type>)` when unsure — it accepts
 **either** the API type (`visitjob`, what the `pm_` write tools take) **or** the DSL yaml_name
@@ -102,6 +108,13 @@ type**. Common ones:
 `get_queue(run_id)` to read the composed run back and show the user. A new run is created
 **inactive** (`active=0`). Only when the user says to run it, `pm_activate_run(run_id)` (dry-run →
 confirm) so the runner will pick it up.
+
+## Test runs — clean up when done
+A factorial-path experiment uploaded with `upload_experiment(..., mode='test')` should end with
+`pm_cleanup_test_experiments(older_than=…)` (dry-run: lists candidates), then `confirm=true` once
+the user agrees. It only ever deletes experiments whose name starts `test-` **and** whose
+`pmspec.mode` preference is `"test"` — set by that upload, never by name alone — so a real study is
+never at risk.
 
 ## Safety rules
 - **Always dry-run first.** Show the plan; get explicit approval before `confirm=true`.

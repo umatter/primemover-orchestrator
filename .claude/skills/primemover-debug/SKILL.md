@@ -56,6 +56,14 @@ A `skipped` job usually means an **earlier** job failed (jobs skip after a failu
 ## Playbook
 Run in order. Summarize each finding in a sentence. **Stop and report once you have a root cause.**
 
+### Step 0 — pmspec-managed experiment?
+If the experiment carries `pmspec.*` preferences (uploaded via `pmspec upload` /
+`upload_experiment`), start with **`experiment_status(experiment_id, lock_content=<the lock's
+text>)`** instead of hand-assembling the picture below — one call returns provenance (what was
+uploaded and when), health, and whether the live experiment is still bound to, and identical to,
+that lock. Fall through to Step 1 only if it isn't pmspec-managed, or `experiment_status` doesn't
+explain the symptom.
+
 ### Step 1 — Scope it
 If the user named a run/job/experiment, start there. Otherwise:
 ```
