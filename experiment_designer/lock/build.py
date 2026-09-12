@@ -100,7 +100,10 @@ def compile_spec(
     if effective_seed is None:
         return CompileResult(
             None,
-            ["no seed: pass --seed N or set design.seed; a lock is never unseeded"],
+            _merge(
+                validation.errors,
+                ["no seed: pass --seed N or set design.seed; a lock is never unseeded"],
+            ),
             _merge(validation.warnings, parsed.warnings),
             validation.dropped + parsed.dropped,
         )
