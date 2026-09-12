@@ -106,6 +106,23 @@ def test_creates_experiment_with_provenance_then_uploads_crawlers(store):
     assert result.record_line.startswith("2026-10-01T10:00:00+02:00 exp=181 mode=real lock=")
 
 
+def test_lock_contact_is_sent_and_beats_the_option_default(store):
+    lock = make_lock(
+        experiment={
+            "name": "Study",
+            "description": "",
+            "runner_user_id": None,
+            "contact": "ada@example.org",
+        }
+    )
+    session = FakeSession()
+    upload_lock(dump_lock(lock), session=session, store=store, options=_opts())
+    assert session.calls[0][2]["contact"] == "ada@example.org"
+    session = FakeSession()
+    upload_lock(dump_lock(make_lock()), session=session, store=store, options=_opts())
+    assert session.calls[0][2]["contact"] == "pmspec"
+
+
 def test_uploaded_json_has_resolved_start_at_and_secrets(store):
     session = FakeSession()
     upload_lock(dump_lock(make_lock()), session=session, store=store, options=_opts())

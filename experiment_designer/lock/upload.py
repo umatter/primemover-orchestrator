@@ -141,7 +141,7 @@ def upload_lock(
         payload: dict[str, Any] = {
             "name": name,
             "description": lock.experiment.get("description") or "Uploaded by pmspec",
-            "contact": options.contact,
+            "contact": lock.experiment.get("contact") or options.contact,
             "active": 1,
             "preferences": provenance_preferences(
                 lock,

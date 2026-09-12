@@ -40,6 +40,7 @@ class Lock:
                 "name": self.experiment.get("name", ""),
                 "description": self.experiment.get("description", ""),
                 "runner_user_id": self.experiment.get("runner_user_id"),
+                "contact": self.experiment.get("contact"),
             },
             "schedule": {"anchor": self.schedule["anchor"]},
             "crawlers": self.crawlers,
@@ -53,7 +54,13 @@ class Lock:
         prov.setdefault("lax", False)
         return cls(
             provenance=Provenance(**prov),
-            experiment=dict(d["experiment"]),
+            # Normalise so a lock written before `contact` existed round-trips equal.
+            experiment={
+                "name": d["experiment"].get("name", ""),
+                "description": d["experiment"].get("description", ""),
+                "runner_user_id": d["experiment"].get("runner_user_id"),
+                "contact": d["experiment"].get("contact"),
+            },
             schedule=dict(d["schedule"]),
             crawlers=list(d["crawlers"]),
         )

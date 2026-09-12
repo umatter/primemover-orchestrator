@@ -233,6 +233,7 @@ def compile_spec(
             "name": result.experiment_name,
             "description": result.experiment_description,
             "runner_user_id": result.experiment_runner_user_id,
+            "contact": result.experiment_contact,
         },
         schedule={"anchor": anchor_value},
         crawlers=crawlers,

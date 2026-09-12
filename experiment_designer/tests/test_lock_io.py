@@ -71,7 +71,7 @@ def make_lock(**overrides) -> Lock:
             pmspec_version="0.1.0",
             seed=42,
         ),
-        "experiment": {"name": "Study", "description": "", "runner_user_id": None},
+        "experiment": {"name": "Study", "description": "", "runner_user_id": None, "contact": None},
         "schedule": {"anchor": "upload"},
         "crawlers": [crawler],
     }

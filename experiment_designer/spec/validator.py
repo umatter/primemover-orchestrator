@@ -115,7 +115,7 @@ class SpecValidator:
         }
     )
     _KEYS_EXPERIMENT: frozenset[str] = frozenset(
-        {"name", "description", "runner_user_id", "generator"}
+        {"name", "description", "contact", "runner_user_id", "generator"}
     )
     _KEYS_CRAWLER: frozenset[str] = frozenset(
         {

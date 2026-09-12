@@ -51,6 +51,7 @@ class ConversionResult:
     crawler_count: int
     total_jobs: int
     experiment_runner_user_id: int | None = None  # None = the API's default runner
+    experiment_contact: str | None = None
     errors: list[str] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
     dropped: int = 0
@@ -267,6 +268,7 @@ class SpecConverter:
             crawler_count=len(api_crawlers),
             total_jobs=total_jobs,
             experiment_runner_user_id=runner_user_id,
+            experiment_contact=parsed.experiment.get("contact"),
             errors=self.errors,
             warnings=self.warnings,
             dropped=self.drops.count,

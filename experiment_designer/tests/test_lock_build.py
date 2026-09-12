@@ -217,7 +217,20 @@ def test_spec_path_is_relative_to_the_repo_toplevel(tmp_path: Path, monkeypatch)
 def test_experiment_block_and_runner(spec_dir: Path):
     text = SPEC.replace("  name: Compiled\n", "  name: Compiled\n  runner_user_id: 3\n")
     lock = _compile(spec_dir, text).lock
-    assert lock.experiment == {"name": "Compiled", "description": "", "runner_user_id": 3}
+    assert lock.experiment == {
+        "name": "Compiled",
+        "description": "",
+        "runner_user_id": 3,
+        "contact": None,
+    }
+
+
+def test_experiment_contact_is_carried(spec_dir: Path):
+    """`contact` is an API field the MCP even requires; the spec key used to be
+    silently ignored and the uploader wrote its own."""
+    text = SPEC.replace("  name: Compiled\n", "  name: Compiled\n  contact: ada@example.org\n")
+    lock = _compile(spec_dir, text).lock
+    assert lock.experiment["contact"] == "ada@example.org"
 
 
 _POOL_REF = (
