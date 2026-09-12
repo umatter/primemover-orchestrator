@@ -247,15 +247,14 @@ def test_unknown_pool_is_a_compile_error(spec_dir: Path):
     assert any("nope" in e for e in result.errors)
 
 
-def test_boolean_from_pool_is_refused(spec_dir: Path):
-    """`proxy: {from_pool: true}` is accepted by the parser and was silently
-    converted to a 127.0.0.1:8080 proxy. Until phase 2 implements it, a lock
-    must not be built from it."""
+def test_boolean_from_pool_without_pool_is_an_error(spec_dir: Path):
+    """`proxy: {from_pool: true}` with no `pool:` cannot be resolved to a row,
+    and `_convert_proxy` would otherwise quietly turn it into a 127.0.0.1:8080
+    proxy; a lock must not be built from it."""
     text = SPEC + """
   - name: geo_bot
     proxy:
       from_pool: true
-      pool: x
       match_field: location
     session:
       start: "+5m"
@@ -264,4 +263,4 @@ def test_boolean_from_pool_is_refused(spec_dir: Path):
 """
     result = _compile(spec_dir, text)
     assert result.lock is None
-    assert any("crawlers[4].proxy.from_pool" in e and "phase 2" in e for e in result.errors)
+    assert any("crawlers[4].proxy" in e and "needs `pool:`" in e for e in result.errors)

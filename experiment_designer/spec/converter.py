@@ -13,7 +13,7 @@ import re
 from dataclasses import dataclass, field
 from typing import Any
 
-from .data_pools import resolve_pool_references
+from .data_pools import DataPoolManager, resolve_pool_references
 from .design_expander import DesignExpander
 from .drops import Drops
 from .parser import ParsedSpec, SpecParser
@@ -213,19 +213,16 @@ class SpecConverter:
             parsed.pool_manager.errors = []
             parsed.pool_manager.warnings = []
 
+        # Assign one pool row per `proxy: {from_pool: true}` crawler now that
+        # design expansion and pool-reference resolution have fixed each
+        # crawler's agent/location.
+        self._assign_pool_proxies(all_crawlers, parsed.pool_manager)
+
         # Convert each crawler to API format
         api_crawlers = []
         total_jobs = 0
 
         for i, crawler in enumerate(all_crawlers):
-            proxy = crawler.get("proxy")
-            if isinstance(proxy, dict) and proxy.get("from_pool") is True:
-                # The parser accepts this shape and _convert_proxy would quietly
-                # turn it into a 127.0.0.1:8080 proxy; refuse instead.
-                self.errors.append(
-                    f"crawlers[{i}].proxy.from_pool: proxy pools are not implemented yet "
-                    "(phase 2); give the proxy an explicit hostname/port or type: oxylabs"
-                )
             try:
                 api_crawler = self._convert_crawler(crawler, parsed.defaults)
                 api_crawlers.append(api_crawler)
@@ -388,6 +385,68 @@ class SpecConverter:
         if isinstance(value, bool):
             return str(value).lower()
         return str(value) if value is not None else ""
+
+    def _assign_pool_proxies(
+        self, crawlers: list[dict[str, Any]], pool_manager: DataPoolManager | None
+    ) -> None:
+        """Give each `proxy: {from_pool: true}` crawler its own row of the named pool.
+
+        One exit IP per bot is the study requirement (a shared IP is both a
+        detection signal and a confound across arms), so rows are handed out
+        without replacement, in pool order, to crawlers in spec order; running
+        out is an error, not a shared proxy.
+        """
+        used: dict[str, set[int]] = {}
+        for i, crawler in enumerate(crawlers):
+            proxy = crawler.get("proxy")
+            if not (isinstance(proxy, dict) and proxy.get("from_pool") is True):
+                continue
+            prefix = f"crawlers[{i}].proxy"
+            pool_name = proxy.get("pool")
+            field = proxy.get("match_field")
+            if not pool_name or not field:
+                self.errors.append(f"{prefix}: from_pool needs `pool:` and `match_field:`")
+                continue
+            rows = pool_manager.rows(str(pool_name)) if pool_manager else None
+            if rows is None:
+                self.errors.append(
+                    f"{prefix}: unknown pool '{pool_name}' (define it under data_pools)"
+                )
+                continue
+            location = (crawler.get("agent") or {}).get("location")
+            if not location:
+                self.errors.append(
+                    f"{prefix}: from_pool matches on the agent's location, and "
+                    f"crawlers[{i}].agent has none"
+                )
+                continue
+            taken = used.setdefault(str(pool_name), set())
+            candidates = [k for k, row in enumerate(rows) if str(row.get(field)) == str(location)]
+            free = [k for k in candidates if k not in taken]
+            if not candidates:
+                self.errors.append(
+                    f"{prefix}: pool '{pool_name}' has no row with {field} == {location!r}"
+                )
+                continue
+            if not free:
+                self.errors.append(
+                    f"{prefix}: pool '{pool_name}' has {len(candidates)} row(s) for {field} == "
+                    f"{location!r}, all already assigned; crawler '{crawler.get('name')}' gets none"
+                )
+                continue
+            taken.add(free[0])
+            row = rows[free[0]]
+            host = row.get("hostname") or row.get("host") or ""
+            crawler["proxy"] = {
+                "name": f"{pool_name}:{host}:{row.get('port', '')}",
+                "description": f"from pool {pool_name} for {location}",
+                "hostname": host,
+                "port": row.get("port", 0),
+                "username": row.get("username", ""),
+                "password": row.get("password", ""),
+                "type": row.get("type") or "http",
+                "active": True,
+            }
 
     def _convert_proxy(self, proxy: dict[str, Any], defaults: dict[str, Any]) -> dict[str, Any]:
         """Convert proxy section to API format."""

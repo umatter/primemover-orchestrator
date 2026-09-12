@@ -317,6 +317,10 @@ class DataPoolManager:
         """Get list of loaded pool names."""
         return list(self.pools.keys())
 
+    def rows(self, name: str) -> list[dict[str, Any]] | None:
+        """Return the raw rows of a loaded pool, or None if `name` was never loaded."""
+        return self.pools.get(name)
+
     def get_pool_info(self, name: str) -> dict[str, Any] | None:
         """Get information about a pool."""
         if name not in self.pools:
