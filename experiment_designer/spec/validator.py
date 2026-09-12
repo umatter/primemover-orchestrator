@@ -26,6 +26,9 @@ from .drops import Drops
 from .job_registry import JobRegistry
 from .time_utils import is_relative_time
 
+_TEMPLATE_VAR_RE = re.compile(r"\$\{(?!secret:)[^}]*\}|\{[A-Za-z_][A-Za-z0-9_]*(?::[^}]*)?\}")
+_INDEX_RE = re.compile(r"\[\d+\]")
+
 
 @dataclass
 class ValidationResult:
@@ -821,7 +824,19 @@ class SpecValidator:
         if not HAS_JSONSCHEMA:
             return
 
-        config = dict(treatment) if isinstance(treatment, dict) else {}
+        # A strategy marker with no treatment activates the behaviours channel
+        # for a job that carries no arm (a neutral bank shared by every arm);
+        # the schema describes the treatment, so there is nothing to check.
+        if not isinstance(treatment, dict) or not treatment:
+            return
+        # Template parameters (`${reliability}`) have no value until a workflow
+        # step supplies it with `with:`; the concrete values are validated after
+        # expansion by validate_expanded(). Checking the placeholder against an
+        # enum here would refuse every templated treatment.
+        if any(isinstance(v, str) and _TEMPLATE_VAR_RE.search(v) for v in treatment.values()):
+            return
+
+        config = dict(treatment)
         config["strategy"] = strategy
         try:
             jsonschema.validate(config, schema)
@@ -831,6 +846,56 @@ class SpecValidator:
                 f"{prefix}.lambda_select.treatment: invalid for strategy '{strategy}' "
                 f"at {location}: {exc.message}"
             )
+
+    def validate_expanded(self, api_crawlers: list[dict[str, Any]]) -> list[str]:
+        """Validate every expanded job's treatment against its strategy schema.
+
+        After expansion a lambda_select's treatment is flat: `strategy` and the
+        treatment keys sit next to the job-control behaviours (task, linkType,
+        linkValue, ...). Only the keys the schema declares are collected, so a
+        schema with additionalProperties: false does not see the job controls.
+        Identical failures are grouped across crawlers -- a bad template value
+        would otherwise be reported once per bot.
+        """
+        if not HAS_JSONSCHEMA:
+            return []
+        groups: dict[tuple[str, str], list[str]] = {}
+        for i, crawler in enumerate(api_crawlers):
+            for j, queue in enumerate(crawler.get("queues") or []):
+                for k, job in enumerate(queue.get("jobs") or []):
+                    behaviours = {
+                        b.get("name"): b.get("value")
+                        for b in job.get("behaviors") or []
+                        if isinstance(b, dict)
+                    }
+                    strategy = behaviours.get("strategy")
+                    if not strategy:
+                        continue
+                    schema = self._strategy_schema(str(strategy), f"crawlers[{i}]")
+                    if schema is None:
+                        continue
+                    declared = set((schema.get("properties") or {}).keys()) - {"strategy"}
+                    config = {key: behaviours[key] for key in declared if key in behaviours}
+                    if not config:
+                        continue  # marker-only job
+                    config["strategy"] = strategy
+                    try:
+                        jsonschema.validate(config, schema)
+                    except jsonschema.ValidationError as exc:
+                        location = ".".join(str(p) for p in exc.absolute_path) or "(root)"
+                        path = f"crawlers[{i}].queues[{j}].jobs[{k}]"
+                        message = (
+                            f"treatment invalid for strategy '{strategy}' at {location}: "
+                            f"{exc.message}"
+                        )
+                        groups.setdefault((_INDEX_RE.sub("[*]", path), message), []).append(path)
+        out = []
+        for (generic, message), paths in groups.items():
+            if len(paths) == 1:
+                out.append(f"{paths[0]}: {message}")
+            else:
+                out.append(f"{generic}: {message} ({len(paths)} place(s), first: {paths[0]})")
+        return out
 
     def _validate_job_shorthand(
         self, job_type: str, value: Any, prefix: str, errors: list[str], warnings: list[str]

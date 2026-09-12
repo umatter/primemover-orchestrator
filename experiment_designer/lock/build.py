@@ -131,9 +131,8 @@ def compile_spec(
         raw = resolve_file_references(raw, file_loader)
     except yaml.YAMLError as e:
         return CompileResult(None, [f"YAML parse error: {e}"], [])
-    validation = SpecValidator(base_dir=base_dir, lax=lax).validate(
-        raw if isinstance(raw, dict) else {}
-    )
+    validator = SpecValidator(base_dir=base_dir, lax=lax)
+    validation = validator.validate(raw if isinstance(raw, dict) else {})
 
     # The validator above already names every unknown workflow item; the parser
     # must not report it a second time (report_unknown_items=False).
@@ -180,9 +179,12 @@ def compile_spec(
             report_unknown_items=False,
         )
 
+    # Treatment values are concrete only now (`with:` and design variables
+    # substituted); the raw pass above skipped templated ones.
+    expanded_errors = validator.validate_expanded(result.json_data)
     dropped = validation.dropped + parsed.dropped + result.dropped
     errors, warnings = merge_reports(
-        [validation.errors, parsed.errors, result.errors],
+        [validation.errors, parsed.errors, result.errors, expanded_errors],
         [validation.warnings, parsed.warnings, result.warnings],
         dropped,
         lax,

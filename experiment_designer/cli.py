@@ -142,7 +142,12 @@ def validate(file: str, format: str, strict: bool, lax: bool, seed: int | None):
     # Combine all errors and warnings: de-duplicated, one drop-count line
     dropped = validation_result.dropped + parsed.dropped + result.dropped
     all_errors, all_warnings = merge_reports(
-        [validation_result.errors, parsed.errors, result.errors],
+        [
+            validation_result.errors,
+            parsed.errors,
+            result.errors,
+            validator.validate_expanded(result.json_data),
+        ],
         [validation_result.warnings, parsed.warnings, result.warnings],
         dropped,
         lax,

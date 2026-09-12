@@ -98,3 +98,87 @@ def test_compile_with_files_carrying_the_schema_via_mcp():
         )
     )
     assert "lock" in out, out
+
+
+# --- treatment values are only concrete after expansion ------------------------
+
+TEMPLATED = """
+version: "1.0"
+experiment: {name: S}
+strategy_schemas:
+  autocomplete_v1:
+    type: object
+    required: [strategy, reliability]
+    properties:
+      strategy: {const: autocomplete_v1}
+      reliability: {enum: [high, low]}
+    additionalProperties: false
+templates:
+  diet:
+    - lambda_select:
+        task: t
+        function: f
+        strategy: autocomplete_v1
+        treatment: {reliability: "${reliability}"}
+  neutral:
+    - lambda_select:
+        task: t
+        function: f
+        strategy: autocomplete_v1
+crawlers:
+  - name: bot
+    session:
+      start: "+1m"
+      workflow:
+        - template: diet
+          with: {reliability: high}
+        - template: neutral
+"""
+
+
+def test_template_placeholders_are_not_validated_against_the_schema():
+    """`${reliability}` is a template parameter; its value exists only after `with:`."""
+    r = _validate(TEMPLATED)
+    assert r.valid, r.errors
+
+
+def test_marker_only_job_is_valid():
+    """A `strategy` with no `treatment` activates the behaviours channel for a job
+    that carries no arm (the neutral bank); the schema's `required` is about the
+    treatment, not about the marker."""
+    text = TEMPLATED.replace("        - template: diet\n          with: {reliability: high}\n", "")
+    assert _validate(text).valid
+
+
+def test_expanded_values_are_validated_and_grouped():
+    from experiment_designer.lock.build import compile_spec
+
+    bad = TEMPLATED.replace("with: {reliability: high}", "with: {reliability: medium}")
+    r = compile_spec(bad, base_dir=Path("."), spec_path="s.yaml", seed=1)
+    assert r.lock is None
+    hits = [e for e in r.errors if "invalid for strategy 'autocomplete_v1'" in e and "medium" in e]
+    assert len(hits) == 1, r.errors
+    assert "crawlers[0].queues[0].jobs[0]" in hits[0]
+    good = compile_spec(TEMPLATED, base_dir=Path("."), spec_path="s.yaml", seed=1)
+    assert good.lock is not None, good.errors
+
+
+def test_expanded_validation_ignores_job_control_behaviours():
+    """task/linkType/linkValue live next to the treatment keys as behaviours; a
+    schema with additionalProperties: false must not see them."""
+    from experiment_designer.lock.build import compile_spec
+
+    r = compile_spec(TEMPLATED, base_dir=Path("."), spec_path="s.yaml", seed=1)
+    assert r.lock is not None, r.errors
+
+
+def test_expanded_errors_are_grouped_across_crawlers():
+    from experiment_designer.lock.build import compile_spec
+
+    many = TEMPLATED.replace("with: {reliability: high}", "with: {reliability: medium}").replace(
+        "crawlers:\n  - name: bot\n",
+        "design:\n  factors:\n    arm:\n      levels: [a, b, c]\n  replications: 2\ncrawlers:\n  - name: bot_{arm}_{replica}\n    from_design: true\n",
+    )
+    r = compile_spec(many, base_dir=Path("."), spec_path="s.yaml", seed=1)
+    hits = [e for e in r.errors if "medium" in e]
+    assert len(hits) == 1 and "6 place(s)" in hits[0], r.errors
