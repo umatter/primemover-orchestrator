@@ -20,6 +20,7 @@ try:
 except ImportError:
     HAS_JSONSCHEMA = False
 
+from .drops import Drops
 from .job_registry import JobRegistry
 from .time_utils import is_relative_time
 
@@ -32,6 +33,7 @@ class ValidationResult:
     errors: list[str] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
     info: dict[str, Any] = field(default_factory=dict)
+    dropped: int = 0
 
 
 class SpecValidator:
@@ -91,14 +93,17 @@ class SpecValidator:
         }
     )
 
-    def __init__(self, schema_path: str | None = None):
+    def __init__(self, schema_path: str | None = None, *, lax: bool = False):
         """
         Initialize validator.
 
         Args:
             schema_path: Path to JSON Schema file (uses default if not specified)
+            lax: Report drops as warnings-plus-count instead of errors
         """
         self.schema = None
+        self.lax = lax
+        self.drops = Drops(lax)
         self._load_schema(schema_path)
 
     def _load_schema(self, schema_path: str | None = None) -> None:
@@ -134,6 +139,7 @@ class SpecValidator:
         errors: list[str] = []
         warnings: list[str] = []
         info: dict[str, Any] = {}
+        self.drops = Drops(self.lax)
 
         # 1. JSON Schema validation (if available)
         schema_errors = self._validate_schema(spec)
@@ -173,7 +179,15 @@ class SpecValidator:
         errors.extend(switch_errors)
         warnings.extend(switch_warnings)
 
-        return ValidationResult(valid=len(errors) == 0, errors=errors, warnings=warnings, info=info)
+        self.drops.merge_into(errors, warnings)
+
+        return ValidationResult(
+            valid=len(errors) == 0,
+            errors=errors,
+            warnings=warnings,
+            info=info,
+            dropped=self.drops.count,
+        )
 
     @staticmethod
     def _is_switch_value(value: Any) -> bool:

@@ -14,6 +14,7 @@ from typing import Any
 
 from .data_pools import resolve_pool_references
 from .design_expander import DesignExpander
+from .drops import Drops
 from .parser import ParsedSpec, SpecParser
 from .time_utils import parse_relative_time
 
@@ -36,6 +37,7 @@ class ConversionResult:
     experiment_runner_user_id: int | None = None  # None = the API's default runner
     errors: list[str] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
+    dropped: int = 0
 
     def to_json(self, pretty: bool = True) -> str:
         """Convert to JSON string."""
@@ -110,7 +112,9 @@ class SpecConverter:
             api_json = result.to_json()
     """
 
-    def __init__(self, *, seed: int | None = None, resolve_times: bool = True) -> None:
+    def __init__(
+        self, *, seed: int | None = None, resolve_times: bool = True, lax: bool = False
+    ) -> None:
         self.errors: list[str] = []
         self.warnings: list[str] = []
         # An explicit seed wins over design.seed so a compile can pin every draw
@@ -119,6 +123,8 @@ class SpecConverter:
         # False leaves queue start strings as written ("+5m", "now", ISO) so the
         # lock compiler can express them as offsets from an anchor.
         self.resolve_times = resolve_times
+        self.lax = lax
+        self.drops = Drops(lax)
 
     def _runner_user_id(self, experiment: dict[str, Any]) -> int | None:
         """experiment.runner_user_id, validated; None when absent."""
@@ -144,6 +150,7 @@ class SpecConverter:
         """
         self.errors = list(parsed.errors)  # Copy any parsing errors
         self.warnings = list(parsed.warnings)
+        self.drops = Drops(self.lax)
         runner_user_id = self._runner_user_id(parsed.experiment)
 
         if self.errors:
@@ -218,6 +225,8 @@ class SpecConverter:
             except Exception as e:
                 self.errors.append(f"Error converting crawler {i}: {e}")
 
+        self.drops.merge_into(self.errors, self.warnings)
+
         return ConversionResult(
             json_data=api_crawlers,
             experiment_name=parsed.experiment.get("name", ""),
@@ -227,6 +236,7 @@ class SpecConverter:
             experiment_runner_user_id=runner_user_id,
             errors=self.errors,
             warnings=self.warnings,
+            dropped=self.drops.count,
         )
 
     def convert_from_yaml(self, yaml_content: str) -> ConversionResult:

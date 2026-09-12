@@ -20,6 +20,7 @@ from typing import Any
 import yaml
 
 from .data_pools import DataPoolManager, resolve_pool_references
+from .drops import Drops
 from .file_loader import FileLoader, create_file_tag_loader, resolve_file_references
 from .job_registry import JobRegistry
 
@@ -39,6 +40,7 @@ class ParsedSpec:
     errors: list[str] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
     pool_manager: DataPoolManager | None = None
+    dropped: int = 0
 
 
 # System-level defaults (can be overridden by experiment defaults)
@@ -73,16 +75,18 @@ class SpecParser:
         # Files referenced via !file tag are resolved relative to base_dir
     """
 
-    def __init__(self, base_dir: Path | None = None, seed: int | None = None):
+    def __init__(self, base_dir: Path | None = None, seed: int | None = None, *, lax: bool = False):
         """
         Initialize the spec parser.
 
         Args:
             base_dir: Base directory for resolving file paths in !file tags
             seed: Random seed for reproducible file selections
+            lax: Report drops as warnings-plus-count instead of errors
         """
         self.base_dir = base_dir or Path.cwd()
         self.seed = seed
+        self.lax = lax
         self.errors: list[str] = []
         self.warnings: list[str] = []
         self.file_loader: FileLoader | None = None
@@ -100,6 +104,7 @@ class SpecParser:
         """
         self.errors = []
         self.warnings = []
+        self.drops = Drops(self.lax)
 
         # Create custom YAML loader with !file tag support
         FileTagLoader, self.file_loader = create_file_tag_loader(
@@ -172,6 +177,8 @@ class SpecParser:
             except Exception as e:
                 self.errors.append(f"Error expanding crawler {i}: {e}")
 
+        self.drops.merge_into(self.errors, self.warnings)
+
         return ParsedSpec(
             version=version,
             experiment=experiment,
@@ -184,6 +191,7 @@ class SpecParser:
             errors=self.errors,
             warnings=self.warnings,
             pool_manager=self.pool_manager,
+            dropped=self.drops.count,
         )
 
     def _merge_defaults(self, experiment_defaults: dict[str, Any]) -> dict[str, Any]:
