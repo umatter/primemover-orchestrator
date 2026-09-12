@@ -14,6 +14,7 @@ Handles:
 import copy
 import re
 from dataclasses import dataclass, field
+from datetime import date, datetime
 from pathlib import Path
 from typing import Any
 
@@ -340,6 +341,14 @@ class SpecParser:
         if "start" in expanded:
             expanded["start_at"] = expanded.pop("start")
 
+        # PyYAML resolves an unquoted 2026-10-01T10:00:00 to a datetime; the
+        # time helpers expect the ISO string the author wrote.
+        start = expanded.get("start_at")
+        if isinstance(start, datetime):
+            expanded["start_at"] = start.isoformat()
+        elif isinstance(start, date):
+            expanded["start_at"] = f"{start.isoformat()}T00:00:00"
+
         # Expand workflow to jobs
         if "workflow" in expanded:
             workflow = expanded.pop("workflow")
@@ -440,8 +449,17 @@ class SpecParser:
         if "type" in item:
             return [self._normalize_job(item, defaults)]
 
-        # Unknown format
-        self.warnings.append(f"Unknown workflow item format: {list(item.keys())}")
+        # Unknown format. `_expand_workflow_item` is reached from crawler expansion,
+        # repeat blocks and template expansion (templates are shared across
+        # crawlers), so a precise crawler/queue/job index is not available here
+        # without threading it through all three call paths; `crawler[?]` names
+        # the construct without claiming a precision this call site does not have.
+        self.drops.report(
+            "crawler[?]",
+            f"unknown workflow item {list(item.keys())}",
+            "use a job shorthand (visit, wait, click, …), template:, repeat:, or a full job with "
+            "type:",
+        )
         return []
 
     def _expand_shorthand(

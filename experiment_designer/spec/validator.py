@@ -10,6 +10,7 @@ Performs:
 import json
 import re
 from dataclasses import dataclass, field
+from datetime import date, datetime
 from pathlib import Path
 from typing import Any
 
@@ -588,7 +589,7 @@ class SpecValidator:
         for i, item in enumerate(workflow):
             self._validate_workflow_item(item, f"{prefix}.workflow[{i}]", errors, warnings, spec)
 
-    def _is_valid_timestamp(self, value: str) -> bool:
+    def _is_valid_timestamp(self, value: Any) -> bool:
         """
         Check if timestamp format is valid.
 
@@ -596,7 +597,13 @@ class SpecValidator:
             - "now"
             - Relative offsets: +5m, -1h, +1d, +30s
             - ISO 8601 timestamps: 2025-02-01T10:00:00Z
+
+        An unquoted YAML timestamp (`start: 2026-10-01T10:00:00`) is parsed by
+        PyYAML into a `datetime`/`date`, not a `str` -- normalise it to the ISO
+        string the author wrote before pattern-matching it.
         """
+        if isinstance(value, (datetime, date)):
+            value = value.isoformat()
         if is_relative_time(value):
             return True
         # Check ISO 8601 pattern (date with optional time)

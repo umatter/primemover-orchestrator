@@ -9,6 +9,7 @@ Produces JSON that matches the PrimeMover API upload format:
 
 import copy
 import json
+import re
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -23,6 +24,17 @@ from .time_utils import parse_relative_time
 _STANDARD_PARAM_KEYS = frozenset(
     {"pi", "psi", "alpha", "tau", "kappa", "beta", "active", "search_terms", "media_outlet_urls"}
 )
+
+# `${var}` is a template variable (never supplied via `with:`); `{var}` or
+# `{var:format}` is a design/format placeholder (no factor/parameter defines
+# it). `${secret:...}` is excluded -- that is a resolved runner-side secret
+# reference, not an unresolved DSL variable. The second alternative needs its
+# own `(?<!\$)` guard: without it, a `${secret:x}` the first alternative
+# correctly declines to match (via its lookahead) still gets caught by the
+# second alternative matching the bare `{secret:x}` tail -- reported as a
+# fictitious drop on every proxy that carries one (test_lock_build.py's SPEC
+# does; caught by the full suite, not the brief's own test rows).
+_UNRESOLVED_RE = re.compile(r"\$\{(?!secret:)[^}]*\}|(?<!\$)\{[A-Za-z_][A-Za-z0-9_]*(?::[^}]*)?\}")
 
 
 @dataclass
@@ -224,6 +236,8 @@ class SpecConverter:
 
             except Exception as e:
                 self.errors.append(f"Error converting crawler {i}: {e}")
+
+        self._scan_unresolved(api_crawlers)
 
         self.drops.merge_into(self.errors, self.warnings)
 
@@ -510,6 +524,40 @@ class SpecConverter:
             "description": behavior.get("description", ""),
             "active": behavior.get("active", True),
         }
+
+    def _scan_unresolved(self, api_crawlers: list[dict[str, Any]]) -> None:
+        """Report every DSL variable that survived expansion.
+
+        `${var}` is a template variable nobody supplied via `with:`; `{var}` is a
+        design variable no factor or parameter defines. Either reaches the runner
+        (and the decision function) as a literal string, which is the silent
+        failure the strict contract exists to end. The Multilogin profile is
+        skipped: it is a JSON document with its own %%TOKEN%% placeholders.
+        """
+
+        def walk(node: Any, path: str) -> None:
+            if isinstance(node, str):
+                for m in _UNRESOLVED_RE.finditer(node):
+                    self.drops.report(
+                        path,
+                        f"unresolved variable {m.group(0)!r} would reach the bot as a literal",
+                        "supply it with `with:` on the template call, or define it as a "
+                        "factor/parameter",
+                    )
+            elif isinstance(node, dict):
+                for k, v in node.items():
+                    if k == "multilogin_profile":
+                        continue
+                    walk(v, f"{path}.{k}")
+            elif isinstance(node, list):
+                for i, v in enumerate(node):
+                    if isinstance(v, dict) and "name" in v and "value" in v:
+                        walk(v["value"], f"{path}.{v['name']}")
+                    else:
+                        walk(v, f"{path}[{i}]")
+
+        for i, crawler in enumerate(api_crawlers):
+            walk(crawler, f"crawlers[{i}]")
 
     def _deep_merge(self, base: dict[str, Any], override: dict[str, Any]) -> None:
         """Deep merge override into base dict (in-place)."""

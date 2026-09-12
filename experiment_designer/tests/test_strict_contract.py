@@ -183,3 +183,79 @@ class TestValidatorKeepsWarnings:
             r = SpecValidator().validate(raw)
             unknown = [e for e in r.errors if "unknown key" in e]
             assert unknown == [], (p, unknown)
+
+
+class TestUnresolvedVariables:
+    def _convert(self, yaml_text, lax=False):
+        parsed = SpecParser(lax=lax).parse(yaml_text)
+        assert not parsed.errors, parsed.errors
+        return SpecConverter(lax=lax).convert(parsed)
+
+    def test_template_variable_not_supplied_is_a_drop(self):
+        text = (
+            BASE.replace(
+                '    session:\n      start: "+1m"\n      workflow:\n        - visit: https://example.com\n',
+                '    session:\n      start: "+1m"\n      workflow:\n        - template: t\n',
+            )
+            + "templates:\n  t:\n    - type: {text: '${reliability}', selector: '//x'}\n"
+        )
+        r = self._convert(text)
+        assert any(
+            "${reliability}" in e and "crawlers[0].queues[0].jobs[0]" in e for e in r.errors
+        ), r.errors
+        lax = self._convert(text, lax=True)
+        assert not lax.errors and lax.dropped == 1
+
+    def test_design_variable_not_defined_is_a_drop(self):
+        text = (
+            BASE.replace("  - name: bot\n", "  - name: bot_{arm}_{colour}\n    from_design: true\n")
+            + "design:\n  factors:\n    arm:\n      levels: [a, b]\n  replications: 1\n"
+        )
+        r = self._convert(text)
+        assert any("{colour}" in e for e in r.errors), r.errors
+        assert not any("{arm}" in e for e in r.errors)
+
+    def test_supplied_with_variable_is_fine(self):
+        text = (
+            BASE.replace(
+                "        - visit: https://example.com\n",
+                "        - template: t\n          with: {reliability: high}\n",
+            )
+            + "templates:\n  t:\n    - type: {text: '${reliability}', selector: '//x'}\n"
+        )
+        assert self._convert(text).errors == []
+
+    def test_multilogin_profile_json_is_not_scanned(self):
+        text = BASE.replace(
+            "  - name: bot\n",
+            "  - name: bot\n    agent:\n      multilogin_profile: {notes: 'keep {this} and ${that}'}\n",
+        )
+        assert self._convert(text).errors == []
+
+
+class TestTimestampScalars:
+    def test_unquoted_iso_timestamp_does_not_crash(self):
+        text = BASE.replace('start: "+1m"', "start: 2026-10-01T10:00:00")
+        parsed = SpecParser().parse(text)
+        assert not parsed.errors, parsed.errors
+        r = SpecConverter().convert(parsed)
+        assert r.json_data[0]["queues"][0]["start_at"].startswith("2026-10-01T10:00:00")
+
+    def test_unquoted_date_becomes_midnight(self):
+        text = BASE.replace('start: "+1m"', "start: 2026-10-01")
+        r = SpecConverter().convert(SpecParser().parse(text))
+        assert r.json_data[0]["queues"][0]["start_at"].startswith("2026-10-01T00:00:00")
+
+
+class TestUnknownWorkflowItemDrop:
+    def test_strict_names_the_construct(self):
+        text = BASE.replace("        - visit: https://example.com\n", "        - teleport: x\n")
+        parsed = SpecParser().parse(text)
+        assert any("teleport" in e for e in parsed.errors), parsed.errors
+
+    def test_lax_warns_and_counts_a_drop(self):
+        text = BASE.replace("        - visit: https://example.com\n", "        - teleport: x\n")
+        parsed = SpecParser(lax=True).parse(text)
+        assert not parsed.errors, parsed.errors
+        assert any("teleport" in w for w in parsed.warnings), parsed.warnings
+        assert parsed.dropped == 1
