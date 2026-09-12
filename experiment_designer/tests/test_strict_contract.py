@@ -3,6 +3,8 @@ an error; --lax turns it into a warning and a count. One row per rule."""
 
 from __future__ import annotations
 
+import re
+
 import pytest
 
 from experiment_designer.spec.converter import SpecConverter
@@ -259,3 +261,45 @@ class TestUnknownWorkflowItemDrop:
         assert not parsed.errors, parsed.errors
         assert any("teleport" in w for w in parsed.warnings), parsed.warnings
         assert parsed.dropped == 1
+
+
+class TestFormatSpecs:
+    """design_expander must resolve {name:spec} (e.g. {pi:.2f}), not just the
+    handful of bare {name} forms -- our own shipped examples use it."""
+
+    def _convert(self, yaml_text, lax=False):
+        parsed = SpecParser(lax=lax).parse(yaml_text)
+        assert not parsed.errors, parsed.errors
+        return SpecConverter(lax=lax).convert(parsed)
+
+    def test_numeric_format_spec_on_sampled_and_replica_resolves(self):
+        text = (
+            BASE.replace(
+                "  - name: bot\n",
+                "  - name: bot_{arm}\n"
+                '    description: "A={alpha:.3f} R={replica:02d} arm={arm}"\n'
+                "    from_design: true\n",
+            )
+            + "design:\n  factors:\n    arm:\n      levels: [a, b]\n"
+            "  parameters:\n    alpha:\n      distribution: uniform\n      min: 0\n      max: 1\n"
+            "  replications: 1\n"
+        )
+        r = self._convert(text)
+        assert r.errors == [], r.errors
+        descriptions = [c["description"] for c in r.json_data]
+        assert any(
+            re.match(r"A=\d\.\d{3} R=\d{2} arm=(a|b)", d) for d in descriptions
+        ), descriptions
+
+    def test_format_spec_on_string_value_is_left_unresolved(self):
+        text = (
+            BASE.replace(
+                "  - name: bot\n",
+                "  - name: bot_{arm}\n"
+                '    description: "bad={arm:.2f}"\n'
+                "    from_design: true\n",
+            )
+            + "design:\n  factors:\n    arm:\n      levels: [a, b]\n  replications: 1\n"
+        )
+        r = self._convert(text)
+        assert any("{arm:.2f}" in e for e in r.errors), r.errors

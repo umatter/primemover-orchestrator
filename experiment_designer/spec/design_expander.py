@@ -20,6 +20,10 @@ from typing import Any
 
 from .distributions import ParameterSampler
 
+# Matches any `{name}` or `{name:spec}` token left after the bare-form
+# replacements in `_substitute_variables` -- the general format-spec pass.
+_GENERAL_VAR_RE = re.compile(r"\{([A-Za-z_][A-Za-z0-9_]*)(?::([^}]*))?\}")
+
 
 @dataclass
 class FactorLevel:
@@ -557,6 +561,9 @@ class DesignExpander:
             {replica:02d} - Formatted replication number (zero-padded)
             {cell_index} - Cell index in the design
             {cell_index:03d} - Formatted cell index (zero-padded)
+            {name:spec} - Any of the above (except the {factor:value} form)
+                with an arbitrary str.format() spec, e.g. {pi:.2f},
+                {alpha:.3f} -- see `_general_substitute`.
         """
         result = text
 
@@ -609,7 +616,78 @@ class DesignExpander:
             formatted = str(cell.replica).zfill(width)
             result = result.replace(match.group(0), formatted)
 
+        # General format-spec pass: {name} or {name:spec} for any of the
+        # variable sources above, with an arbitrary str.format() spec
+        # (e.g. {pi:.2f}, {alpha:.3f}). Runs last, so it only ever sees
+        # whatever the bare-token replacements above left behind -- which is
+        # everything that carried a `:spec` other than the handful of bare
+        # forms special-cased above.
+        result = _GENERAL_VAR_RE.sub(lambda m: self._general_substitute(m, cell, factors), result)
+
         return result
+
+    def _general_substitute(
+        self, match: "re.Match[str]", cell: DesignCell, factors: dict[str, Factor]
+    ) -> str:
+        """Resolve one `{name}` / `{name:spec}` token against every variable source.
+
+        Lookup order: factor level id/value, `maps_to` parameter values
+        (last path segment, then full path), sampled parameters, `replica`,
+        `cell_index`. An unknown name is left untouched -- it is either a
+        template variable (`${...}`, never seen here) or a genuinely
+        unresolved design variable, and either way `_scan_unresolved` in the
+        converter is what should report it.
+        """
+        name = match.group(1)
+        spec = match.group(2)  # None when the token has no ":spec"
+
+        # {factor_name:value} is a special form (the level's *value*, not a
+        # format spec on the level id) -- keep it working here too, since the
+        # regex above already normalises it away when the level is found.
+        if spec == "value" and name in cell.factor_values:
+            factor = factors.get(name)
+            level_id = cell.factor_values[name]
+            if factor:
+                for level in factor.levels:
+                    if level.id == level_id:
+                        return str(level.value)
+            # Falls through: no matching level, so `value` is treated as an
+            # (invalid) format spec below and the token is left unresolved.
+
+        value: Any = None
+        found = False
+
+        if name in cell.factor_values:
+            value = cell.factor_values[name]
+            found = True
+        else:
+            for param_path, pvalue in cell.parameter_values.items():
+                if name == param_path or name == param_path.split(".")[-1]:
+                    value = pvalue
+                    found = True
+                    break
+            if not found and name in cell.sampled_parameters:
+                value = cell.sampled_parameters[name]
+                found = True
+            elif not found and name == "replica":
+                value = cell.replica
+                found = True
+            elif not found and name == "cell_index":
+                value = cell.cell_index
+                found = True
+
+        if not found:
+            return match.group(0)
+
+        if spec is not None:
+            try:
+                return format(value, spec)
+            except (ValueError, TypeError):
+                return match.group(0)
+
+        if isinstance(value, float):
+            return f"{value:.6g}"
+        return str(value)
 
     def _set_nested_value(self, obj: dict[str, Any], path: str, value: Any) -> None:
         """
