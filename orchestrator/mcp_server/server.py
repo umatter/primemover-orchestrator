@@ -2179,6 +2179,7 @@ def compile_experiment_spec(
             "git_commit": result.lock.provenance.git_commit,
             "spec_path": result.lock.provenance.spec_path,
             "warnings": result.warnings,
+            "dropped": result.dropped,
         }
     )
 

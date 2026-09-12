@@ -303,3 +303,43 @@ class TestFormatSpecs:
         )
         r = self._convert(text)
         assert any("{arm:.2f}" in e for e in r.errors), r.errors
+
+
+class TestCompileIsStrict:
+    SPEC = BASE.replace(
+        "  - name: bot\n", "  - name: bot\n    configuration:\n      params: {reliability: high}\n"
+    )
+
+    def test_compile_refuses_a_drop(self, tmp_path):
+        from experiment_designer.lock.build import compile_spec
+
+        r = compile_spec(self.SPEC, base_dir=tmp_path, spec_path="s.yaml", seed=1)
+        assert r.lock is None and any("params.reliability" in e for e in r.errors)
+
+    def test_lax_compile_records_it(self, tmp_path):
+        from experiment_designer.lock.build import compile_spec
+
+        r = compile_spec(self.SPEC, base_dir=tmp_path, spec_path="s.yaml", seed=1, lax=True)
+        assert r.lock is not None and r.lock.provenance.lax is True and r.dropped == 1
+        assert any("1 construct(s) would have been dropped" in w for w in r.warnings)
+
+    def test_cli_compile_lax_prints_the_count(self, tmp_path):
+        from click.testing import CliRunner
+
+        from experiment_designer.cli import cli
+
+        (tmp_path / "s.yaml").write_text(self.SPEC)
+        strict = CliRunner().invoke(cli, ["compile", str(tmp_path / "s.yaml"), "--seed", "1"])
+        assert strict.exit_code == 1 and "params.reliability" in strict.output
+        lax = CliRunner().invoke(cli, ["compile", str(tmp_path / "s.yaml"), "--seed", "1", "--lax"])
+        assert lax.exit_code == 0 and "would have been dropped" in lax.output
+
+    def test_mcp_compile_reports_dropped(self):
+        import json
+
+        from orchestrator.mcp_server import server as s
+
+        strict = json.loads(s.compile_experiment_spec(self.SPEC, seed=1))
+        assert "errors" in strict
+        lax = json.loads(s.compile_experiment_spec(self.SPEC, seed=1, lax=True))
+        assert lax["dropped"] == 1 and "lock" in lax

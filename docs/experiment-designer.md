@@ -149,6 +149,73 @@ therefore: commit the spec and pools → `compile_experiment_spec(…, git_commi
 write the returned lock into the repo and commit it → `upload_experiment(lock, mode=…)` →
 `verify_experiment`.
 
+## The strict contract
+
+`pmspec validate`, `pmspec compile` and MCP `compile_experiment_spec`/`validate_experiment_spec`
+all share one rule: **whatever the pipeline would silently drop, ignore, or leave unresolved is
+an error, not a warning.** A spec that "compiles with some warnings" is, by default, a spec that
+refuses to compile — the warnings name real constructs that never reached the runner. This
+replaced a validator that reported the same conditions as warnings, which is why an older spec
+that "expects remaining warnings" is a spec with drops that were never fixed.
+
+Checked, in the order reported:
+
+| what | where |
+|---|---|
+| unknown key | spec root, `experiment`, `defaults`, `design`, each crawler, its `configuration`, `proxy`, `agent`, `session`/`additional_sessions`/`queues`, `defaults.proxy` |
+| unknown `configuration.params` key | each crawler (only `pi`/`psi`/`kappa`/`tau`/`alpha`/`beta`/`active`/`search_terms`/`media_outlet_urls` are read downstream) |
+| unknown `design.factors.*.maps_to` param | the design block |
+| `lambda_select.treatment` set without `lambda_select.strategy` | the decision function never sees a `strategy`-less treatment |
+| unknown job type in a workflow | each crawler's session(s) |
+| a session/queue with no start time | each crawler's session(s) |
+| an unresolved `${var}`/`{var}` after template and design expansion | anywhere a value is substituted |
+| a `lambda_select` strategy with no schema found (see "Strategy schemas" below) | each crawler's session(s) |
+
+Two things are deliberately kept as warnings, not drops: an `oxylabs`-type proxy with no
+`hostname`/`port` (the runner supplies them, so a drop would ask for what must not be there), and
+a plain `http` proxy with no `hostname` (the converter substitutes a `127.0.0.1:8080` placeholder,
+which `pmspec upload`'s credential check catches anyway).
+
+**`--lax`** (on `validate` and `compile`; also the MCP `lax` parameter) downgrades every drop to a
+warning plus one summary line, `N construct(s) would have been dropped (lax mode)`, and keeps
+going. A lax lock records `provenance.lax: true` (and, once uploaded, `pmspec.lax` on the
+experiment) so a lax compile can never be mistaken for a clean one downstream. `pmspec upload`
+takes no `--lax` of its own: compile with `--lax` to inspect a lock, but never upload a lax lock
+as a real study — the whole point of the flag is that something in it is being read wrong or not
+at all.
+
+### Proxy pools
+
+`proxy: {from_pool: true, pool: <data pool name>, match_field: <column>}` draws one row per bot
+from a CSV `data_pools` entry, matched on the bot's `agent.location` (or whatever field
+`match_field` names) so several bots sharing a location each get a distinct exit IP rather than
+one shared proxy. The CSV needs `hostname,port,username,password,type` columns plus the
+`match_field` column; `${secret:key.u}`/`${secret:key.p}` placeholders in `username`/`password`
+are resolved at upload time like any other proxy credential, not at compile time. Running out of
+rows for a location is a compile **error** (never a silent fallback to a shared proxy) — add more
+rows or fewer bots at that location. See `experiment_designer/tests/test_proxy_pools.py` for the
+exact CSV shape.
+
+### Strategy schemas
+
+A `lambda_select` job's behaviours-channel `treatment` (see "Treatment via the decision strategy"
+below) is validated against its `strategy`'s JSON Schema, resolved in order: an inline schema or
+a path under `strategy_schemas: {<name>: <path or inline schema>}` in the spec (path resolved
+against the spec's own directory); each directory listed in `PMSPEC_STRATEGY_SCHEMA_DIRS`
+(`os.pathsep`-separated), as `<dir>/<name>.schema.json`; then the two `bot-decision-yt` sibling
+locations (`orchestrator/lambda_service/decision/strategies/` and the checked-out
+`bot-decision-yt/bot-decision-EN/strategies/`) as a soft fallback. No schema found anywhere is a
+drop: the treatment is still forwarded to the decision function unchecked, so there is nothing to
+validate against, not nothing wrong.
+
+### Additional sessions
+
+A crawler's `session` is its first queue; `additional_sessions:` (a list of the same shape) adds
+more queues to the same bot — for example a "diet" session followed by a later "measurement"
+session. It requires a `session` to add to (an error otherwise) and cannot be combined with a
+bare `queues:` list on the same crawler. Each entry is checked exactly like `session` itself
+(unknown keys, missing start time, …).
+
 ## Installation
 
 ```bash
@@ -704,7 +771,7 @@ crawlers:
 
 | Command | Description |
 |---------|-------------|
-| `validate <file> [--seed N]` | Validate a spec or a lock |
+| `validate <file> [--seed N] [--strict] [--lax]` | Validate a spec or a lock |
 | `compile <file> [-o out] --seed N [--anchor] [--generator] [--lax]` | Compile a spec into a committable lock |
 | `upload <lock> --mode real\|test [-e ID] [--dry-run] [--record] [--allow-dirty] [--allow-past] [--deep] [--secrets] [--seed N]` | Upload a lock (or compile a spec, then upload) and verify |
 | `verify <experiment_id> <lock> [--deep]` | Check a live experiment is bound to, and identical to, a lock |

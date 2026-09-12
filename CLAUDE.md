@@ -852,6 +852,15 @@ The reproducibility artifact is the *lock* (`docs/experiment-designer.md` § Loc
 hashed, bound to the experiment via `pmspec.*` preferences, checked by `pmspec verify`.
 `upload_experiment` takes a lock and a required `mode`.
 
+`pmspec compile` (and MCP `compile_experiment_spec`) is **strict by default**
+(`docs/experiment-designer.md` § The strict contract): a construct the pipeline would silently
+drop, ignore, or leave unresolved is a compile error, not a warning, so a spec that "compiles with
+some warnings" is a spec with drops nobody fixed. `additional_sessions` (extra queues on one bot)
+and `proxy.from_pool` (one CSV row, hence one exit IP, per bot) both now compile and are checked
+by the same validator. `--lax` downgrades drops to warnings-plus-a-count and records
+`provenance.lax` / `pmspec.lax` on the resulting lock — use it only to see what a broken spec
+would have produced, never to upload a real study.
+
 > **The four selection parameters are switches, not intensities.** `pi`, `psi`,
 > `kappa` and `tau` are read by the decision function as
 > `int(round(aux.get('pi', 0)))` and then compared `== 1`, so **use only `0` or

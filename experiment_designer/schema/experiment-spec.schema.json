@@ -281,27 +281,43 @@
           "description": "Beta parameter"
         },
         "search_terms": {
-          "type": "array",
-          "description": "Search terms with weights",
-          "items": {
-            "type": "object",
-            "properties": {
-              "term": {"type": "string"},
-              "pi": {"type": "number"}
+          "description": "Search terms with weights, or an unresolved data-pool reference",
+          "oneOf": [
+            {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "term": {"type": "string"},
+                  "pi": {"type": "number"}
+                }
+              }
+            },
+            {
+              "type": "object",
+              "required": ["from_pool"]
             }
-          }
+          ]
         },
         "media_outlet_urls": {
-          "type": "array",
-          "description": "Media outlet URLs with weights",
-          "items": {
-            "type": "object",
-            "properties": {
-              "domain": {"type": "string"},
-              "url": {"type": "string"},
-              "pi": {"type": "number"}
+          "description": "Media outlet URLs with weights, or an unresolved data-pool reference",
+          "oneOf": [
+            {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "domain": {"type": "string"},
+                  "url": {"type": "string"},
+                  "pi": {"type": "number"}
+                }
+              }
+            },
+            {
+              "type": "object",
+              "required": ["from_pool"]
             }
-          }
+          ]
         }
       }
     },

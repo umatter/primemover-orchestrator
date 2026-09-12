@@ -3,12 +3,17 @@
 from __future__ import annotations
 
 import os
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+import yaml
+
 from experiment_designer.spec.converter import SpecConverter
+from experiment_designer.spec.file_loader import create_file_tag_loader, resolve_file_references
 from experiment_designer.spec.parser import SpecParser
+from experiment_designer.spec.validator import SpecValidator
 
 from .anchor import AnchorError, derive_anchor
 from .io import sha256_text
@@ -16,12 +21,27 @@ from .model import Lock, Provenance
 from .provenance import git_commit, git_toplevel, pmspec_version
 from .secrets import find_literal_credentials
 
+_DROP_COUNT_LINE_RE = re.compile(r"^\d+ construct\(s\) would have been dropped")
+
 
 @dataclass
 class CompileResult:
     lock: Lock | None
     errors: list[str] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
+    dropped: int = 0
+
+
+def _merge(*lists: list[str]) -> list[str]:
+    """Concatenate, de-duplicated, order preserved."""
+    seen: set[str] = set()
+    merged: list[str] = []
+    for items in lists:
+        for item in items:
+            if item not in seen:
+                seen.add(item)
+                merged.append(item)
+    return merged
 
 
 def recorded_spec_path(spec_path: str, repo_dir: Path) -> str:
@@ -49,29 +69,56 @@ def compile_spec(
     lax: bool = False,
     git_root: Path | None = None,
 ) -> CompileResult:
+    # The raw YAML, fully resolved (!file tags included), is what the strict
+    # contract validates -- structurally and semantically, before a single
+    # construct has been expanded or converted.
+    FileTagLoader, file_loader = create_file_tag_loader(
+        base_dir=base_dir, seed=None if seed is None else seed + 1
+    )
+    try:
+        raw = yaml.load(spec_text, Loader=FileTagLoader)
+        raw = resolve_file_references(raw, file_loader)
+    except yaml.YAMLError as e:
+        return CompileResult(None, [f"YAML parse error: {e}"], [])
+    validation = SpecValidator(base_dir=base_dir, lax=lax).validate(
+        raw if isinstance(raw, dict) else {}
+    )
+
     # Pools/file selections draw from seed+1, the design expander from seed:
     # two independent streams, one recorded number.
-    parser = SpecParser(base_dir=base_dir, seed=None if seed is None else seed + 1)
+    parser = SpecParser(base_dir=base_dir, seed=None if seed is None else seed + 1, lax=lax)
     parsed = parser.parse(spec_text)
     if parsed.errors:
-        return CompileResult(None, list(parsed.errors), list(parsed.warnings))
+        return CompileResult(
+            None,
+            _merge(validation.errors, parsed.errors),
+            _merge(validation.warnings, parsed.warnings),
+            validation.dropped + parsed.dropped,
+        )
 
     effective_seed = seed if seed is not None else (parsed.design or {}).get("seed")
     if effective_seed is None:
         return CompileResult(
             None,
             ["no seed: pass --seed N or set design.seed; a lock is never unseeded"],
-            list(parsed.warnings),
+            _merge(validation.warnings, parsed.warnings),
+            validation.dropped + parsed.dropped,
         )
     if seed is None:
         # design.seed only: re-parse so the pool stream is seeded from it too.
-        parser = SpecParser(base_dir=base_dir, seed=effective_seed + 1)
+        parser = SpecParser(base_dir=base_dir, seed=effective_seed + 1, lax=lax)
         parsed = parser.parse(spec_text)
 
-    converter = SpecConverter(seed=effective_seed, resolve_times=False)
+    converter = SpecConverter(seed=effective_seed, resolve_times=False, lax=lax)
     result = converter.convert(parsed)
-    errors = list(result.errors)
-    warnings = list(result.warnings)
+    errors = _merge(validation.errors, parsed.errors, result.errors)
+    warnings = _merge(validation.warnings, parsed.warnings, result.warnings)
+    dropped = validation.dropped + parsed.dropped + result.dropped
+    # Each component's Drops.merge_into appends its own count line; collapse
+    # up to three of those into the one true total.
+    warnings = [w for w in warnings if not _DROP_COUNT_LINE_RE.match(w)]
+    if dropped:
+        warnings.append(f"{dropped} construct(s) would have been dropped (lax mode)")
 
     crawlers: list[dict[str, Any]] = result.json_data
     literal = find_literal_credentials(crawlers)
@@ -89,7 +136,7 @@ def compile_spec(
         anchor_value, offsets = "upload", []
 
     if errors:
-        return CompileResult(None, errors, warnings)
+        return CompileResult(None, errors, warnings, dropped)
 
     it = iter(offsets)
     for crawler in crawlers:
@@ -122,4 +169,4 @@ def compile_spec(
         schedule={"anchor": anchor_value},
         crawlers=crawlers,
     )
-    return CompileResult(lock, [], warnings)
+    return CompileResult(lock, [], warnings, dropped)

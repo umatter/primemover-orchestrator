@@ -1,7 +1,6 @@
 import json
 from pathlib import Path
 
-import pytest
 import yaml
 
 from experiment_designer.spec.validator import SpecValidator
@@ -65,9 +64,6 @@ def test_env_dirs(tmp_path: Path, monkeypatch):
     assert _validate(SPEC).valid
 
 
-@pytest.mark.skip(
-    reason="validator is wired into compile_spec in Task 7, which removes this marker"
-)
 def test_compile_with_files_carrying_the_schema_via_mcp():
     from orchestrator.mcp_server import server as s
 

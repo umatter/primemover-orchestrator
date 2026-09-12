@@ -234,6 +234,10 @@ def compile(
     click.echo(f"  Seed:     {lock.provenance.seed}")
     click.echo(f"  Anchor:   {lock.schedule['anchor']}")
     click.echo(f"  Commit:   {lock.provenance.git_commit or 'none'}")
+    if result.dropped:
+        click.secho(
+            f"  {result.dropped} construct(s) would have been dropped -- lax lock", fg="yellow"
+        )
 
 
 @cli.command()
