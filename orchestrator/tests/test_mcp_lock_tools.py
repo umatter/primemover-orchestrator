@@ -33,6 +33,19 @@ def local_api(monkeypatch: pytest.MonkeyPatch, mock_settings):
     monkeypatch.setattr(s, "get_settings", lambda: mock_settings)
 
 
+@pytest.fixture(autouse=True)
+def no_real_secrets_file(monkeypatch: pytest.MonkeyPatch, tmp_path):
+    """No test in this file may read the developer's real secrets file.
+
+    A dry-run upload_experiment loads SecretStore when the lock has
+    placeholders; without this, that read falls through to
+    ~/.config/primemover/secrets.toml on whatever machine runs the suite.
+    Tests that care about a specific secrets-file state override this env var
+    themselves.
+    """
+    monkeypatch.setenv("PMSPEC_SECRETS_FILE", str(tmp_path / "no-secrets.toml"))
+
+
 def test_compile_with_files_returns_a_lock():
     out = json.loads(s.compile_experiment_spec(SPEC, files=FILES, seed=5))
     assert "lock" in out, out
@@ -119,6 +132,7 @@ def test_upload_dry_run_makes_no_request(monkeypatch: pytest.MonkeyPatch):
     out = json.loads(s.upload_experiment(dump_lock(make_lock()), mode="test"))
     assert out["dry_run"] is True and out["success"] is True
     assert out["secrets_needed"] == ["oxylabs.a.password", "oxylabs.a.username"]
+    assert out["secrets_store"] == "missing"
     assert calls == []
 
 
