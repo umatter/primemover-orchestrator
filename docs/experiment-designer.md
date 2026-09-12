@@ -166,10 +166,20 @@ Checked, in the order reported:
 | unknown `configuration.params` key | each crawler (only `pi`/`psi`/`kappa`/`tau`/`alpha`/`beta`/`active`/`search_terms`/`media_outlet_urls` are read downstream) |
 | unknown `design.factors.*.maps_to` param | the design block |
 | `lambda_select.treatment` set without `lambda_select.strategy` | the decision function never sees a `strategy`-less treatment |
-| unknown job type in a workflow | each crawler's session(s) |
+| unknown job type in a workflow | each crawler's session(s), including the `jobs:` of a `repeat:` item and every template |
+| an unknown key on a `template:`/`repeat:` item | the parser reads exactly `template`, `repeat`, `with`, `jobs` on such an item; a `weight: 0.7` or `condition: ...` beside them is silently ignored |
 | a session/queue with no start time | each crawler's session(s) |
 | an unresolved `${var}`/`{var}` after template and design expansion | anywhere a value is substituted |
 | a `lambda_select` strategy with no schema found (see "Strategy schemas" below) | each crawler's session(s) |
+| a `strategy_schemas` path that is missing or not JSON | named as such (`strategy_schemas.<name>: declared path '...' is missing or not JSON`), not as "no schema" |
+| a proxy pool row with no usable host (see "Proxy pools" below) | the pool, once, when no row has a `hostname`/`host` column; the crawler, when its row's host or port is blank |
+
+Each construct is reported once. A top-level `- teleport: x` is seen by both the validator and
+the parser but counted and printed once; an unresolved variable that reaches many places (one
+`${query}` in a template used by 300 bots × 4 jobs) is one message, not 1200:
+`crawlers[*].queues[*].jobs[*].behaviors.text: unresolved variable '${query}' would reach the
+bot as a literal in 1200 place(s) (first: crawlers[0].queues[0].jobs[2].behaviors.text); ...`.
+The drop count counts groups.
 
 Two things are deliberately kept as warnings, not drops: an `oxylabs`-type proxy with no
 `hostname`/`port` (the runner supplies them, so a drop would ask for what must not be there), and
@@ -178,7 +188,8 @@ which `pmspec upload`'s credential check catches anyway).
 
 **`--lax`** (on `validate` and `compile`; also the MCP `lax` parameter) downgrades every drop to a
 warning plus one summary line, `N construct(s) would have been dropped (lax mode)`, and keeps
-going. A lax lock records `provenance.lax: true` (and, once uploaded, `pmspec.lax` on the
+going. The summary line appears only under `--lax`: a strict run lists the drops as its errors
+and prints no count. A lax lock records `provenance.lax: true` (and, once uploaded, `pmspec.lax` on the
 experiment) so a lax compile can never be mistaken for a clean one downstream. `pmspec upload`
 takes no `--lax` of its own: compile with `--lax` to inspect a lock, but never upload a lax lock
 as a real study — the whole point of the flag is that something in it is being read wrong or not
@@ -193,8 +204,11 @@ one shared proxy. The CSV needs `hostname,port,username,password,type` columns p
 `match_field` column; `${secret:key.u}`/`${secret:key.p}` placeholders in `username`/`password`
 are resolved at upload time like any other proxy credential, not at compile time. Running out of
 rows for a location is a compile **error** (never a silent fallback to a shared proxy) — add more
-rows or fewer bots at that location. See `experiment_designer/tests/test_proxy_pools.py` for the
-exact CSV shape.
+rows or fewer bots at that location. So is a pool whose rows have no `hostname`/`host` column
+(`ip`, say), or a row whose host or port is blank: an empty hostname is the runner's "no proxy"
+signal, so such a row would quietly compile to a direct connection. The same block works as
+`defaults: {proxy: {from_pool: true, ...}}` for every crawler without its own `proxy:`. See
+`experiment_designer/tests/test_proxy_pools.py` for the exact CSV shape.
 
 ### Strategy schemas
 
@@ -870,8 +884,12 @@ Relative timestamps are resolved to ISO 8601 format with local timezone offset d
 | `type` | `type: {text: "...", selector: "..."}` | Enter text |
 | `scroll` | `scroll: 30s` | Scroll by duration |
 | `lambda_select` | `lambda_select: {task: "...", function: "..."}` | AWS Lambda selection |
-| `template` | `template: my_template` | Use template |
-| `repeat` | `repeat: 10` | Repeat N times |
+| `template` | `template: my_template` | Use template (with `with: {var: value}`) |
+| `repeat` | `repeat: 10` | Repeat N times (with `template:` or `jobs: [...]`) |
+
+A `template:`/`repeat:` item carries only `template`, `repeat`, `with` and `jobs`. There is no
+`condition:`, `weight:` or `description:` on such an item; any other key is a drop (strict
+contract above), because the parser would ignore it and every bot would run every step.
 
 ## Treatment via the decision strategy (behaviours channel)
 
