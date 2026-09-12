@@ -720,29 +720,43 @@ class SpecValidator:
                     prefix, "workflow item has no job type", "see `pmspec schema jobs`"
                 )
 
-    def _strategy_schema(self, strategy: str) -> dict[str, Any] | None:
-        """Resolve a decision strategy's JSON schema.
+    def _strategy_schema(self, strategy: str, prefix: str) -> dict[str, Any] | None:
+        """Resolve a decision strategy's JSON schema, reporting a drop when none can.
 
         Resolution order:
         1. ``spec["strategy_schemas"][strategy]`` -- an inline dict is the schema
            itself; a string is a path resolved against ``self.base_dir`` (or the
-           cwd, if none was given).
+           cwd, if none was given). A declared path that is missing or not JSON
+           is its own drop, naming the path -- not "no schema", which would send
+           the reader looking in the fallback directories for a file the spec
+           already points at.
         2. Each directory in ``PMSPEC_STRATEGY_SCHEMA_DIRS`` (``os.pathsep``
            separated), as ``<dir>/<strategy>.schema.json``.
         3. The two sibling bot-decision-yt locations (decision symlink, then the
            checked-out repo) -- a soft dependency the orchestrator does not
            hard-require.
 
-        Not found returns None; the caller turns that into a drop, since the
-        treatment is otherwise forwarded to the decision function unchecked.
+        Not found returns None after reporting a drop, since the treatment is
+        otherwise forwarded to the decision function unchecked.
         """
         declared = self._strategy_schemas.get(strategy)
         if isinstance(declared, dict):
             return declared
 
-        candidates: list[Path] = []
         if isinstance(declared, str):
-            candidates.append((self.base_dir or Path.cwd()) / declared)
+            path = (self.base_dir or Path.cwd()) / declared
+            try:
+                loaded: dict[str, Any] = json.loads(path.read_text())
+                return loaded
+            except (OSError, ValueError):
+                self.drops.report(
+                    f"strategy_schemas.{strategy}",
+                    f"declared path '{declared}' is missing or not JSON (resolved to {path})",
+                    "fix the path (relative to the spec's directory) or inline the schema",
+                )
+                return None
+
+        candidates: list[Path] = []
         for d in filter(None, os.environ.get("PMSPEC_STRATEGY_SCHEMA_DIRS", "").split(os.pathsep)):
             candidates.append(Path(d) / f"{strategy}.schema.json")
 
@@ -760,13 +774,21 @@ class SpecValidator:
             / "strategies"
             / f"{strategy}.schema.json",
         ]
-        for path in candidates:
+        for candidate in candidates:
             try:
-                if path.is_file():
-                    loaded: dict[str, Any] = json.loads(path.read_text())
-                    return loaded
+                if candidate.is_file():
+                    found: dict[str, Any] = json.loads(candidate.read_text())
+                    return found
             except (OSError, json.JSONDecodeError):
                 continue
+        # A drop: the treatment is still forwarded to the decision function
+        # unchecked, and this validator cannot see whether it is well-formed.
+        self.drops.report(
+            f"{prefix}.lambda_select",
+            f"no schema for strategy '{strategy}', so its treatment cannot be validated",
+            "add strategy_schemas: {<name>: <path or inline schema>} or set "
+            "PMSPEC_STRATEGY_SCHEMA_DIRS",
+        )
         return None
 
     def _validate_lambda_select_treatment(
@@ -792,17 +814,9 @@ class SpecValidator:
                 )
             return
 
-        schema = self._strategy_schema(str(strategy))
+        schema = self._strategy_schema(str(strategy), prefix)
         if schema is None:
-            # A drop: the treatment is still forwarded to the decision function
-            # unchecked, and this validator cannot see whether it is well-formed.
-            self.drops.report(
-                f"{prefix}.lambda_select",
-                f"no schema for strategy '{strategy}', so its treatment cannot be validated",
-                "add strategy_schemas: {<name>: <path or inline schema>} or set "
-                "PMSPEC_STRATEGY_SCHEMA_DIRS",
-            )
-            return
+            return  # the drop (declared path broken, or nothing found) is already reported
 
         if not HAS_JSONSCHEMA:
             return

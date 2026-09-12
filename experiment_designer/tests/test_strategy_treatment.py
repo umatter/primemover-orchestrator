@@ -86,7 +86,7 @@ class TestLambdaSelectTreatmentValidation(unittest.TestCase):
         }
 
     def test_valid_treatment_passes(self):
-        self.validator._strategy_schema = lambda name: _YT_SCHEMA
+        self.validator._strategy_schema = lambda name, prefix: _YT_SCHEMA
         spec = self._spec(
             {
                 "task": "t",
@@ -99,7 +99,7 @@ class TestLambdaSelectTreatmentValidation(unittest.TestCase):
         assert result.valid, result.errors
 
     def test_invalid_treatment_errors(self):
-        self.validator._strategy_schema = lambda name: _YT_SCHEMA
+        self.validator._strategy_schema = lambda name, prefix: _YT_SCHEMA
         spec = self._spec(
             {
                 "task": "t",

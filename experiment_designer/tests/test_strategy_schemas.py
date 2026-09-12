@@ -35,11 +35,34 @@ def _validate(text, base_dir=None, lax=False, monkeypatch=None):
 
 
 def test_missing_schema_is_a_drop():
-    r = _validate(SPEC)
+    # An impossible strategy name: a future autocomplete_v1.schema.json in the
+    # bot-decision-yt sibling must not turn this into a pass.
+    text = SPEC.replace("strategy: autocomplete_v1", "strategy: no_such_strategy_zz")
+    r = _validate(text)
     assert not r.valid and any(
-        "no schema for strategy 'autocomplete_v1'" in e for e in r.errors
+        "no schema for strategy 'no_such_strategy_zz'" in e for e in r.errors
     ), r.errors
-    assert _validate(SPEC, lax=True).valid
+    assert _validate(text, lax=True).valid
+
+
+def test_declared_path_that_is_missing_is_named_not_no_schema(tmp_path: Path):
+    text = SPEC + "strategy_schemas:\n  autocomplete_v1: nope.schema.json\n"
+    r = _validate(text, base_dir=tmp_path)
+    assert not r.valid and r.dropped == 1
+    (msg,) = [e for e in r.errors if "strategy_schemas.autocomplete_v1" in e]
+    assert "declared path" in msg and "nope.schema.json" in msg and "missing or not JSON" in msg
+    assert not any("no schema for strategy" in e for e in r.errors), r.errors
+    assert _validate(text, base_dir=tmp_path, lax=True).valid
+
+
+def test_declared_path_that_is_not_json_is_named(tmp_path: Path):
+    (tmp_path / "broken.schema.json").write_text("{not json")
+    text = SPEC + "strategy_schemas:\n  autocomplete_v1: broken.schema.json\n"
+    r = _validate(text, base_dir=tmp_path)
+    assert any(
+        "strategy_schemas.autocomplete_v1" in e and "broken.schema.json" in e for e in r.errors
+    ), r.errors
+    assert not any("no schema for strategy" in e for e in r.errors), r.errors
 
 
 def test_inline_schema_validates_the_treatment():
