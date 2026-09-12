@@ -213,6 +213,19 @@ class SpecConverter:
             parsed.pool_manager.errors = []
             parsed.pool_manager.warnings = []
 
+        # A crawler without its own proxy block inherits `defaults.proxy`. Copy it
+        # onto the crawler *before* pool assignment, or a pooled default
+        # (`defaults: {proxy: {from_pool: true, ...}}`) reaches _convert_proxy as
+        # a raw dict with no hostname and every bot silently compiles to the
+        # 127.0.0.1:8080 placeholder. Non-dict defaults ("none"/"auto") keep the
+        # fallback in _convert_crawler.
+        default_proxy = parsed.defaults.get("proxy")
+        if isinstance(default_proxy, dict):
+            all_crawlers = [
+                {**c, "proxy": copy.deepcopy(default_proxy)} if c.get("proxy") is None else c
+                for c in all_crawlers
+            ]
+
         # Assign one pool row per `proxy: {from_pool: true}` crawler now that
         # design expansion and pool-reference resolution have fixed each
         # crawler's agent/location.
@@ -223,6 +236,11 @@ class SpecConverter:
         total_jobs = 0
 
         for i, crawler in enumerate(all_crawlers):
+            proxy = crawler.get("proxy")
+            if isinstance(proxy, dict) and proxy.get("from_pool") is True:
+                # Pool assignment refused this crawler (error already recorded);
+                # converting the raw marker would yield the 127.0.0.1 placeholder.
+                continue
             try:
                 api_crawler = self._convert_crawler(crawler, parsed.defaults)
                 api_crawlers.append(api_crawler)
@@ -397,6 +415,9 @@ class SpecConverter:
         out is an error, not a shared proxy.
         """
         used: dict[str, set[int]] = {}
+        # Pools already found to have no hostname/host column: reported once,
+        # then every crawler drawing from them is skipped without repeating it.
+        unusable: set[str] = set()
         for i, crawler in enumerate(crawlers):
             proxy = crawler.get("proxy")
             if not (isinstance(proxy, dict) and proxy.get("from_pool") is True):
@@ -413,6 +434,21 @@ class SpecConverter:
                     f"{prefix}: unknown pool '{pool_name}' (define it under data_pools)"
                 )
                 continue
+            pool_name = str(pool_name)
+            # An empty hostname is the runner's "no proxy" signal, so a pool whose
+            # rows have no hostname/host column at all (`ip`, say) would turn
+            # every bot into a direct connection. Checked once per pool.
+            if pool_name not in unusable and pool_name not in used:
+                if not any(("hostname" in row or "host" in row) for row in rows):
+                    columns = sorted({str(k) for row in rows for k in row})
+                    self.errors.append(
+                        f"{prefix}: pool '{pool_name}' has no hostname/host column, so its "
+                        f"rows would compile to direct connections (columns: {columns}); "
+                        "name the proxy host column `hostname`"
+                    )
+                    unusable.add(pool_name)
+            if pool_name in unusable:
+                continue
             location = (crawler.get("agent") or {}).get("location")
             if not location:
                 self.errors.append(
@@ -420,7 +456,7 @@ class SpecConverter:
                     f"crawlers[{i}].agent has none"
                 )
                 continue
-            taken = used.setdefault(str(pool_name), set())
+            taken = used.setdefault(pool_name, set())
             candidates = [k for k, row in enumerate(rows) if str(row.get(field)) == str(location)]
             free = [k for k in candidates if k not in taken]
             if not candidates:
@@ -434,14 +470,25 @@ class SpecConverter:
                     f"{location!r}, all already assigned; crawler '{crawler.get('name')}' gets none"
                 )
                 continue
-            taken.add(free[0])
             row = rows[free[0]]
             host = row.get("hostname") or row.get("host") or ""
+            port = row.get("port")
+            if not str(host).strip() or port in (None, "", 0):
+                # The row itself is blank where it matters; refuse it rather than
+                # hand this bot a direct connection. It stays assigned so the
+                # next crawler does not inherit the same broken row.
+                taken.add(free[0])
+                self.errors.append(
+                    f"{prefix}: pool '{pool_name}' row {free[0]} has no hostname/port "
+                    f"(columns: {sorted(str(k) for k in row)})"
+                )
+                continue
+            taken.add(free[0])
             crawler["proxy"] = {
                 "name": f"{pool_name}:{host}:{row.get('port', '')}",
                 "description": f"from pool {pool_name} for {location}",
                 "hostname": host,
-                "port": row.get("port", 0),
+                "port": port,
                 "username": row.get("username", ""),
                 "password": row.get("password", ""),
                 "type": row.get("type") or "http",

@@ -97,3 +97,51 @@ def test_compile_inlines_the_proxy_and_keeps_placeholders(spec_dir):
     assert result.lock is not None, result.errors
     text = dump_lock(result.lock)
     assert "from_pool" not in text and "p2.example" in text and "${secret:pool.p}" in text
+
+
+def test_pool_without_a_hostname_column_is_an_error_naming_the_columns(spec_dir):
+    """An empty hostname is the runner's "no proxy" signal, so a pool whose rows
+    carry `ip` instead of `hostname` must fail the compile rather than hand every
+    bot a direct connection."""
+    from experiment_designer.lock.build import compile_spec
+
+    (spec_dir / "proxies.csv").write_text(CSV.replace("hostname,", "ip,"))
+    r = _convert(spec_dir)
+    bad = [e for e in r.errors if "us_proxies" in e and "hostname" in e]
+    assert len(bad) == 1, r.errors
+    assert "ip" in bad[0] and "location" in bad[0], bad[0]
+    assert not any(c.get("proxy", {}).get("hostname") == "" for c in r.json_data)
+
+    result = compile_spec(SPEC, base_dir=spec_dir, spec_path="spec.yaml", seed=1)
+    assert result.lock is None and any("hostname" in e for e in result.errors), result.errors
+    assert not (spec_dir / "spec.lock.yaml").exists()
+
+
+def test_pool_row_without_a_host_or_port_is_an_error_for_that_crawler(spec_dir):
+    """Column present, value blank: the row that would become a direct connection
+    is refused, the other rows still assign."""
+    (spec_dir / "proxies.csv").write_text(
+        CSV.replace("p2.example,7777", ",7777").replace("p3.example,7777", "p3.example,")
+    )
+    r = _convert(spec_dir)
+    assert any("crawlers[1].proxy" in e and "row 1" in e and "hostname/port" in e for e in r.errors)
+    assert any("crawlers[2].proxy" in e and "row 2" in e for e in r.errors), r.errors
+    assert [c["proxy"]["hostname"] for c in r.json_data] == ["p1.example"]
+
+
+def test_defaults_proxy_from_pool_assigns_rows_like_the_per_crawler_form(spec_dir):
+    text = SPEC.replace(
+        "    proxy: {from_pool: true, pool: us_proxies, match_field: location}\n", ""
+    ).replace(
+        "crawlers:\n",
+        "defaults:\n  proxy: {from_pool: true, pool: us_proxies, match_field: location}\ncrawlers:\n",
+    )
+    assert "from_pool" in text and text.count("from_pool") == 1
+    r = _convert(spec_dir, text)
+    assert r.errors == [], r.errors
+    assert [c["proxy"]["hostname"] for c in r.json_data] == [
+        "p1.example",
+        "p2.example",
+        "p3.example",
+    ]
+    assert all(c["proxy"]["port"] == 7777 for c in r.json_data)
