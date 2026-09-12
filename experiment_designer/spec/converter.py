@@ -36,6 +36,10 @@ _STANDARD_PARAM_KEYS = frozenset(
 # does; caught by the full suite, not the brief's own test rows).
 _UNRESOLVED_RE = re.compile(r"\$\{(?!secret:)[^}]*\}|(?<!\$)\{[A-Za-z_][A-Za-z0-9_]*(?::[^}]*)?\}")
 
+# A list index in a report path (`crawlers[12].queues[0].jobs[3]`), replaced by
+# `[*]` when grouping unresolved-variable reports across crawlers and jobs.
+_INDEX_RE = re.compile(r"\[\d+\]")
+
 
 @dataclass
 class ConversionResult:
@@ -641,15 +645,16 @@ class SpecConverter:
         skipped: it is a JSON document with its own %%TOKEN%% placeholders.
         """
 
+        # One `${query}` in a template used by 300 bots x 4 jobs is one mistake,
+        # not 1200: group by (token, path with every index replaced by [*]) and
+        # report each group once, with the count and the first concrete path.
+        groups: dict[tuple[str, str], list[str]] = {}
+
         def walk(node: Any, path: str) -> None:
             if isinstance(node, str):
                 for m in _UNRESOLVED_RE.finditer(node):
-                    self.drops.report(
-                        path,
-                        f"unresolved variable {m.group(0)!r} would reach the bot as a literal",
-                        "supply it with `with:` on the template call, or define it as a "
-                        "factor/parameter",
-                    )
+                    generic = _INDEX_RE.sub("[*]", path)
+                    groups.setdefault((m.group(0), generic), []).append(path)
             elif isinstance(node, dict):
                 for k, v in node.items():
                     if k == "multilogin_profile":
@@ -664,6 +669,22 @@ class SpecConverter:
 
         for i, crawler in enumerate(api_crawlers):
             walk(crawler, f"crawlers[{i}]")
+
+        fix = "supply it with `with:` on the template call, or define it as a factor/parameter"
+        for (token, generic), places in groups.items():
+            if len(places) == 1:
+                self.drops.report(
+                    places[0],
+                    f"unresolved variable {token!r} would reach the bot as a literal",
+                    fix,
+                )
+            else:
+                self.drops.report(
+                    generic,
+                    f"unresolved variable {token!r} would reach the bot as a literal in "
+                    f"{len(places)} place(s) (first: {places[0]})",
+                    fix,
+                )
 
     def _deep_merge(self, base: dict[str, Any], override: dict[str, Any]) -> None:
         """Deep merge override into base dict (in-place)."""

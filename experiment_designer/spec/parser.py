@@ -76,7 +76,14 @@ class SpecParser:
         # Files referenced via !file tag are resolved relative to base_dir
     """
 
-    def __init__(self, base_dir: Path | None = None, seed: int | None = None, *, lax: bool = False):
+    def __init__(
+        self,
+        base_dir: Path | None = None,
+        seed: int | None = None,
+        *,
+        lax: bool = False,
+        report_unknown_items: bool = True,
+    ):
         """
         Initialize the spec parser.
 
@@ -84,10 +91,17 @@ class SpecParser:
             base_dir: Base directory for resolving file paths in !file tags
             seed: Random seed for reproducible file selections
             lax: Report drops as warnings-plus-count instead of errors
+            report_unknown_items: Report an unrecognised workflow item as a drop.
+                Callers that run SpecValidator on the same spec first (compile_spec,
+                `pmspec validate`, MCP validate_experiment_spec) pass False: the
+                validator already names every such item with a precise path, and
+                the parser's ``crawler[?]`` report would double the message and
+                the drop count. A standalone parse keeps reporting.
         """
         self.base_dir = base_dir or Path.cwd()
         self.seed = seed
         self.lax = lax
+        self.report_unknown_items = report_unknown_items
         self.errors: list[str] = []
         self.warnings: list[str] = []
         self.file_loader: FileLoader | None = None
@@ -464,12 +478,15 @@ class SpecParser:
         # crawlers), so a precise crawler/queue/job index is not available here
         # without threading it through all three call paths; `crawler[?]` names
         # the construct without claiming a precision this call site does not have.
-        self.drops.report(
-            "crawler[?]",
-            f"unknown workflow item {list(item.keys())}",
-            "use a job shorthand (visit, wait, click, …), template:, repeat:, or a full job with "
-            "type:",
-        )
+        # SpecValidator reports the same item with its full path, so a caller
+        # that ran it first switches this report off (report_unknown_items).
+        if self.report_unknown_items:
+            self.drops.report(
+                "crawler[?]",
+                f"unknown workflow item {list(item.keys())}",
+                "use a job shorthand (visit, wait, click, …), template:, repeat:, or a full job "
+                "with type:",
+            )
         return []
 
     def _expand_shorthand(

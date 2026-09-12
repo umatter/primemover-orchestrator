@@ -361,24 +361,25 @@ crawlers:
       timezone: "{timezone}"
       timezone_utc_offset: "{timezone_utc_offset}"
 
+      # A template/repeat item carries only template/repeat/with/jobs; there is
+      # no `condition:` key (an earlier version of this example wrote one, and it
+      # was silently ignored -- every bot ran every step). Gate steps on a
+      # factor by giving each usage_type arm its own crawler block instead.
       workflow:
         # Day 1: Browserleaks fingerprint check
         - template: browserleaks_check
-          condition: "day == 1"
 
-        # Partisan outlet visits (2 per day) - only if usage allows
+        # Partisan outlet visits (2 per day)
         - repeat: 2
           template: partisan_outlet_visit
-          condition: "usage_type in ['only_visits', 'searches_and_visits']"
 
         # Neutral domain visits (2 per day)
         - repeat: 2
           template: neutral_visit
 
-        # Partisan searches (2 per day) - only if usage allows
+        # Partisan searches (2 per day)
         - repeat: 2
           template: partisan_search
-          condition: "usage_type in ['only_searches', 'searches_and_visits']"
 
         # Test searches (2 of 3 daily terms, immediately after main session)
         - repeat: 2
@@ -390,8 +391,8 @@ crawlers:
         start: "2025-03-01T18:00:00"  # ~1 hour after last bot finishes
         timezone: "{timezone}"
         workflow:
+          # Third daily test search (synchronized)
           - template: test_search
-            description: "Third daily test search (synchronized)"
 
 # =============================================================================
 # Notes on Implementation

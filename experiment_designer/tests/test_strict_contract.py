@@ -114,6 +114,31 @@ class TestValidatorDropRules:
         ),
         pytest.param(BASE + "sceduled: true\n", "sceduled", id="unknown-root-key"),
         pytest.param(
+            BASE.replace(
+                "        - visit: https://example.com\n",
+                "        - template: t\n          weight: 0.7\n",
+            )
+            + "templates:\n  t:\n    - wait: 1s\n",
+            "crawler[0].session.workflow[0].weight",
+            id="unknown-key-on-template-item",
+        ),
+        pytest.param(
+            BASE.replace(
+                "        - visit: https://example.com\n",
+                "        - repeat: 2\n          jobs: [{wait: 1s}]\n          times: 3\n",
+            ),
+            "crawler[0].session.workflow[0].times",
+            id="unknown-key-on-repeat-item",
+        ),
+        pytest.param(
+            BASE.replace(
+                "        - visit: https://example.com\n",
+                "        - repeat: 2\n          jobs: [{teleport: x}]\n",
+            ),
+            "crawler[0].session.workflow[0].jobs[0]: unknown job type 'teleport'",
+            id="unknown-job-type-nested-in-repeat",
+        ),
+        pytest.param(
             BASE + "defaults:\n  proxy: {hostnme: h, port: 1}\n",
             "defaults.proxy.hostnme",
             id="unknown-defaults-proxy-key",
@@ -164,7 +189,12 @@ class TestValidatorKeepsWarnings:
         assert any("no hostname" in w for w in r.warnings), r.warnings
 
     def test_every_example_spec_and_research_spec_uses_only_known_keys(self):
-        """The key sets are a whitelist; this pins them to the specs that exist."""
+        """The structural key sets (_KEYS_ROOT ... _KEYS_DESIGN) are a whitelist;
+        this pins them to the specs that exist. Only the structural
+        "unknown key; remove it or fix the spelling" report counts: the
+        template/repeat-item check is a different rule (it caught `weight: 0.7`
+        on the research spec's template calls -- a real drop for that repo to
+        fix, not a hole in these whitelists)."""
         import glob
         from pathlib import Path
 
@@ -172,7 +202,8 @@ class TestValidatorKeepsWarnings:
 
         from experiment_designer.spec.file_loader import create_file_tag_loader
 
-        paths = glob.glob("experiment_designer/examples/*.yaml") + [
+        examples = Path(__file__).resolve().parents[1] / "examples"
+        paths = glob.glob(str(examples / "*.yaml")) + [
             p
             for p in [
                 "/home/umatter/projects/autocompleted_misinformation/design/experiment_spec.yaml",
@@ -183,7 +214,7 @@ class TestValidatorKeepsWarnings:
             loader, _ = create_file_tag_loader(base_dir=Path(p).parent)
             raw = yaml.load(Path(p).read_text(), Loader=loader)
             r = SpecValidator().validate(raw)
-            unknown = [e for e in r.errors if "unknown key" in e]
+            unknown = [e for e in r.errors if "unknown key; remove it or fix" in e]
             assert unknown == [], (p, unknown)
 
 
@@ -226,6 +257,26 @@ class TestUnresolvedVariables:
             + "templates:\n  t:\n    - type: {text: '${reliability}', selector: '//x'}\n"
         )
         assert self._convert(text).errors == []
+
+    def test_same_variable_in_many_places_is_one_grouped_message(self):
+        """One `${q}` in a template used by every crawler and job used to produce
+        one message per occurrence -- 1200 of them for 300 bots x 4 jobs."""
+        text = (
+            BASE.replace(
+                "        - visit: https://example.com\n",
+                "        - template: t\n        - template: t\n",
+            ).replace(
+                "  - name: bot\n",
+                "  - name: bot_{arm}\n    from_design: true\n",
+            )
+            + "design:\n  factors:\n    arm:\n      levels: [a, b]\n  replications: 1\n"
+            + "templates:\n  t:\n    - type: {text: '${q}', selector: '//x'}\n"
+        )
+        r = self._convert(text, lax=True)
+        about_q = [w for w in r.warnings if "${q}" in w]
+        assert len(about_q) == 1 and r.dropped == 1, r.warnings
+        assert "4 place(s)" in about_q[0] and "first: crawlers[0].queues[0].jobs[0]" in about_q[0]
+        assert about_q[0].startswith("crawlers[*].queues[*].jobs[*].behaviors.text:"), about_q[0]
 
     def test_multilogin_profile_json_is_not_scanned(self):
         text = BASE.replace(
@@ -323,6 +374,29 @@ class TestCompileIsStrict:
         assert r.lock is not None and r.lock.provenance.lax is True and r.dropped == 1
         assert any("1 construct(s) would have been dropped" in w for w in r.warnings)
 
+    def test_strict_compile_has_no_lax_count_line(self, tmp_path):
+        """In strict mode the drops are already in `errors`; the "would have been
+        dropped (lax mode)" line belongs to lax compiles only."""
+        from experiment_designer.lock.build import compile_spec
+
+        strict = compile_spec(self.SPEC, base_dir=tmp_path, spec_path="s.yaml", seed=1)
+        assert strict.lock is None and strict.dropped == 1
+        assert not any("would have been dropped" in w for w in strict.warnings), strict.warnings
+        lax = compile_spec(self.SPEC, base_dir=tmp_path, spec_path="s.yaml", seed=1, lax=True)
+        assert sum("would have been dropped" in w for w in lax.warnings) == 1, lax.warnings
+
+    def test_unknown_top_level_workflow_item_is_one_drop_not_two(self, tmp_path):
+        """The validator (`unknown job type`) and the parser (`unknown workflow
+        item`) both see a top-level `- teleport: x`; compile_spec reports it once."""
+        from experiment_designer.lock.build import compile_spec
+
+        text = BASE.replace("        - visit: https://example.com\n", "        - teleport: x\n")
+        r = compile_spec(text, base_dir=tmp_path, spec_path="s.yaml", seed=1, lax=True)
+        assert r.dropped == 1, r.warnings
+        assert len([w for w in r.warnings if "teleport" in w]) == 1, r.warnings
+        strict = compile_spec(text, base_dir=tmp_path, spec_path="s.yaml", seed=1)
+        assert len([e for e in strict.errors if "teleport" in e]) == 1, strict.errors
+
     def test_cli_compile_lax_prints_the_count(self, tmp_path):
         from click.testing import CliRunner
 
@@ -345,11 +419,12 @@ class TestCompileIsStrict:
         assert lax["dropped"] == 1 and "lock" in lax
 
     def test_hard_error_plus_two_drop_sources_prints_one_correct_count_line(self, tmp_path):
-        """A validator-only drop (unknown params key) plus a parser-only drop (a bad
-        job type nested in repeat/jobs, which the validator does not recurse into)
-        plus a hard error (missing experiment.name, unconditional in both) must take
-        the ``if parsed.errors:`` early return -- and still print exactly one count
-        line, for the true total, not one stale line per component."""
+        """Two validator drops (unknown params key; a bad job type nested in
+        repeat/jobs) plus a hard error (missing experiment.name, unconditional in
+        both) must take the ``if parsed.errors:`` early return -- and still print
+        exactly one count line, for the true total, not one stale line per
+        component. The parser sees the nested teleport too, but compile_spec
+        suppresses its duplicate report, so the total is 2, not 3."""
         from experiment_designer.lock.build import compile_spec
 
         text = """

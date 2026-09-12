@@ -196,6 +196,9 @@ class SpecValidator:
     _KEYS_DESIGN: frozenset[str] = frozenset(
         {"type", "seed", "factors", "parameters", "replications", "total_crawlers"}
     )
+    # The only keys SpecParser._expand_workflow_item reads on a template/repeat
+    # item (see _expand_template_ref / _expand_repeat).
+    _TEMPLATE_ITEM_KEYS: frozenset[str] = frozenset({"template", "repeat", "with", "jobs"})
 
     def __init__(
         self,
@@ -636,6 +639,18 @@ class SpecValidator:
             errors.append(f"{prefix}: workflow item must be an object")
             return
 
+        # A template/repeat item: the parser reads exactly these four keys and
+        # nothing else, so `weight: 0.7` beside `template: t` is silently ignored.
+        if "template" in item or "repeat" in item:
+            for key in item:
+                if key not in self._TEMPLATE_ITEM_KEYS:
+                    self.drops.report(
+                        f"{prefix}.{key}",
+                        "unknown key on a template/repeat item",
+                        "only template, repeat, with and jobs are read here; move it into the "
+                        "template's jobs or remove it",
+                    )
+
         # Check for template reference
         if "template" in item:
             template_name = item["template"]
@@ -651,6 +666,15 @@ class SpecValidator:
 
             if "template" not in item and "jobs" not in item:
                 errors.append(f"{prefix}: repeat requires 'template' or 'jobs'")
+            # The parser expands each nested job through the same item logic, so
+            # a bad job type in here is a drop exactly like one at the top level.
+            # This is what lets compile_spec suppress the parser's own duplicate
+            # report: the validator must see every workflow item the parser does.
+            nested = item.get("jobs")
+            if isinstance(nested, list):
+                for k, sub in enumerate(nested):
+                    self._validate_workflow_item(sub, f"{prefix}.jobs[{k}]", errors, warnings, spec)
+            return
 
         # Validate job types
         job_types = [
@@ -679,12 +703,13 @@ class SpecValidator:
                 matched = True
                 self._validate_job_shorthand(job_type, item[job_type], prefix, errors, warnings)
 
-        # An item that is neither a template/repeat block nor a known shorthand
-        # is skipped by the parser ("Unknown workflow item format") -- a drop.
-        # `with` only accompanies a template reference, `jobs` a repeat block;
-        # anything else on such an item is a job type the registry lacks, and an
-        # item left with nothing but those has no job at all.
-        if not matched and "template" not in item and "repeat" not in item:
+        # An item that is neither a template/repeat block (returned above) nor a
+        # known shorthand is skipped by the parser ("Unknown workflow item
+        # format") -- a drop. `with` only accompanies a template reference,
+        # `jobs` a repeat block; anything else on such an item is a job type the
+        # registry lacks, and an item left with nothing but those has no job at
+        # all.
+        if not matched:
             unknown = [key for key in item if key not in ("with", "jobs")]
             for key in unknown:
                 self.drops.report(prefix, f"unknown job type '{key}'", "see `pmspec schema jobs`")

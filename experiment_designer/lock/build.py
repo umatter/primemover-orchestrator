@@ -45,17 +45,18 @@ def _merge(*lists: list[str]) -> list[str]:
 
 
 def _finish(
-    errors: list[list[str]], warnings: list[list[str]], dropped: int
+    errors: list[list[str]], warnings: list[list[str]], dropped: int, lax: bool
 ) -> tuple[list[str], list[str]]:
     """De-duplicate errors/warnings across components, then collapse however many
     per-component "N construct(s) would have been dropped" lines are in the merged
     warnings (up to three: validator, parser, converter) into the one true total.
     Every return path -- the two early returns and the main one -- must go through
     this, or a hard failure alongside lax drops prints one stale count line per
-    component instead of one correct combined line."""
+    component instead of one correct combined line. The line is a lax-mode line
+    only: in strict mode the drops are already the errors."""
     merged_errors = _merge(*errors)
     merged_warnings = [w for w in _merge(*warnings) if not _DROP_COUNT_LINE_RE.match(w)]
-    if dropped:
+    if dropped and lax:
         merged_warnings.append(f"{dropped} construct(s) would have been dropped (lax mode)")
     return merged_errors, merged_warnings
 
@@ -102,12 +103,22 @@ def compile_spec(
 
     # Pools/file selections draw from seed+1, the design expander from seed:
     # two independent streams, one recorded number.
-    parser = SpecParser(base_dir=base_dir, seed=None if seed is None else seed + 1, lax=lax)
+    # The validator above already names every unknown workflow item; the parser
+    # must not report it a second time (report_unknown_items=False).
+    parser = SpecParser(
+        base_dir=base_dir,
+        seed=None if seed is None else seed + 1,
+        lax=lax,
+        report_unknown_items=False,
+    )
     parsed = parser.parse(spec_text)
     if parsed.errors:
         dropped = validation.dropped + parsed.dropped
         errors, warnings = _finish(
-            [validation.errors, parsed.errors], [validation.warnings, parsed.warnings], dropped
+            [validation.errors, parsed.errors],
+            [validation.warnings, parsed.warnings],
+            dropped,
+            lax,
         )
         return CompileResult(None, errors, warnings, dropped)
 
@@ -121,11 +132,14 @@ def compile_spec(
             ],
             [validation.warnings, parsed.warnings],
             dropped,
+            lax,
         )
         return CompileResult(None, errors, warnings, dropped)
     if seed is None:
         # design.seed only: re-parse so the pool stream is seeded from it too.
-        parser = SpecParser(base_dir=base_dir, seed=effective_seed + 1, lax=lax)
+        parser = SpecParser(
+            base_dir=base_dir, seed=effective_seed + 1, lax=lax, report_unknown_items=False
+        )
         parsed = parser.parse(spec_text)
 
     converter = SpecConverter(seed=effective_seed, resolve_times=False, lax=lax)
@@ -135,6 +149,7 @@ def compile_spec(
         [validation.errors, parsed.errors, result.errors],
         [validation.warnings, parsed.warnings, result.warnings],
         dropped,
+        lax,
     )
 
     crawlers: list[dict[str, Any]] = result.json_data
