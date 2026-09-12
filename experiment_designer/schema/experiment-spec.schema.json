@@ -100,7 +100,7 @@
         "proxy_type": {
           "type": "string",
           "description": "Default proxy type",
-          "enum": ["http", "socks5"],
+          "enum": ["http", "socks5", "brightdata", "oxylabs"],
           "default": "http"
         },
         "typing_mode": {
@@ -361,7 +361,7 @@
         "type": {
           "type": "string",
           "description": "Proxy type",
-          "enum": ["http", "socks5"]
+          "enum": ["http", "socks5", "brightdata", "oxylabs"]
         }
       }
     },

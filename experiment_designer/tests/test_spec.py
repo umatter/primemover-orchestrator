@@ -604,21 +604,30 @@ class TestSpecValidator(unittest.TestCase):
         result = self.validator.validate(spec)
         self.assertTrue(result.valid, result.errors)
 
-    def test_unknown_param_warns_not_errors(self):
-        """A non-standard param survives validation but warns it will be dropped."""
+    def test_unknown_param_is_a_drop(self):
+        """A non-standard param is dropped by the pipeline: an error in strict
+        mode, a warning plus a count under lax."""
         spec = {
             "experiment": {"name": "Test"},
             "crawlers": [{"name": "Test", "configuration": {"params": {"epsilon": 0.7}}}],
         }
         result = self.validator.validate(spec)
-        self.assertTrue(result.valid, result.errors)
-        self.assertTrue(any("epsilon" in w for w in result.warnings))
+        self.assertFalse(result.valid)
+        self.assertTrue(any("epsilon" in e for e in result.errors), result.errors)
+        self.assertEqual(result.dropped, 1)
+
+        lax = SpecValidator(lax=True).validate(spec)
+        self.assertTrue(lax.valid, lax.errors)
+        self.assertTrue(any("epsilon" in w for w in lax.warnings), lax.warnings)
+        self.assertEqual(lax.dropped, 1)
 
     def _validate_workflow_item(self, item):
         """Validate a spec whose single crawler runs one workflow item."""
         spec = {
             "experiment": {"name": "Test"},
-            "crawlers": [{"name": "Test", "session": {"workflow": [item]}}],
+            # A session without a start is a drop since the strict contract, so
+            # these fixtures carry one; the item under test is the only variable.
+            "crawlers": [{"name": "Test", "session": {"start": "now", "workflow": [item]}}],
         }
         return self.validator.validate(spec)
 

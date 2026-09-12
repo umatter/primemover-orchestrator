@@ -77,8 +77,9 @@ class SpecValidator:
 
     # Params the current converter/API/runner/decision-function pipeline actually
     # carries. Anything else survives the DSL but is dropped downstream today, so
-    # it is warned about rather than silently lost. (Making this channel generic
-    # is the "flexible treatment" work; until then, unknown keys do not arrive.)
+    # it is reported as a drop rather than silently lost. (Making this channel
+    # generic is the "flexible treatment" work; until then, unknown keys do not
+    # arrive.)
     _KNOWN_PARAMS: frozenset[str] = frozenset(
         {
             "pi",
@@ -91,6 +92,107 @@ class SpecValidator:
             "search_terms",
             "media_outlet_urls",
         }
+    )
+
+    # Keys the parser/converter/design-expander actually read, per level. These
+    # are the whitelist for _validate_unknown_keys; the JSON schema is a drifted,
+    # partial mirror (it lacks data_pools, additional_sessions, proxy pools, ...)
+    # so the reading code is the authority, not additionalProperties. A key that
+    # is missing here but read somewhere is a false error, bounded by the
+    # example/research-spec whitelist test in test_strict_contract.py.
+    _KEYS_ROOT: frozenset[str] = frozenset(
+        {
+            "version",
+            "experiment",
+            "defaults",
+            "templates",
+            "design",
+            "data_pools",
+            "strategy_schemas",
+            "crawlers",
+        }
+    )
+    _KEYS_EXPERIMENT: frozenset[str] = frozenset(
+        {"name", "description", "runner_user_id", "generator"}
+    )
+    _KEYS_CRAWLER: frozenset[str] = frozenset(
+        {
+            "from_design",
+            "name",
+            "description",
+            "active",
+            "testing",
+            "configuration",
+            "proxy",
+            "agent",
+            "session",
+            "additional_sessions",
+            "queues",
+        }
+    )
+    _KEYS_SESSION: frozenset[str] = frozenset(
+        {
+            "name",
+            "description",
+            "start",
+            "start_at",
+            "timezone",
+            "timezone_utc_offset",
+            "active",
+            "workflow",
+            "jobs",
+        }
+    )
+    _KEYS_PROXY: frozenset[str] = frozenset(
+        {
+            "name",
+            "description",
+            "hostname",
+            "host",
+            "port",
+            "username",
+            "password",
+            "type",
+            "active",
+            "location",
+            "from_pool",
+            "pool",
+            "match_field",
+        }
+    )
+    _KEYS_AGENT: frozenset[str] = frozenset(
+        {
+            "name",
+            "description",
+            "identification",
+            "location",
+            "multilogin_id",
+            "multilogin_profile",
+            "active",
+            "custom_start_urls",
+        }
+    )
+    _KEYS_CONFIGURATION: frozenset[str] = frozenset(
+        {"name", "description", "params", "preferences", "active"}
+    )
+    # `proxy` is read by SpecConverter._convert_crawler as the fallback for a
+    # crawler without its own proxy block (and the example specs use it).
+    _KEYS_DEFAULTS: frozenset[str] = frozenset(
+        {
+            "location",
+            "browser",
+            "timezone",
+            "timezone_utc_offset",
+            "captcha_mode",
+            "proxy_type",
+            "typing_mode",
+            "selection_type",
+            "active",
+            "proxy",
+        }
+    )
+    _KEYS_DESIGN: frozenset[str] = frozenset(
+        {"type", "seed", "factors", "parameters", "replications", "total_crawlers"}
     )
 
     def __init__(self, schema_path: str | None = None, *, lax: bool = False):
@@ -140,6 +242,9 @@ class SpecValidator:
         warnings: list[str] = []
         info: dict[str, Any] = {}
         self.drops = Drops(self.lax)
+
+        # 0. Unknown keys (first, so the message a reader sees first names the typo)
+        self._validate_unknown_keys(spec)
 
         # 1. JSON Schema validation (if available)
         schema_errors = self._validate_schema(spec)
@@ -201,7 +306,7 @@ class SpecValidator:
 
     def _validate_treatment_params(self, spec: dict[str, Any]) -> tuple[list[str], list[str]]:
         """Validate treatment params: pi/psi/kappa/tau are 0/1 switches, and any
-        param outside the pipeline's known set is dropped downstream (warn).
+        param outside the pipeline's known set is dropped downstream (a drop).
 
         Checks both the design's ``maps_to`` level values and each crawler's
         direct ``configuration.params``. This is the one guard that catches the
@@ -228,10 +333,11 @@ class SpecValidator:
                                 "rounds to 0 and silently disables the treatment arm)."
                             )
                 elif "params" in parts and leaf not in self._KNOWN_PARAMS:
-                    warnings.append(
-                        f"design.factors.{fname}.maps_to.{path}: '{leaf}' is not carried by the "
-                        "current API/runner/decision-function pipeline and will be dropped "
-                        "downstream, so it will not reach the decision function."
+                    self.drops.report(
+                        f"design.factors.{fname}.maps_to.{path}",
+                        f"'{leaf}' is not carried by the API/runner/decision-function pipeline",
+                        "route it through a template `with:` variable or a lambda_select "
+                        "`strategy` + `treatment` block",
                     )
 
         for i, crawler in enumerate(spec.get("crawlers", [])):
@@ -246,13 +352,53 @@ class SpecValidator:
                             f"('{key}' is a switch read as int(round(x))==1; 0.5 rounds to 0)."
                         )
                 elif key not in self._KNOWN_PARAMS:
-                    warnings.append(
-                        f"crawler[{i}].configuration.params.{key}: unknown parameter; the current "
-                        "pipeline only carries the standard params and will drop this key, so it "
-                        "will not reach the decision function."
+                    self.drops.report(
+                        f"crawlers[{i}].configuration.params.{key}",
+                        "unknown parameter, dropped by the pipeline",
+                        "only pi/psi/kappa/tau/alpha/beta/active/search_terms/media_outlet_urls "
+                        "reach the bot; use a configuration preference or a treatment block",
                     )
 
         return errors, warnings
+
+    def _validate_unknown_keys(self, spec: dict[str, Any]) -> None:
+        """Keys the pipeline never reads are dropped silently; report them.
+
+        The JSON schema is a drifted, partial mirror of the parser, so the
+        parser's accepted keys are the authority here, not additionalProperties.
+        Workflow items are not checked: unknown job *types* are, but option keys
+        inside a known job vary per type and false positives there would cost
+        more than the rare typo they would catch.
+        """
+
+        def check(obj: Any, allowed: frozenset[str], path: str) -> None:
+            if not isinstance(obj, dict):
+                return
+            for key in obj:
+                if key not in allowed:
+                    self.drops.report(
+                        f"{path}.{key}" if path else str(key),
+                        "unknown key",
+                        "remove it or fix the spelling",
+                    )
+
+        check(spec, self._KEYS_ROOT, "")
+        check(spec.get("experiment"), self._KEYS_EXPERIMENT, "experiment")
+        check(spec.get("defaults"), self._KEYS_DEFAULTS, "defaults")
+        check(spec.get("design"), self._KEYS_DESIGN, "design")
+        for i, crawler in enumerate(spec.get("crawlers") or []):
+            prefix = f"crawler[{i}]"
+            check(crawler, self._KEYS_CRAWLER, prefix)
+            if not isinstance(crawler, dict):
+                continue
+            check(crawler.get("configuration"), self._KEYS_CONFIGURATION, f"{prefix}.configuration")
+            check(crawler.get("proxy"), self._KEYS_PROXY, f"{prefix}.proxy")
+            check(crawler.get("agent"), self._KEYS_AGENT, f"{prefix}.agent")
+            check(crawler.get("session"), self._KEYS_SESSION, f"{prefix}.session")
+            for j, extra in enumerate(crawler.get("additional_sessions") or []):
+                check(extra, self._KEYS_SESSION, f"{prefix}.additional_sessions[{j}]")
+            for j, queue in enumerate(crawler.get("queues") or []):
+                check(queue, self._KEYS_SESSION, f"{prefix}.queues[{j}]")
 
     def _validate_schema(self, spec: dict[str, Any]) -> list[str]:
         """Validate against JSON Schema."""
@@ -382,13 +528,22 @@ class SpecValidator:
             if crawler.get("from_design") and not design:
                 errors.append(f"{prefix}: from_design=true but no design is defined")
 
-            # Validate proxy if defined
+            # Validate proxy if defined.
+            #
+            # A warning, not a drop: a self-configuring type (oxylabs) has no host
+            # by design (the runner supplies endpoint and account), and a pooled
+            # proxy (from_pool: true) gets its host from the pool row, so nothing
+            # the author wrote is discarded either way.
             proxy = crawler.get("proxy", {})
-            if proxy and proxy != "auto":
+            if isinstance(proxy, dict) and proxy and proxy.get("from_pool") is not True:
+                self_configuring = proxy.get("type") in ("oxylabs",)
+                note = (
+                    " (self-configuring type, the runner supplies it)" if self_configuring else ""
+                )
                 if not proxy.get("hostname") and not proxy.get("host"):
-                    warnings.append(f"{prefix}.proxy: no hostname specified")
+                    warnings.append(f"{prefix}.proxy: no hostname specified{note}")
                 if not proxy.get("port"):
-                    warnings.append(f"{prefix}.proxy: no port specified")
+                    warnings.append(f"{prefix}.proxy: no port specified{note}")
 
             # Validate session/queue
             session = crawler.get("session")
@@ -413,7 +568,9 @@ class SpecValidator:
         # Check for start time
         start = session.get("start") or session.get("start_at")
         if not start:
-            warnings.append(f"{prefix}: no start time specified, will use current time")
+            self.drops.report(
+                prefix, "no start time", "every session needs start: now | +5m | <ISO wall clock>"
+            )
         else:
             # Validate timestamp format
             if not self._is_valid_timestamp(start):
@@ -488,9 +645,25 @@ class SpecValidator:
             "try_handle_alert",
         ]
 
+        matched = False
         for job_type in job_types:
             if job_type in item:
+                matched = True
                 self._validate_job_shorthand(job_type, item[job_type], prefix, errors, warnings)
+
+        # An item that is neither a template/repeat block nor a known shorthand
+        # is skipped by the parser ("Unknown workflow item format") -- a drop.
+        # `with` only accompanies a template reference, `jobs` a repeat block;
+        # anything else on such an item is a job type the registry lacks, and an
+        # item left with nothing but those has no job at all.
+        if not matched and "template" not in item and "repeat" not in item:
+            unknown = [key for key in item if key not in ("with", "jobs")]
+            for key in unknown:
+                self.drops.report(prefix, f"unknown job type '{key}'", "see `pmspec schema jobs`")
+            if not unknown:
+                self.drops.report(
+                    prefix, "workflow item has no job type", "see `pmspec schema jobs`"
+                )
 
     def _strategy_schema(self, strategy: str) -> dict[str, Any] | None:
         """Load a decision strategy's JSON schema from the sibling bot-decision-yt.
@@ -531,22 +704,25 @@ class SpecValidator:
         The behaviours channel activates only when a ``strategy`` marker is present
         (matching the decision function's gate). When it is, the ``treatment``
         block is validated against that strategy's schema; when a ``treatment`` is
-        set without a ``strategy``, it will be silently ignored downstream, so warn.
+        set without a ``strategy``, it is silently ignored downstream -- a drop.
         """
         strategy = value.get("strategy")
         treatment = value.get("treatment")
 
         if not strategy:
             if isinstance(treatment, dict) and treatment:
-                warnings.append(
-                    f"{prefix}.lambda_select: 'treatment' is set but 'strategy' is not; "
-                    "without a strategy marker the decision function ignores it and falls "
-                    "back to the legacy selectionConfiguration."
+                self.drops.report(
+                    f"{prefix}.lambda_select",
+                    "'treatment' is set but 'strategy' is not, so the decision function "
+                    "ignores it",
+                    "add strategy: <name>",
                 )
             return
 
         schema = self._strategy_schema(str(strategy))
         if schema is None:
+            # A warning, not a drop: the treatment is still forwarded and read by
+            # the decision function; only this validator cannot check its shape.
             warnings.append(
                 f"{prefix}.lambda_select: cannot validate treatment for strategy "
                 f"'{strategy}' -- its schema was not found (is bot-decision-yt checked out "
@@ -574,7 +750,7 @@ class SpecValidator:
         """Validate job shorthand syntax."""
         schema = JobRegistry.get_schema(job_type)
         if not schema:
-            warnings.append(f"{prefix}: unknown job type '{job_type}'")
+            self.drops.report(prefix, f"unknown job type '{job_type}'", "see `pmspec schema jobs`")
             return
 
         errors_before = len(errors)
@@ -647,67 +823,16 @@ class SpecValidator:
         return errors, warnings
 
     def _validate_variable_references(self, spec: dict[str, Any]) -> tuple[list[str], list[str]]:
-        """Validate variable references in crawler templates."""
-        errors: list[str] = []
-        warnings: list[str] = []
+        """Placeholder for the pre-expansion ``{var}`` heuristic, now retired.
 
-        design = spec.get("design")
-        if not design:
-            return errors, warnings
-
-        # Collect available variables from design
-        available_vars = {"replica"}
-        factors = design.get("factors", {})
-
-        for factor_name, factor_def in factors.items():
-            available_vars.add(factor_name)
-            available_vars.add(f"{factor_name}:value")
-
-            # Add mapped parameter names
-            for param_path in factor_def.get("maps_to", {}).keys():
-                # Add both full path and last segment
-                available_vars.add(param_path)
-                available_vars.add(param_path.split(".")[-1])
-
-        # Check crawler templates for undefined variables
-        for i, crawler in enumerate(spec.get("crawlers", [])):
-            if crawler.get("from_design"):
-                undefined = self._find_undefined_variables(crawler, available_vars)
-                for var in undefined:
-                    warnings.append(f"crawler[{i}]: variable '{{{var}}}' may not be defined")
-
-        return errors, warnings
-
-    def _find_undefined_variables(self, obj: Any, available_vars: set) -> set:
-        """Find undefined variable references in an object."""
-        undefined: set[str] = set()
-
-        if isinstance(obj, str):
-            # Skip strings that look like JSON (start and end with { })
-            stripped = obj.strip()
-            if stripped.startswith("{") and stripped.endswith("}"):
-                # Check if it's a JSON object vs a simple variable
-                if '"' in stripped or ":" in stripped:
-                    # Looks like JSON, skip it
-                    return undefined
-
-            # Find all {var} or {var:format} patterns
-            # Only match simple variable names (alphanumeric + underscore)
-            pattern = r"\{([a-zA-Z_][a-zA-Z0-9_]*)(?::\d*d)?\}"
-            for match in re.finditer(pattern, obj):
-                var_name = match.group(1)
-                if var_name not in available_vars:
-                    undefined.add(var_name)
-
-        elif isinstance(obj, dict):
-            for value in obj.values():
-                undefined.update(self._find_undefined_variables(value, available_vars))
-
-        elif isinstance(obj, list):
-            for item in obj:
-                undefined.update(self._find_undefined_variables(item, available_vars))
-
-        return undefined
+        The raw-YAML guess ("variable '{x}' may not be defined") could not see
+        template ``with:`` bindings or pool fields and was wrong often enough to
+        be ignored. Unresolved ``{var}`` / ``${var}`` placeholders are caught
+        after expansion instead, on the values that actually reach the API, by
+        ``SpecConverter._scan_unresolved``. Kept as a no-op step so validate()'s
+        numbered pipeline and its callers stay stable.
+        """
+        return [], []
 
 
 def validate_spec(spec: dict[str, Any]) -> ValidationResult:

@@ -71,10 +71,15 @@ class TestLambdaSelectTreatmentValidation(unittest.TestCase):
         self.validator = SpecValidator()
 
     def _spec(self, lambda_select):
+        # `start` is required: a session without one is a drop (strict contract),
+        # and these tests are about the treatment block, not the schedule.
         return {
             "experiment": {"name": "Test"},
             "crawlers": [
-                {"name": "Bot", "session": {"workflow": [{"lambda_select": lambda_select}]}}
+                {
+                    "name": "Bot",
+                    "session": {"start": "now", "workflow": [{"lambda_select": lambda_select}]},
+                }
             ],
         }
 
@@ -105,11 +110,19 @@ class TestLambdaSelectTreatmentValidation(unittest.TestCase):
         assert not result.valid
         assert any("treatment" in e and "pi" in e for e in result.errors)
 
-    def test_treatment_without_strategy_warns(self):
+    def test_treatment_without_strategy_is_a_drop(self):
+        # The decision function ignores a treatment with no strategy marker, so
+        # strict mode errors; lax mode keeps it as a warning plus a count.
         spec = self._spec({"task": "t", "function": "f", "treatment": {"pi": 1}})
         result = self.validator.validate(spec)
-        assert result.valid, result.errors  # a warning, not an error
-        assert any("without a strategy marker" in w for w in result.warnings)
+        assert not result.valid
+        assert any("'strategy' is not" in e for e in result.errors), result.errors
+        assert result.dropped == 1
+
+        lax = SpecValidator(lax=True).validate(spec)
+        assert lax.valid, lax.errors
+        assert any("'strategy' is not" in w for w in lax.warnings), lax.warnings
+        assert lax.dropped == 1
 
     def test_missing_strategy_schema_warns_soft(self):
         # A real strategy name whose schema is not found (sibling absent) -> soft
