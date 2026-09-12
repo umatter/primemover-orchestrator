@@ -2141,7 +2141,7 @@ def compile_experiment_spec(
 
     Returns:
         JSON: {"lock": <text>, "crawler_count", "seed", "anchor", "git_commit",
-        "spec_path", "warnings"} or {"errors": [...]}
+        "spec_path", "warnings", "dropped"} or {"errors": [...], "warnings", "dropped"}
     """
     if git_commit is not None and not _CLIENT_COMMIT_RE.fullmatch(git_commit):
         return json.dumps(
@@ -2165,7 +2165,9 @@ def compile_experiment_spec(
             git_root=None,
         )
     if result.lock is None:
-        return json.dumps({"errors": result.errors, "warnings": result.warnings})
+        return json.dumps(
+            {"errors": result.errors, "warnings": result.warnings, "dropped": result.dropped}
+        )
     # Whatever the temp dir's parent happens to be, this lock came from no
     # checkout: only the caller's word is recorded, never the temp dir's git.
     result.lock.provenance.git_commit = git_commit

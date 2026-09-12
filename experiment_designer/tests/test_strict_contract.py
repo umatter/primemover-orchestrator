@@ -343,3 +343,33 @@ class TestCompileIsStrict:
         assert "errors" in strict
         lax = json.loads(s.compile_experiment_spec(self.SPEC, seed=1, lax=True))
         assert lax["dropped"] == 1 and "lock" in lax
+
+    def test_hard_error_plus_two_drop_sources_prints_one_correct_count_line(self, tmp_path):
+        """A validator-only drop (unknown params key) plus a parser-only drop (a bad
+        job type nested in repeat/jobs, which the validator does not recurse into)
+        plus a hard error (missing experiment.name, unconditional in both) must take
+        the ``if parsed.errors:`` early return -- and still print exactly one count
+        line, for the true total, not one stale line per component."""
+        from experiment_designer.lock.build import compile_spec
+
+        text = """
+version: "1.0"
+experiment: {}
+crawlers:
+  - name: bot
+    configuration:
+      params: {reliability: high}
+    session:
+      start: "+1m"
+      workflow:
+        - repeat: 1
+          jobs:
+            - teleport: x
+"""
+        r = compile_spec(text, base_dir=tmp_path, spec_path="s.yaml", seed=1, lax=True)
+        assert r.lock is None
+        assert r.dropped == 2
+        count_lines = [
+            w for w in r.warnings if re.match(r"^\d+ construct\(s\) would have been dropped", w)
+        ]
+        assert count_lines == ["2 construct(s) would have been dropped (lax mode)"], r.warnings

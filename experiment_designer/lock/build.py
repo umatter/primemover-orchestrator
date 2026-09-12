@@ -44,6 +44,22 @@ def _merge(*lists: list[str]) -> list[str]:
     return merged
 
 
+def _finish(
+    errors: list[list[str]], warnings: list[list[str]], dropped: int
+) -> tuple[list[str], list[str]]:
+    """De-duplicate errors/warnings across components, then collapse however many
+    per-component "N construct(s) would have been dropped" lines are in the merged
+    warnings (up to three: validator, parser, converter) into the one true total.
+    Every return path -- the two early returns and the main one -- must go through
+    this, or a hard failure alongside lax drops prints one stale count line per
+    component instead of one correct combined line."""
+    merged_errors = _merge(*errors)
+    merged_warnings = [w for w in _merge(*warnings) if not _DROP_COUNT_LINE_RE.match(w)]
+    if dropped:
+        merged_warnings.append(f"{dropped} construct(s) would have been dropped (lax mode)")
+    return merged_errors, merged_warnings
+
+
 def recorded_spec_path(spec_path: str, repo_dir: Path) -> str:
     """The spec path as the lock records it: relative to the spec repo's toplevel,
     so the same spec compiled from any cwd (or any checkout) yields the same bytes;
@@ -89,24 +105,24 @@ def compile_spec(
     parser = SpecParser(base_dir=base_dir, seed=None if seed is None else seed + 1, lax=lax)
     parsed = parser.parse(spec_text)
     if parsed.errors:
-        return CompileResult(
-            None,
-            _merge(validation.errors, parsed.errors),
-            _merge(validation.warnings, parsed.warnings),
-            validation.dropped + parsed.dropped,
+        dropped = validation.dropped + parsed.dropped
+        errors, warnings = _finish(
+            [validation.errors, parsed.errors], [validation.warnings, parsed.warnings], dropped
         )
+        return CompileResult(None, errors, warnings, dropped)
 
     effective_seed = seed if seed is not None else (parsed.design or {}).get("seed")
     if effective_seed is None:
-        return CompileResult(
-            None,
-            _merge(
+        dropped = validation.dropped + parsed.dropped
+        errors, warnings = _finish(
+            [
                 validation.errors,
                 ["no seed: pass --seed N or set design.seed; a lock is never unseeded"],
-            ),
-            _merge(validation.warnings, parsed.warnings),
-            validation.dropped + parsed.dropped,
+            ],
+            [validation.warnings, parsed.warnings],
+            dropped,
         )
+        return CompileResult(None, errors, warnings, dropped)
     if seed is None:
         # design.seed only: re-parse so the pool stream is seeded from it too.
         parser = SpecParser(base_dir=base_dir, seed=effective_seed + 1, lax=lax)
@@ -114,14 +130,12 @@ def compile_spec(
 
     converter = SpecConverter(seed=effective_seed, resolve_times=False, lax=lax)
     result = converter.convert(parsed)
-    errors = _merge(validation.errors, parsed.errors, result.errors)
-    warnings = _merge(validation.warnings, parsed.warnings, result.warnings)
     dropped = validation.dropped + parsed.dropped + result.dropped
-    # Each component's Drops.merge_into appends its own count line; collapse
-    # up to three of those into the one true total.
-    warnings = [w for w in warnings if not _DROP_COUNT_LINE_RE.match(w)]
-    if dropped:
-        warnings.append(f"{dropped} construct(s) would have been dropped (lax mode)")
+    errors, warnings = _finish(
+        [validation.errors, parsed.errors, result.errors],
+        [validation.warnings, parsed.warnings, result.warnings],
+        dropped,
+    )
 
     crawlers: list[dict[str, Any]] = result.json_data
     literal = find_literal_credentials(crawlers)
