@@ -109,7 +109,9 @@ to see exactly what would change relative to the lock already bound to a live ex
 the preference is what actually authorises deletion. `--dry-run` lists candidates and deletes
 nothing; `--older-than 7d|36h|90m` keeps only experiments whose latest `pmspec.uploaded_at` is at
 least that old (omit it and an experiment with no parseable timestamp is still a candidate);
-`--yes` skips the confirmation prompt.
+`--yes` skips the confirmation prompt. The experiments it can see are the caller's login's:
+under the shared MCP identity (a service account) that is *everyone's* pmspec test experiments,
+so prefer `older_than`, and never run it while a colleague's test is in flight.
 
 ### The seed
 
@@ -182,6 +184,7 @@ For checking in later, two more MCP tools mirror the CLI's day-to-day commands:
 health always, and — when `lock_content` is given — the same BOUND/structural verify as
 `verify_experiment`, `deep` included, all in one call; `diff_locks(lock_a, lock_b)` compares two
 locks' provenance, anchor and crawler structure with no live experiment or API call at all.
+`summarize_yaml_spec` accepts a lock as well as a spec (auto-detected), like `pmspec summary`.
 
 ## The strict contract
 
@@ -828,7 +831,8 @@ crawlers:
 | `cleanup [--older-than 7d] [--dry-run] [--yes]` | Delete pmspec TEST experiments only (`test-` name **and** `pmspec.mode=test`) |
 | `secrets check <lock> [--secrets]` | List the secrets a lock references and which are missing |
 | `generate <file> [-o output.json] [--seed N] [--resolve-secrets]` | Convert a spec or lock to API JSON (GUI upload only; carries no provenance) |
-| `preview <file> [--seed N]` | Preview factorial design |
+| `preview <file> [--seed N]` | Preview factorial design; given a lock, its counts, anchor and provenance |
+| `summary <file>... [-e ID] [--compare] [-f text\|json\|html] [--seed N]` | Experiment summary from a spec, a lock, or a live experiment |
 | `schema jobs` | List all job types |
 | `schema job <type>` | Show job type details |
 | `init [-t template]` | Create from template |

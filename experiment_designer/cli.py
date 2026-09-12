@@ -8,8 +8,8 @@ Commands:
     pmspec validate <file.yaml|.lock.yaml>  Validate a specification or a lock
     pmspec compile <file.yaml>         Compile a spec into a committable lock
     pmspec generate <file.yaml|.lock.yaml>  Convert to API JSON
-    pmspec preview <file.yaml>        Preview design expansion
-    pmspec summary <file.yaml>        Generate experiment summary
+    pmspec preview <file.yaml|.lock.yaml>  Preview design expansion (a lock: its counts and provenance)
+    pmspec summary <file.yaml|.lock.yaml>  Generate experiment summary
     pmspec upload <file.yaml|.lock.yaml>  Upload a lock (compiling a spec first) and verify it
     pmspec verify <exp_id> <lock>     Check a live experiment is bound to, and identical to, a lock
     pmspec status <exp_id> [lock]     Provenance + health of a live experiment; with lock, also verify
@@ -514,6 +514,9 @@ def status(experiment_id: int, lock: str | None, hours: int, deep: bool) -> None
         )
     except ApiError as e:
         click.secho(f"Status failed: {e}", fg="red")
+        sys.exit(1)
+    except AnchorError as e:
+        click.secho(f"Refused: {e}", fg="red")
         sys.exit(1)
     except LockError as e:
         click.secho("Lock invalid", fg="red", bold=True)

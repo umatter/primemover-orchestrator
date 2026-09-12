@@ -50,7 +50,8 @@ class LockDiff:
     def render(self) -> str:
         lines = _provenance_lines(self.provenance_a, self.provenance_b)
         if self.identical:
-            lines.append("identical")
+            # Provenance may still differ line by line above; say what is identical.
+            lines.append("structure identical")
             return "\n".join(lines)
         if self.anchor_a != self.anchor_b:
             lines.append(f"anchor: {self.anchor_a!r} vs {self.anchor_b!r}")

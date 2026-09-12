@@ -114,7 +114,9 @@ A factorial-path experiment uploaded with `upload_experiment(..., mode='test')` 
 `pm_cleanup_test_experiments(older_than=…)` (dry-run: lists candidates), then `confirm=true` once
 the user agrees. It only ever deletes experiments whose name starts `test-` **and** whose
 `pmspec.mode` preference is `"test"` — set by that upload, never by name alone — so a real study is
-never at risk.
+never at risk. The list it works from is scoped to the MCP's login, and the shared MCP identity is
+a service account: it sees *everyone's* pmspec test experiments, not just this session's. Prefer
+`older_than`, and never run it while a colleague's test is in flight.
 
 ## Safety rules
 - **Always dry-run first.** Show the plan; get explicit approval before `confirm=true`.

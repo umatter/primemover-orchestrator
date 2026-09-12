@@ -60,3 +60,5 @@ def test_provenance_side_by_side_in_render():
     b.provenance.git_commit = "deadbee"
     text = diff_locks(dump_lock(a), dump_lock(b)).render()
     assert "a2024c9" in text and "deadbee" in text
+    # The provenance lines above differ; the verdict line must say what is identical.
+    assert "structure identical" in text

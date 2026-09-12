@@ -52,6 +52,22 @@ def test_status_passes_hours_and_deep(fake_status):
     assert fake_status["hours"] == 6 and fake_status["deep"] is True
 
 
+def test_status_reports_an_unresolvable_anchor_as_a_refusal(monkeypatch, tmp_path):
+    from experiment_designer.lock.anchor import AnchorError
+
+    def _raise(*a, **k):
+        raise AnchorError("anchor '2020-01-01T00:00:00' is in the past")
+
+    monkeypatch.setattr(cli_module, "_session_from_env", lambda: object())
+    monkeypatch.setattr(cli_module, "experiment_status", _raise)
+    lock = tmp_path / "s.lock.yaml"
+    lock.write_text("pmspec_lock: 1\n")
+    out = CliRunner().invoke(cli, ["status", "181", str(lock)])
+    assert out.exit_code == 1
+    assert "Refused" in out.output and "in the past" in out.output
+    assert "Traceback" not in out.output
+
+
 class _Diff:
     def __init__(self, identical: bool):
         self.identical = identical
