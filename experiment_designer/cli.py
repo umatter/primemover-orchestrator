@@ -68,8 +68,9 @@ def cli():
     "--format", "-f", type=click.Choice(["text", "json"]), default="text", help="Output format"
 )
 @click.option("--strict", is_flag=True, help="Treat warnings as errors")
+@click.option("--lax", is_flag=True, help="Downgrade strict-contract errors (drops) to warnings")
 @click.option("--seed", "-s", type=int, help="Random seed for reproducible randomization")
-def validate(file: str, format: str, strict: bool, seed: int | None):
+def validate(file: str, format: str, strict: bool, lax: bool, seed: int | None):
     """Validate an experiment specification.
 
     Performs three levels of validation:
@@ -123,7 +124,7 @@ def validate(file: str, format: str, strict: bool, seed: int | None):
         sys.exit(1)
 
     # Run enhanced validator on raw spec
-    validator = SpecValidator()
+    validator = SpecValidator(base_dir=base_dir, lax=lax)
     validation_result = validator.validate(raw_spec)
 
     # Also parse and convert to catch additional errors

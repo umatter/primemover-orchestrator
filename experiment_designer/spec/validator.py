@@ -8,6 +8,7 @@ Performs:
 """
 
 import json
+import os
 import re
 from dataclasses import dataclass, field
 from datetime import date, datetime
@@ -196,17 +197,28 @@ class SpecValidator:
         {"type", "seed", "factors", "parameters", "replications", "total_crawlers"}
     )
 
-    def __init__(self, schema_path: str | None = None, *, lax: bool = False):
+    def __init__(
+        self,
+        schema_path: str | None = None,
+        *,
+        lax: bool = False,
+        base_dir: Path | None = None,
+    ):
         """
         Initialize validator.
 
         Args:
             schema_path: Path to JSON Schema file (uses default if not specified)
             lax: Report drops as warnings-plus-count instead of errors
+            base_dir: Directory a spec-relative ``strategy_schemas`` path is resolved
+                against (the spec's own directory for the CLI, a materialised temp
+                dir for the MCP). Defaults to the current working directory.
         """
         self.schema = None
         self.lax = lax
+        self.base_dir = base_dir
         self.drops = Drops(lax)
+        self._strategy_schemas: dict[str, Any] = {}
         self._load_schema(schema_path)
 
     def _load_schema(self, schema_path: str | None = None) -> None:
@@ -243,6 +255,7 @@ class SpecValidator:
         warnings: list[str] = []
         info: dict[str, Any] = {}
         self.drops = Drops(self.lax)
+        self._strategy_schemas = spec.get("strategy_schemas") or {}
 
         # 0. Unknown keys (first, so the message a reader sees first names the typo)
         self._validate_unknown_keys(spec)
@@ -681,15 +694,33 @@ class SpecValidator:
                 )
 
     def _strategy_schema(self, strategy: str) -> dict[str, Any] | None:
-        """Load a decision strategy's JSON schema from the sibling bot-decision-yt.
+        """Resolve a decision strategy's JSON schema.
 
-        Soft dependency: the orchestrator does not hard-require the decision repo
-        to be checked out, so a missing schema returns None (the caller warns and
-        skips) rather than failing validation. Tries the decision symlink first
-        (the canonical pointer), then the sibling path.
+        Resolution order:
+        1. ``spec["strategy_schemas"][strategy]`` -- an inline dict is the schema
+           itself; a string is a path resolved against ``self.base_dir`` (or the
+           cwd, if none was given).
+        2. Each directory in ``PMSPEC_STRATEGY_SCHEMA_DIRS`` (``os.pathsep``
+           separated), as ``<dir>/<strategy>.schema.json``.
+        3. The two sibling bot-decision-yt locations (decision symlink, then the
+           checked-out repo) -- a soft dependency the orchestrator does not
+           hard-require.
+
+        Not found returns None; the caller turns that into a drop, since the
+        treatment is otherwise forwarded to the decision function unchecked.
         """
+        declared = self._strategy_schemas.get(strategy)
+        if isinstance(declared, dict):
+            return declared
+
+        candidates: list[Path] = []
+        if isinstance(declared, str):
+            candidates.append((self.base_dir or Path.cwd()) / declared)
+        for d in filter(None, os.environ.get("PMSPEC_STRATEGY_SCHEMA_DIRS", "").split(os.pathsep)):
+            candidates.append(Path(d) / f"{strategy}.schema.json")
+
         repo_root = Path(__file__).resolve().parents[2]
-        candidates = [
+        candidates += [
             repo_root
             / "orchestrator"
             / "lambda_service"
@@ -736,12 +767,13 @@ class SpecValidator:
 
         schema = self._strategy_schema(str(strategy))
         if schema is None:
-            # A warning, not a drop: the treatment is still forwarded and read by
-            # the decision function; only this validator cannot check its shape.
-            warnings.append(
-                f"{prefix}.lambda_select: cannot validate treatment for strategy "
-                f"'{strategy}' -- its schema was not found (is bot-decision-yt checked out "
-                "and the decision symlink present?); skipping treatment validation."
+            # A drop: the treatment is still forwarded to the decision function
+            # unchecked, and this validator cannot see whether it is well-formed.
+            self.drops.report(
+                f"{prefix}.lambda_select",
+                f"no schema for strategy '{strategy}', so its treatment cannot be validated",
+                "add strategy_schemas: {<name>: <path or inline schema>} or set "
+                "PMSPEC_STRATEGY_SCHEMA_DIRS",
             )
             return
 

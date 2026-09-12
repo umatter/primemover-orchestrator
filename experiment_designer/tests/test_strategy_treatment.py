@@ -7,8 +7,10 @@ strategy's JSON schema when it can find it.
 
 The strategy schema lives in the sibling bot-decision-yt repo, which is NOT
 present in this repo's CI, so the validation-logic tests inject a schema rather
-than depend on the sibling; the soft-dependency path is tested with a strategy
-whose schema genuinely cannot be found.
+than depend on the sibling; the not-found path (no sibling, no
+``strategy_schemas`` entry, no ``PMSPEC_STRATEGY_SCHEMA_DIRS``) is tested with a
+strategy whose schema genuinely cannot be found -- a drop, not a soft warning
+(see ``test_strategy_schemas.py`` for the resolution-order tests).
 """
 
 import unittest
@@ -124,9 +126,10 @@ class TestLambdaSelectTreatmentValidation(unittest.TestCase):
         assert any("'strategy' is not" in w for w in lax.warnings), lax.warnings
         assert lax.dropped == 1
 
-    def test_missing_strategy_schema_warns_soft(self):
-        # A real strategy name whose schema is not found (sibling absent) -> soft
-        # warning, not a hard failure.
+    def test_missing_strategy_schema_is_a_drop(self):
+        # A real strategy name whose schema is not found (sibling absent, no
+        # strategy_schemas entry, no PMSPEC_STRATEGY_SCHEMA_DIRS) -> a drop:
+        # an error in strict mode (the default), a warning-plus-count in lax mode.
         spec = self._spec(
             {
                 "task": "t",
@@ -136,8 +139,16 @@ class TestLambdaSelectTreatmentValidation(unittest.TestCase):
             }
         )
         result = self.validator.validate(spec)
-        assert result.valid, result.errors
-        assert any("schema was not found" in w for w in result.warnings)
+        assert not result.valid
+        assert any(
+            "no schema for strategy 'definitely_not_a_real_strategy'" in e for e in result.errors
+        ), result.errors
+
+        lax = SpecValidator(lax=True).validate(spec)
+        assert lax.valid, lax.errors
+        assert any(
+            "no schema for strategy 'definitely_not_a_real_strategy'" in w for w in lax.warnings
+        ), lax.warnings
 
 
 if __name__ == "__main__":

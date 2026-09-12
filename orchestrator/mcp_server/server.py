@@ -2185,7 +2185,10 @@ def compile_experiment_spec(
 
 @mcp.tool()
 def validate_experiment_spec(
-    yaml_content: str, strict: bool = False, files: dict[str, str] | None = None
+    yaml_content: str,
+    strict: bool = False,
+    lax: bool = False,
+    files: dict[str, str] | None = None,
 ) -> str:
     """
     Validate a YAML experiment specification, or a lock.
@@ -2198,6 +2201,7 @@ def validate_experiment_spec(
     Args:
         yaml_content: YAML spec content, or a lock
         strict: If True, treat warnings as errors (spec only)
+        lax: If True, downgrade strict-contract errors (drops) to warnings (spec only)
         files: data-pool files by the bare filename the spec's `source:` names,
             content as text -- materialised into a temp dir used as base_dir
 
@@ -2260,7 +2264,7 @@ def validate_experiment_spec(
             )
 
         # Run validator
-        validator = SpecValidator()
+        validator = SpecValidator(base_dir=base_dir, lax=lax)
         validation_result = validator.validate(raw_spec)
 
         # Also parse and convert to catch additional errors
