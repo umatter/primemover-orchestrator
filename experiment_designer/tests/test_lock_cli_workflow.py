@@ -3,6 +3,7 @@ from click.testing import CliRunner
 
 from experiment_designer import cli as cli_module
 from experiment_designer.cli import cli
+from experiment_designer.lock.cleanup import CleanupCandidate, CleanupError
 
 
 class _Status:
@@ -93,3 +94,56 @@ def test_diff_exit_code_follows_identical(fake_diff, tmp_path):
     out = CliRunner().invoke(cli, ["diff", str(lock_a), str(lock_b)])
     assert out.exit_code == 1
     assert "DIFF-DIFFERENT" in out.output
+
+
+@pytest.fixture
+def fake_cleanup(monkeypatch: pytest.MonkeyPatch):
+    calls = {"deleted_ids": None}
+    candidates = [
+        CleanupCandidate(
+            experiment_id=1, name="test-Study-1", uploaded_at="2026-09-01", mode="test"
+        )
+    ]
+
+    def _find(session, *, older_than=None, now=None):
+        calls["older_than"] = older_than
+        return calls.get("candidates", candidates)
+
+    def _delete(session, ids):
+        calls["deleted_ids"] = ids
+        return calls.get("deleted_result", ids)
+
+    monkeypatch.setattr(cli_module, "_session_from_env", lambda: object())
+    monkeypatch.setattr(cli_module, "find_test_experiments", _find)
+    monkeypatch.setattr(cli_module, "delete_experiments", _delete)
+    return calls
+
+
+def test_cleanup_dry_run_never_deletes(fake_cleanup):
+    out = CliRunner().invoke(cli, ["cleanup", "--dry-run"])
+    assert out.exit_code == 0, out.output
+    assert "test-Study-1" in out.output
+    assert fake_cleanup["deleted_ids"] is None
+
+
+def test_cleanup_without_yes_prompts_and_a_no_answer_deletes_nothing(fake_cleanup):
+    out = CliRunner().invoke(cli, ["cleanup"], input="n\n")
+    assert out.exit_code == 0, out.output
+    assert "Delete 1 test experiment(s)?" in out.output
+    assert fake_cleanup["deleted_ids"] is None
+
+
+def test_cleanup_with_yes_deletes_without_prompting(fake_cleanup):
+    out = CliRunner().invoke(cli, ["cleanup", "--yes"])
+    assert out.exit_code == 0, out.output
+    assert fake_cleanup["deleted_ids"] == [1]
+
+
+def test_cleanup_reports_cleanup_error_and_exits_nonzero(monkeypatch, fake_cleanup):
+    def _delete(session, ids):
+        raise CleanupError([], 1, RuntimeError("boom"))
+
+    monkeypatch.setattr(cli_module, "delete_experiments", _delete)
+    out = CliRunner().invoke(cli, ["cleanup", "--yes"])
+    assert out.exit_code == 1
+    assert "boom" in out.output

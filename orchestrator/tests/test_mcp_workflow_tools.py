@@ -3,6 +3,7 @@ import json
 import pytest
 
 from orchestrator.mcp_server import server as s
+from orchestrator.tests.test_mcp_write_tools import scripted
 
 
 @pytest.fixture(autouse=True)
@@ -51,3 +52,60 @@ def test_diff_locks_tool_invalid_lock(monkeypatch):
     monkeypatch.setattr(s, "diff_locks", _raise)
     out = json.loads(s.diff_locks_tool("bad", "bad"))
     assert out["error"] == "invalid lock" and "pmspec_lock" in out["errors"][0]
+
+
+# =============================================================================
+# pm_cleanup_test_experiments
+# =============================================================================
+
+_LISTING = [
+    {"id": 1, "name": "test-Study-1"},
+    {"id": 2, "name": "Real study"},  # not test-prefixed: never fetched
+    {"id": 3, "name": "test-looks-like-one"},  # test-prefixed, but pmspec.mode is "real"
+]
+_DETAIL_1 = {
+    "id": 1,
+    "name": "test-Study-1",
+    "preferences": [{"name": "pmspec.mode", "value": "test"}],
+}
+_DETAIL_3 = {
+    "id": 3,
+    "name": "test-looks-like-one",
+    "preferences": [{"name": "pmspec.mode", "value": "real"}],
+}
+
+
+def test_cleanup_dry_run_lists_candidates_and_makes_no_delete(monkeypatch):
+    api = scripted(monkeypatch, _LISTING, _DETAIL_1, _DETAIL_3)
+
+    out = json.loads(s.pm_cleanup_test_experiments())
+
+    assert out["dry_run"] is True
+    assert [c["experiment_id"] for c in out["candidates"]] == [1]
+    assert "confirm=true" in out["to_apply"]
+    assert api.writes == []
+    # Only test- named experiments are ever fetched -- id 2 never is.
+    assert ("GET", "experiments/2") not in api.signature()
+
+
+def test_cleanup_confirm_against_remote_target_is_refused(monkeypatch):
+    class _Remote:
+        pm_api_base_url = "https://pm-api.example.org/api/v1"
+
+    monkeypatch.setattr(s, "get_settings", lambda: _Remote())
+    api = scripted(monkeypatch, _LISTING, _DETAIL_1, _DETAIL_3)
+
+    out = json.loads(s.pm_cleanup_test_experiments(confirm=True))
+
+    assert "refusing to mutate" in out["error"]
+    assert api.writes == []
+
+
+def test_cleanup_confirm_local_deletes_only_candidates(monkeypatch):
+    api = scripted(monkeypatch, _LISTING, _DETAIL_1, _DETAIL_3, {})
+
+    out = json.loads(s.pm_cleanup_test_experiments(confirm=True))
+
+    assert out["deleted"] == [1]
+    assert api.signature()[-1] == ("DELETE", "experiments/1/destroy")
+    assert all(endpoint != "experiments/3/destroy" for _, endpoint in api.signature())

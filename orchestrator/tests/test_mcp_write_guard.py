@@ -335,11 +335,24 @@ def _mutating_tools() -> dict[str, bool]:
             if isinstance(sub.func, ast.Name) and sub.func.id == "upload_lock":
                 mutates = True
 
+            # delete_experiments(...): pm_cleanup_test_experiments's own deletion loop
+            # lives in experiment_designer.lock.cleanup, not in this module's source, so
+            # without this line it is exactly as invisible to the scan as upload_lock was.
+            if isinstance(sub.func, ast.Name) and sub.func.id == "delete_experiments":
+                mutates = True
+
             # session.post_file(...): _McpSession's own multipart write. Not
             # reached from upload_experiment's own source today (it calls
             # upload_lock, which calls this internally, in a different module),
             # but a future tool calling it directly must not go undetected either.
             if isinstance(sub.func, ast.Attribute) and sub.func.attr == "post_file":
+                mutates = True
+
+            # session.delete(...): _McpSession's own delete, expressed as an attribute
+            # call. Already covered by the write_verbs check above (attr "delete" is in
+            # that set), so this is belt-and-suspenders for a future tool that calls
+            # session.delete(...) directly rather than through delete_experiments(...).
+            if isinstance(sub.func, ast.Attribute) and sub.func.attr == "delete":
                 mutates = True
 
         if mutates:
@@ -379,6 +392,7 @@ class TestEveryMutatingToolIsGuarded:
             "pm_activate_run",
             "pm_delete",
             "pm_compose_run",
+            "pm_cleanup_test_experiments",
         }
         missing = sorted(n for n in expected if not callable(getattr(s, n, None)))
         assert missing == [], f"write tools missing from the module: {missing}"
@@ -391,6 +405,7 @@ class TestEveryMutatingToolIsGuarded:
             "pm_delete",
             "pm_add_job",
             "upload_experiment",
+            "pm_cleanup_test_experiments",
         } <= detected, (
             f"the AST scan stopped recognising known write tools; it detected {sorted(detected)}"
         )

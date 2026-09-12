@@ -72,6 +72,13 @@ class ApiSession:
         self._raise_for(r, f"PUT {path}")
         return self._unwrap(r)
 
+    def delete(self, path: str) -> Any:
+        r = requests.delete(
+            f"{self.base_url}/{path}", headers=self._headers(), timeout=self._timeout
+        )
+        self._raise_for(r, f"DELETE {path}")
+        return self._unwrap(r)
+
     def get_bytes(self, path: str, params: dict[str, Any] | None = None) -> bytes:
         r = requests.get(
             f"{self.base_url}/{path}",

@@ -17,6 +17,12 @@ from pathlib import Path
 from typing import Any
 
 from experiment_designer.lock.build import compile_spec
+from experiment_designer.lock.cleanup import (
+    CleanupError,
+    delete_experiments,
+    find_test_experiments,
+    parse_age,
+)
 from experiment_designer.lock.diff import diff_locks
 from experiment_designer.lock.io import LockError, dump_lock, is_lock_document, load_lock
 from experiment_designer.lock.secrets import PLACEHOLDER_RE, SecretStore, find_placeholders
@@ -665,6 +671,9 @@ class _McpSession:
     def put(self, path: str, json: dict[str, Any]) -> Any:
         return _unwrap(_api_request("PUT", path, data=json))
 
+    def delete(self, path: str) -> Any:
+        return _unwrap(_api_request("DELETE", path))
+
     def post_file(
         self, path: str, field: str, filename: str, content: str, content_type: str
     ) -> Any:
@@ -1009,6 +1018,52 @@ def pm_delete(entity: str, id: int, confirm: bool = False) -> str:
     endpoint, cascade = routes[entity]
     warnings = [f"Deleting this {entity} also removes {cascade}."] if cascade else None
     return _write(f"delete {entity} {id}", "DELETE", endpoint, confirm=confirm, warnings=warnings)
+
+
+@mcp.tool()
+def pm_cleanup_test_experiments(older_than: str | None = None, confirm: bool = False) -> str:
+    """Delete pmspec TEST experiments only. A candidate is an experiment whose name starts
+    with 'test-' AND whose preferences carry pmspec.mode == 'test' -- the name only narrows
+    which experiments are fetched; the preference is what actually authorises deletion.
+    Dry-run (lists candidates) unless confirm=true. Local API only.
+
+    Args:
+        older_than: optional age filter, e.g. '7d', '36h', '90m' -- only experiments whose
+            latest pmspec.uploaded_at is at least this old are candidates. An experiment
+            with no parseable uploaded_at is a candidate only when this is omitted.
+        confirm: delete the candidates (uses the cascading experiments/{id}/destroy route).
+    """
+    try:
+        age = parse_age(older_than) if older_than else None
+    except ValueError as e:
+        return json.dumps({"error": str(e)})
+
+    session = _McpSession()
+    candidates = find_test_experiments(session, older_than=age)
+    rows = [
+        {
+            "experiment_id": c.experiment_id,
+            "name": c.name,
+            "uploaded_at": c.uploaded_at,
+            "mode": c.mode,
+        }
+        for c in candidates
+    ]
+
+    if not confirm:
+        return json.dumps(
+            {"dry_run": True, "candidates": rows, "to_apply": "call again with confirm=true"}
+        )
+
+    guard = _require_local_write_target()
+    if guard:
+        return json.dumps({"error": guard})
+
+    try:
+        deleted = delete_experiments(session, [c.experiment_id for c in candidates])
+    except CleanupError as e:
+        return json.dumps({"deleted": e.deleted, "error": str(e)})
+    return json.dumps({"deleted": deleted})
 
 
 @mcp.tool()

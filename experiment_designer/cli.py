@@ -40,6 +40,7 @@ except ImportError:
 from .lock.anchor import AnchorError
 from .lock.api import ApiError, ApiSession
 from .lock.build import compile_spec, merge_reports
+from .lock.cleanup import CleanupError, delete_experiments, find_test_experiments, parse_age
 from .lock.diff import diff_locks
 from .lock.io import LockError, dump_lock, is_lock_document, load_lock
 from .lock.model import Lock
@@ -512,6 +513,58 @@ def status(experiment_id: int, lock: str | None, hours: int, deep: bool) -> None
         sys.exit(1)
     click.echo(st.render())
     sys.exit(0 if st.ok else 1)
+
+
+@cli.command()
+@click.option("--older-than", help="Only experiments at least this old, e.g. 7d, 36h, 90m")
+@click.option("--dry-run", is_flag=True, help="List candidates and exit; never delete")
+@click.option("--yes", is_flag=True, help="Skip the confirmation prompt")
+def cleanup(older_than: str | None, dry_run: bool, yes: bool) -> None:
+    """Delete pmspec TEST experiments only.
+
+    A candidate is an experiment whose name starts with "test-" AND whose preferences carry
+    pmspec.mode == "test" -- the name only narrows which experiments are fetched; the
+    preference is what actually authorises deletion.
+    """
+    try:
+        age = parse_age(older_than) if older_than else None
+    except ValueError as e:
+        click.secho(str(e), fg="red")
+        sys.exit(1)
+
+    session = _session_from_env()
+    try:
+        candidates = find_test_experiments(session, older_than=age)
+    except ApiError as e:
+        click.secho(f"Failed to list experiments: {e}", fg="red")
+        sys.exit(1)
+
+    if not candidates:
+        click.echo("No test experiments to clean up.")
+        sys.exit(0)
+
+    click.echo(f"{'id':>6}  {'name':<40}  {'mode':<6}  uploaded_at")
+    for c in candidates:
+        click.echo(f"{c.experiment_id:>6}  {c.name:<40}  {c.mode:<6}  {c.uploaded_at or '-'}")
+
+    if dry_run:
+        sys.exit(0)
+
+    if not yes and not click.confirm(f"Delete {len(candidates)} test experiment(s)?"):
+        click.echo("Aborted.")
+        sys.exit(0)
+
+    try:
+        deleted = delete_experiments(session, [c.experiment_id for c in candidates])
+    except CleanupError as e:
+        click.secho(
+            f"Deleted {len(e.deleted)} before failing on experiment {e.failed_id}: {e.cause}",
+            fg="red",
+        )
+        sys.exit(1)
+
+    click.secho(f"Deleted {len(deleted)} test experiment(s).", fg="green")
+    sys.exit(0)
 
 
 @cli.command()
