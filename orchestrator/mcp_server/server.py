@@ -2178,7 +2178,7 @@ def compile_experiment_spec(
     temporary directory, not from a checkout, so it cannot see the repo the
     spec lives in: without ``git_commit`` the lock records ``git_commit: null``
     and ``spec_path: <mcp>``, and a `real`-mode ``upload_experiment`` of it is
-    refused. Pass the spec repo's HEAD (``git rev-parse --short HEAD``, with a
+    refused unless allow_dirty. Pass the spec repo's HEAD (``git rev-parse --short HEAD``, with a
     ``-dirty`` suffix if ``git status --porcelain`` is non-empty) and the spec's
     path relative to that repo, and the lock records them verbatim -- the same
     facts the pmspec CLI would have gathered itself. A commit is a claim the
@@ -2469,6 +2469,8 @@ def upload_experiment(
     experiment_id: int | None = None,
     dry_run: bool = True,
     deep_verify: bool = False,
+    allow_dirty: bool = False,
+    allow_past: bool = False,
 ) -> str:
     """Upload a LOCK (from compile_experiment_spec or `pmspec compile`) and verify it.
 
@@ -2481,8 +2483,15 @@ def upload_experiment(
         experiment_id: append to this experiment instead of creating one
         dry_run: preview only. Defaults to True; pass False to apply.
         deep_verify: also compare each queue's jobs/behaviours, not just schedule
+        allow_dirty: 'real' mode only -- let a dirty-commit or commit-less lock
+            through anyway. Never needed for 'test' mode, which already allows it.
+        allow_past: let a schedule anchor that is already in the past through
+            (the runner will never pick it up; use for backfilling a record).
 
-    Secrets: ${secret:...} placeholders resolve from PMSPEC_SECRETS_FILE on this host.
+    Secrets: ${secret:...} placeholders resolve from PMSPEC_SECRETS_FILE on this
+    host. A dry run loads the same store (never printing a value) and reports
+    which needed keys are missing, so "would this upload go through" answers for
+    the secrets gate too, before anything is applied.
 
     Returns:
         JSON with the upload result and a bound-and-identical verify, or an error
@@ -2500,6 +2509,17 @@ def upload_experiment(
 
     needed = sorted(find_placeholders(lock.crawlers))
     if dry_run:
+        secrets_missing: list[str] = []
+        secrets_store = "ok"
+        if needed:
+            try:
+                secrets_missing = SecretStore.load().missing(needed)
+            except FileNotFoundError:
+                secrets_store = "missing"
+                secrets_missing = needed
+            except PermissionError as e:
+                secrets_store = str(e)
+                secrets_missing = needed
         return json.dumps(
             {
                 "success": True,
@@ -2510,6 +2530,8 @@ def upload_experiment(
                 "anchor": lock.schedule["anchor"],
                 "git_commit": lock.provenance.git_commit,
                 "secrets_needed": needed,
+                "secrets_missing": secrets_missing,
+                "secrets_store": secrets_store,
                 "to_apply": "call again with dry_run=false",
             }
         )
@@ -2539,7 +2561,11 @@ def upload_experiment(
 
     session = _McpSession()
     options = UploadOptions(
-        mode=mode, experiment_id=experiment_id, contact="PrimeMover Orchestrator MCP"
+        mode=mode,
+        experiment_id=experiment_id,
+        contact="PrimeMover Orchestrator MCP",
+        allow_dirty=allow_dirty,
+        allow_past=allow_past,
     )
     try:
         result = upload_lock(lock_content, session=session, store=store, options=options)

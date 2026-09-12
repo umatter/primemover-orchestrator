@@ -122,6 +122,59 @@ def test_upload_dry_run_makes_no_request(monkeypatch: pytest.MonkeyPatch):
     assert calls == []
 
 
+def test_upload_dry_run_reports_missing_secrets(monkeypatch: pytest.MonkeyPatch, tmp_path):
+    secrets_file = tmp_path / "secrets.toml"
+    secrets_file.write_text("")
+    secrets_file.chmod(0o600)
+    monkeypatch.setenv("PMSPEC_SECRETS_FILE", str(secrets_file))
+    out = json.loads(s.upload_experiment(dump_lock(make_lock()), mode="test"))
+    assert out["secrets_missing"] == ["oxylabs.a.password", "oxylabs.a.username"]
+    assert out["secrets_store"] == "ok"
+
+
+def test_upload_dry_run_reports_no_store(monkeypatch: pytest.MonkeyPatch, tmp_path):
+    monkeypatch.setenv("PMSPEC_SECRETS_FILE", str(tmp_path / "does-not-exist.toml"))
+    out = json.loads(s.upload_experiment(dump_lock(make_lock()), mode="test"))
+    assert out["secrets_store"] == "missing"
+    assert out["secrets_missing"] == ["oxylabs.a.password", "oxylabs.a.username"]
+
+
+def test_upload_passes_allow_flags_to_upload_lock(monkeypatch: pytest.MonkeyPatch):
+    seen = {}
+
+    def fake_upload_lock(lock_text, *, session, store, options):
+        from experiment_designer.lock.upload import UploadResult
+
+        seen["options"] = options
+        return UploadResult(
+            181,
+            "test-Study-20260911",
+            1,
+            1,
+            "f" * 64,
+            "2026-10-01T10:00:00+02:00",
+            "test",
+            3,
+            "rec",
+        )
+
+    monkeypatch.setattr(s, "upload_lock", fake_upload_lock)
+    monkeypatch.setattr(s, "verify_lock", lambda *a, **k: (_ for _ in ()).throw(RuntimeError("x")))
+    monkeypatch.setattr(s.SecretStore, "load", classmethod(lambda cls, path=None: None))
+    out = json.loads(
+        s.upload_experiment(
+            dump_lock(make_lock()),
+            mode="test",
+            dry_run=False,
+            allow_dirty=True,
+            allow_past=True,
+        )
+    )
+    assert out["success"] is True
+    assert seen["options"].allow_dirty is True
+    assert seen["options"].allow_past is True
+
+
 def test_upload_refuses_remote_target(monkeypatch: pytest.MonkeyPatch):
     class _S:
         pm_api_base_url = "https://primemover.qamelab.org/api/v1"
