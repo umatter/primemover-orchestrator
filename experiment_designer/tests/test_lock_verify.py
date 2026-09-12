@@ -341,3 +341,37 @@ def test_no_live_anchor_skips_start_times():
     r = verify_lock(text, session=s, experiment_id=7)
     assert r.anchor is None and r.ok
     assert "start times not compared" in r.render()
+
+
+def test_secret_valued_differences_are_redacted_at_the_source():
+    """A lock keeps ``${secret:...}`` in a preference; live holds the resolved
+    credential. Neither .differences nor .render() may carry the literal."""
+    lock = make_lock()
+    lock.crawlers[0]["configuration"]["preferences"].append(
+        {"name": "token", "value": "${secret:a.b}"}
+    )
+    text = dump_lock(lock)
+
+    class LeakySession(FakeSession):
+        def _crawler(self, cid, name, config_id):
+            c = super()._crawler(cid, name, config_id)
+            c["configuration"]["preferences"].append({"name": "token", "value": "hunter2"})
+            return c
+
+    r = verify_lock(text, session=LeakySession(text), experiment_id=7)
+    assert not r.ok
+    assert "hunter2" not in r.render()
+    assert all(d.actual != "hunter2" for d in r.differences)
+    assert Difference("crawlers.bot_01.preferences.token", "${secret:a.b}", "<redacted>") in (
+        r.differences
+    )
+
+
+def test_redact_differences_leaves_plain_differences_alone():
+    from experiment_designer.lock.verify import redact_differences
+
+    plain = Difference("crawlers.bot_01.params.pi", 1.0, 0.0)
+    secret = Difference("crawlers.bot_01.preferences.token", "${secret:a.b}", "hunter2")
+    out = redact_differences([plain, secret])
+    assert out[0] == plain
+    assert out[1] == Difference(secret.path, secret.expected, "<redacted>")

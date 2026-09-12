@@ -20,10 +20,10 @@ from experiment_designer.lock.build import compile_spec
 from experiment_designer.lock.cleanup import delete_experiments, find_test_experiments, parse_age
 from experiment_designer.lock.diff import diff_locks
 from experiment_designer.lock.io import LockError, dump_lock, is_lock_document, load_lock
-from experiment_designer.lock.secrets import PLACEHOLDER_RE, SecretStore, find_placeholders
+from experiment_designer.lock.secrets import SecretStore, find_placeholders
 from experiment_designer.lock.status import experiment_status
 from experiment_designer.lock.upload import MODES, UploadOptions, UploadRefused, upload_lock
-from experiment_designer.lock.verify import Difference, verify_lock
+from experiment_designer.lock.verify import redact_differences, verify_lock
 from orchestrator import status
 from orchestrator.config import get_settings
 
@@ -707,25 +707,6 @@ class _McpSession:
             )
             r.raise_for_status()
             return r.content
-
-
-def _redact_differences(differences: list[Difference]) -> list[Difference]:
-    """A verify Difference's ``actual`` side is a value read straight off the live
-    experiment. When ``expected`` is a secret placeholder (a lock keeps
-    ``${secret:...}`` for anything outside ``proxy.*`` too, e.g. a preference or
-    behaviour value), ``actual`` is that placeholder's *resolved* value -- the
-    literal secret. Nothing that serialises a Difference (a JSON tool result, a
-    rendered report) may carry that, so every placeholder-valued difference is
-    replaced before it is ever rendered or returned.
-    """
-    return [
-        (
-            Difference(d.path, d.expected, "<redacted>")
-            if isinstance(d.expected, str) and PLACEHOLDER_RE.search(d.expected)
-            else d
-        )
-        for d in differences
-    ]
 
 
 def _write(
@@ -2600,7 +2581,7 @@ def upload_experiment(
         response["verify"] = {"error": str(e)}
         return json.dumps(response)
 
-    verdict.differences = _redact_differences(verdict.differences)
+    verdict.differences = redact_differences(verdict.differences)
     response["verify"] = {
         "ok": verdict.ok,
         "bound": verdict.bound,
@@ -2631,7 +2612,7 @@ def verify_experiment(experiment_id: int, lock_content: str, deep: bool = False)
         return json.dumps({"error": "invalid lock", "errors": e.errors})
     except Exception as e:
         return json.dumps({"error": str(e)})
-    r.differences = _redact_differences(r.differences)
+    r.differences = redact_differences(r.differences)
     return json.dumps(
         {
             "experiment_id": r.experiment_id,
@@ -2679,7 +2660,7 @@ def experiment_status_tool(
 
     verify_payload = None
     if st.verify is not None:
-        st.verify.differences = _redact_differences(st.verify.differences)
+        st.verify.differences = redact_differences(st.verify.differences)
         verify_payload = {
             "ok": st.verify.ok,
             "bound": st.verify.bound,
@@ -2727,7 +2708,7 @@ def diff_locks_tool(lock_a: str, lock_b: str) -> str:
     except LockError as e:
         return json.dumps({"error": "invalid lock", "errors": e.errors})
 
-    d.differences = _redact_differences(d.differences)
+    d.differences = redact_differences(d.differences)
     return json.dumps(
         {
             "identical": d.identical,

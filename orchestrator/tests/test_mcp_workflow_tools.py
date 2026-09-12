@@ -109,3 +109,43 @@ def test_cleanup_confirm_local_deletes_only_candidates(monkeypatch):
     assert out["deleted"] == [1]
     assert api.signature()[-1] == ("DELETE", "experiments/1/destroy")
     assert all(endpoint != "experiments/3/destroy" for _, endpoint in api.signature())
+
+
+def test_experiment_status_tool_cannot_leak_a_secret_valued_difference(monkeypatch):
+    """The lock side of a verify difference is a placeholder; the live side is the
+    resolved credential. The JSON the tool returns must never carry it."""
+    from experiment_designer.lock.io import dump_lock
+    from experiment_designer.lock.status import experiment_status
+    from experiment_designer.tests.test_lock_io import make_lock
+    from experiment_designer.tests.test_lock_verify import FakeSession
+
+    lock = make_lock()
+    lock.crawlers[0]["configuration"]["preferences"].append(
+        {"name": "token", "value": "${secret:a.b}"}
+    )
+    text = dump_lock(lock)
+
+    class LeakySession(FakeSession):
+        def _crawler(self, cid, name, config_id):
+            c = super()._crawler(cid, name, config_id)
+            c["configuration"]["preferences"].append({"name": "token", "value": "hunter2"})
+            return c
+
+        def get(self, path, params=None):
+            if path == "experiments/7/health":
+                return {"treatment_lost_jobs": 0}
+            return super().get(path, params)
+
+    # A real VerifyResult built through verify_lock: the redaction happens there,
+    # not in the tool -- so the tool has nothing to forget.
+    st = experiment_status(LeakySession(text), 7, lock_text=text)
+    monkeypatch.setattr(s, "experiment_status", lambda *a, **k: st)
+    raw = s.experiment_status_tool(7, lock_content=text)
+    assert "hunter2" not in raw
+    out = json.loads(raw)
+    assert out["ok"] is False
+    assert {
+        "path": "crawlers.bot_01.preferences.token",
+        "expected": "${secret:a.b}",
+        "actual": "<redacted>",
+    } in out["verify"]["differences"]

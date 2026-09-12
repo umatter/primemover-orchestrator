@@ -15,6 +15,7 @@ from typing import Any
 from .anchor import resolve_anchor, resolve_start_at
 from .io import load_lock, sha256_text
 from .model import Lock
+from .secrets import PLACEHOLDER_RE
 
 _PARAM_COLUMNS = ("pi", "psi", "alpha", "tau", "kappa", "beta")
 _PAGE_SIZE = 500
@@ -67,6 +68,25 @@ class VerifyResult:
         for d in self.differences:
             lines.append(f"  {d.path}: expected {d.expected!r}, live {d.actual!r}")
         return "\n".join(lines)
+
+
+def redact_differences(differences: list[Difference]) -> list[Difference]:
+    """A Difference's ``actual`` side is a value read straight off the live
+    experiment. When ``expected`` is a secret placeholder (a lock keeps
+    ``${secret:...}`` for anything outside ``proxy.*`` too, e.g. a preference or
+    behaviour value), ``actual`` is that placeholder's *resolved* value -- the
+    literal secret. ``verify_lock`` applies this before the VerifyResult exists,
+    so nothing that serialises one (``render()``, a JSON tool result, a CLI
+    print) can carry it; a printer of Differences from any other source (a lock
+    diff) calls it itself."""
+    return [
+        (
+            Difference(d.path, d.expected, "<redacted>")
+            if isinstance(d.expected, str) and PLACEHOLDER_RE.search(d.expected)
+            else d
+        )
+        for d in differences
+    ]
 
 
 def _num(value: Any) -> Any:
@@ -300,7 +320,7 @@ def verify_lock(
         local_sha256=local_sha,
         live_sha256s=live_shas,
         anchor=anchor_iso,
-        differences=compare_shapes(expected, actual),
+        differences=redact_differences(compare_shapes(expected, actual)),
         deep=deep,
         extra_live_crawlers=extra,
     )
