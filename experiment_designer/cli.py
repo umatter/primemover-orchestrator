@@ -558,7 +558,7 @@ def cleanup(older_than: str | None, dry_run: bool, yes: bool) -> None:
         deleted = delete_experiments(session, [c.experiment_id for c in candidates])
     except CleanupError as e:
         click.secho(
-            f"Deleted {len(e.deleted)} before failing on experiment {e.failed_id}: {e.cause}",
+            f"Deleted {e.deleted} before failing on experiment {e.failed_id}: {e.cause}",
             fg="red",
         )
         sys.exit(1)

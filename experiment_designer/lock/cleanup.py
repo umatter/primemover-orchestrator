@@ -64,6 +64,11 @@ def _latest_uploaded_at(preferences: list[dict[str, Any]]) -> tuple[str, datetim
     per upload (each labelled "upload N" in its description), so the age check is against
     whichever upload is most recent -- an experiment last touched yesterday is not stale
     just because it was first created a month ago.
+
+    A naive timestamp (no offset) is treated as unparseable rather than compared against an
+    aware ``now`` -- that comparison would raise ``TypeError`` and take the whole cleanup
+    down with it, and a value we cannot safely compare is exactly the "cannot tell" case
+    ``older_than`` must not treat as "old enough".
     """
     best: tuple[str, datetime] | None = None
     for pref in preferences:
@@ -74,7 +79,9 @@ def _latest_uploaded_at(preferences: list[dict[str, Any]]) -> tuple[str, datetim
             continue
         try:
             parsed = datetime.fromisoformat(raw)
-        except ValueError:
+        except (ValueError, TypeError):
+            continue
+        if parsed.tzinfo is None:
             continue
         if best is None or parsed > best[1]:
             best = (raw, parsed)
@@ -108,7 +115,11 @@ def find_test_experiments(
         detail = session.get(f"experiments/{row['id']}")
         preferences = detail.get("preferences") or []
         modes = {p.get("value") for p in preferences if p.get("name") == "pmspec.mode"}
-        if "test" not in modes:
+        # "cannot tell -> keep": an experiment ever appended to in a non-test mode is not a
+        # candidate, even though it also carries pmspec.mode == "test" from an earlier
+        # upload. Requiring every upload's mode to be "test" is what keeps a listing honest
+        # instead of hard-coding "test" and hiding the mix.
+        if modes != {"test"}:
             continue
 
         latest = _latest_uploaded_at(preferences)
@@ -121,7 +132,7 @@ def find_test_experiments(
                 experiment_id=int(row["id"]),
                 name=detail.get("name", name),
                 uploaded_at=latest[0] if latest else None,
-                mode="test",
+                mode=",".join(sorted(modes)),
             )
         )
     return candidates

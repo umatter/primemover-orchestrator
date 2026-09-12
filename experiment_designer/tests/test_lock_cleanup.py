@@ -74,6 +74,46 @@ def test_older_than_filters_on_uploaded_at():
     assert ids == [1]
 
 
+def test_pure_test_candidate_reports_mode_test():
+    candidates = find_test_experiments(FakeSession(EXPS), now=NOW)
+    assert candidates and all(c.mode == "test" for c in candidates)
+
+
+def test_mixed_mode_experiment_is_not_a_candidate():
+    """A test experiment later appended to with --mode real is not test-only anymore.
+
+    "cannot tell -> keep" applies to authorisation, not just to age: an experiment whose
+    pmspec.mode history is {test, real} must never be deleted just because one of its
+    uploads happened to be a test one.
+    """
+    prefs = [
+        {"name": "pmspec.mode", "description": "upload 1", "value": "test"},
+        {"name": "pmspec.mode", "description": "upload 2", "value": "real"},
+    ]
+    fake = FakeSession({1: {"name": "test-Study-mixed", "prefs": prefs}})
+    assert find_test_experiments(fake, now=NOW) == []
+
+
+def test_naive_uploaded_at_is_unparseable_not_an_exception():
+    """A naive timestamp (no offset) must not raise -- and must not count as "old enough"."""
+    prefs = [
+        {"name": "pmspec.mode", "description": "upload 1", "value": "test"},
+        {"name": "pmspec.uploaded_at", "description": "upload 1", "value": "2026-09-11T10:00:00"},
+    ]
+    fake = FakeSession({1: {"name": "test-naive", "prefs": prefs}})
+
+    # Kept when no age filter is given: the timestamp is unparseable, not "old".
+    candidates = find_test_experiments(fake, now=NOW)
+    assert len(candidates) == 1
+    assert candidates[0].uploaded_at is None
+
+    # Excluded once an age filter is given: "cannot tell" must not be treated as "old enough".
+    ids = [
+        c.experiment_id for c in find_test_experiments(fake, older_than=timedelta(days=7), now=NOW)
+    ]
+    assert ids == []
+
+
 def test_delete_deletes_only_the_given_ids():
     fake = FakeSession(EXPS)
     assert delete_experiments(fake, [1, 2]) == [1, 2]

@@ -17,12 +17,7 @@ from pathlib import Path
 from typing import Any
 
 from experiment_designer.lock.build import compile_spec
-from experiment_designer.lock.cleanup import (
-    CleanupError,
-    delete_experiments,
-    find_test_experiments,
-    parse_age,
-)
+from experiment_designer.lock.cleanup import delete_experiments, find_test_experiments, parse_age
 from experiment_designer.lock.diff import diff_locks
 from experiment_designer.lock.io import LockError, dump_lock, is_lock_document, load_lock
 from experiment_designer.lock.secrets import PLACEHOLDER_RE, SecretStore, find_placeholders
@@ -1039,7 +1034,11 @@ def pm_cleanup_test_experiments(older_than: str | None = None, confirm: bool = F
         return json.dumps({"error": str(e)})
 
     session = _McpSession()
-    candidates = find_test_experiments(session, older_than=age)
+    try:
+        candidates = find_test_experiments(session, older_than=age)
+    except Exception as e:
+        return json.dumps({"error": str(e), "deleted": getattr(e, "deleted", [])})
+
     rows = [
         {
             "experiment_id": c.experiment_id,
@@ -1061,8 +1060,8 @@ def pm_cleanup_test_experiments(older_than: str | None = None, confirm: bool = F
 
     try:
         deleted = delete_experiments(session, [c.experiment_id for c in candidates])
-    except CleanupError as e:
-        return json.dumps({"deleted": e.deleted, "error": str(e)})
+    except Exception as e:
+        return json.dumps({"error": str(e), "deleted": getattr(e, "deleted", [])})
     return json.dumps({"deleted": deleted})
 
 
