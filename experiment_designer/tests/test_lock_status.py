@@ -81,9 +81,33 @@ def test_no_provenance_is_said_not_assumed():
 
 def test_absent_decision_counts_render_as_unknown():
     health = {k: v for k, v in HEALTH.items() if k not in ("treatment_lost_jobs", "degraded_jobs")}
-    s = experiment_status(FakeSession([], health), 181)
+    s = experiment_status(FakeSession(_prefs("upload 1", lock_sha256="a" * 64), health), 181)
     assert "treatment_lost_jobs=unknown" in s.render()
     assert s.ok  # unknown is not a failure
+
+
+def test_no_provenance_is_not_ok():
+    """Spec §5: exit 1 when the experiment carries no pmspec provenance at all --
+    a healthy experiment nobody can tie to a lock is not a clean answer."""
+    s = experiment_status(FakeSession([], HEALTH), 181)
+    assert not s.bound_to_any_lock and not s.ok
+
+
+def test_with_a_lock_the_verify_verdict_decides(monkeypatch):
+    from experiment_designer.lock import status as status_mod
+
+    class V:
+        ok = True
+        bound = True
+        differences = []
+        extra_live_crawlers = []
+
+        def render(self):
+            return "BOUND x"
+
+    monkeypatch.setattr(status_mod, "verify_lock", lambda *a, **k: V())
+    s = experiment_status(FakeSession([], HEALTH), 181, lock_text="pmspec_lock: 1\n")
+    assert s.verify is not None and s.ok
 
 
 def test_treatment_lost_makes_status_not_ok():

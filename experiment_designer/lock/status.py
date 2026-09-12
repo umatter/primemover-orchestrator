@@ -9,18 +9,6 @@ from typing import Any
 from .verify import VerifyResult, verify_lock
 
 _HEALTH_KEYS = ("bad_runs", "bad_jobs", "treatment_lost_jobs", "degraded_jobs")
-_UPLOAD_KEYS = (
-    "mode",
-    "lock_sha256",
-    "git_commit",
-    "generator",
-    "version",
-    "seed",
-    "anchor",
-    "uploaded_at",
-    "uploaded_by",
-    "lax",
-)
 
 
 @dataclass
@@ -44,8 +32,12 @@ class ExperimentStatus:
 
     @property
     def ok(self) -> bool:
+        """With a lock, verify's verdict; without one, whether any lock was ever
+        bound (spec §5: an experiment with no pmspec provenance exits 1). Either
+        way, a lost treatment is never ok."""
         lost = self.health.get("treatment_lost_jobs")
-        return (self.verify is None or self.verify.ok) and not (isinstance(lost, int) and lost > 0)
+        clean = self.verify.ok if self.verify is not None else self.bound_to_any_lock
+        return clean and not (isinstance(lost, int) and lost > 0)
 
     def render(self) -> str:
         runner = "default" if self.runner_user_id is None else str(self.runner_user_id)

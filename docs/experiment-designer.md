@@ -96,7 +96,9 @@ pmspec cleanup --older-than 7d --yes                 # delete them
 `status` is a superset of `verify`: without a lock it reports provenance (the `pmspec.*`
 preferences the experiment was uploaded with) and the `--hours`-windowed health; give it a lock and
 it also runs the same BOUND/structural check as `verify`, `--deep` included. It is the one command
-to reach for when checking in on an experiment later, lock in hand or not.
+to reach for when checking in on an experiment later, lock in hand or not. It exits 1 when the
+experiment carries no pmspec provenance at all (nothing was ever bound to a lock), when the given
+lock is not bound or not identical, or when any job lost its treatment.
 
 `diff` compares two locks directly — provenance side by side, the anchor, and crawler-level
 structural differences — with no live experiment or API call. Use it before uploading a revision,
