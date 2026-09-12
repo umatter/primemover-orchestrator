@@ -353,7 +353,7 @@ class SpecValidator:
                         )
                 elif key not in self._KNOWN_PARAMS:
                     self.drops.report(
-                        f"crawlers[{i}].configuration.params.{key}",
+                        f"crawler[{i}].configuration.params.{key}",
                         "unknown parameter, dropped by the pipeline",
                         "only pi/psi/kappa/tau/alpha/beta/active/search_terms/media_outlet_urls "
                         "reach the bot; use a configuration preference or a treatment block",
@@ -386,6 +386,7 @@ class SpecValidator:
         check(spec.get("experiment"), self._KEYS_EXPERIMENT, "experiment")
         check(spec.get("defaults"), self._KEYS_DEFAULTS, "defaults")
         check(spec.get("design"), self._KEYS_DESIGN, "design")
+        check((spec.get("defaults") or {}).get("proxy"), self._KEYS_PROXY, "defaults.proxy")
         for i, crawler in enumerate(spec.get("crawlers") or []):
             prefix = f"crawler[{i}]"
             check(crawler, self._KEYS_CRAWLER, prefix)
@@ -530,20 +531,23 @@ class SpecValidator:
 
             # Validate proxy if defined.
             #
-            # A warning, not a drop: a self-configuring type (oxylabs) has no host
-            # by design (the runner supplies endpoint and account), and a pooled
-            # proxy (from_pool: true) gets its host from the pool row, so nothing
-            # the author wrote is discarded either way.
+            # A warning, not a drop: nothing the author wrote is discarded; the
+            # converter substitutes 127.0.0.1:8080, which upload refuses at the
+            # credential check anyway. Skipped for a self-configuring type
+            # (oxylabs: the runner supplies endpoint and account, and a spec
+            # must NOT carry a host) and for a pooled proxy (from_pool: true,
+            # host comes from the pool row).
             proxy = crawler.get("proxy", {})
-            if isinstance(proxy, dict) and proxy and proxy.get("from_pool") is not True:
-                self_configuring = proxy.get("type") in ("oxylabs",)
-                note = (
-                    " (self-configuring type, the runner supplies it)" if self_configuring else ""
-                )
+            if (
+                isinstance(proxy, dict)
+                and proxy
+                and proxy.get("from_pool") is not True
+                and proxy.get("type") not in ("oxylabs",)
+            ):
                 if not proxy.get("hostname") and not proxy.get("host"):
-                    warnings.append(f"{prefix}.proxy: no hostname specified{note}")
+                    warnings.append(f"{prefix}.proxy: no hostname specified")
                 if not proxy.get("port"):
-                    warnings.append(f"{prefix}.proxy: no port specified{note}")
+                    warnings.append(f"{prefix}.proxy: no port specified")
 
             # Validate session/queue
             session = crawler.get("session")
@@ -749,7 +753,7 @@ class SpecValidator:
     ) -> None:
         """Validate job shorthand syntax."""
         schema = JobRegistry.get_schema(job_type)
-        if not schema:
+        if not schema:  # unreachable: callers pass only registered types
             self.drops.report(prefix, f"unknown job type '{job_type}'", "see `pmspec schema jobs`")
             return
 

@@ -79,7 +79,7 @@ class TestValidatorDropRules:
                 "  - name: bot\n",
                 "  - name: bot\n    configuration:\n      params: {reliability: high}\n",
             ),
-            "crawlers[0].configuration.params.reliability",
+            "crawler[0].configuration.params.reliability",
             id="unknown-params-key",
         ),
         pytest.param(
@@ -112,6 +112,11 @@ class TestValidatorDropRules:
         ),
         pytest.param(BASE + "sceduled: true\n", "sceduled", id="unknown-root-key"),
         pytest.param(
+            BASE + "defaults:\n  proxy: {hostnme: h, port: 1}\n",
+            "defaults.proxy.hostnme",
+            id="unknown-defaults-proxy-key",
+        ),
+        pytest.param(
             BASE.replace("  - name: bot\n", "  - name: bot\n    proxxy: {hostname: h}\n"),
             "crawler[0].proxxy",
             id="unknown-crawler-key",
@@ -140,12 +145,21 @@ class TestValidatorDropRules:
 
 
 class TestValidatorKeepsWarnings:
-    def test_self_configuring_proxy_without_host_is_only_a_warning(self):
+    def test_self_configuring_proxy_without_host_is_clean(self):
+        # oxylabs: the converter deliberately emits no host/port (the runner
+        # supplies them), so a hostname warning would ask for what must not be there.
         r = _validate(
             BASE.replace("  - name: bot\n", "  - name: bot\n    proxy: {type: oxylabs}\n")
         )
         assert r.valid and r.dropped == 0
-        assert any("no hostname" in w for w in r.warnings)
+        assert not any("hostname" in w or "port" in w for w in r.warnings), r.warnings
+
+        # A plain http proxy with no hostname keeps its warning. A warning, not a
+        # drop: the converter substitutes 127.0.0.1:8080, which upload will refuse
+        # anyway at the credential check.
+        r = _validate(BASE.replace("  - name: bot\n", "  - name: bot\n    proxy: {type: http}\n"))
+        assert r.valid and r.dropped == 0
+        assert any("no hostname" in w for w in r.warnings), r.warnings
 
     def test_every_example_spec_and_research_spec_uses_only_known_keys(self):
         """The key sets are a whitelist; this pins them to the specs that exist."""
