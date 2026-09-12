@@ -13,6 +13,7 @@ Commands:
     pmspec upload <file.yaml|.lock.yaml>  Upload a lock (compiling a spec first) and verify it
     pmspec verify <exp_id> <lock>     Check a live experiment is bound to, and identical to, a lock
     pmspec status <exp_id> [lock]     Provenance + health of a live experiment; with lock, also verify
+    pmspec diff <lock_a> <lock_b>     Diff two locks: provenance, anchor, crawler-level differences
     pmspec secrets check <lock>       List a lock's secret placeholders and which are missing
     pmspec schema jobs                List all job types
     pmspec schema job <type>          Show job type details
@@ -39,6 +40,7 @@ except ImportError:
 from .lock.anchor import AnchorError
 from .lock.api import ApiError, ApiSession
 from .lock.build import compile_spec, merge_reports
+from .lock.diff import diff_locks
 from .lock.io import LockError, dump_lock, is_lock_document, load_lock
 from .lock.model import Lock
 from .lock.resolve import resolve_for_upload
@@ -510,6 +512,22 @@ def status(experiment_id: int, lock: str | None, hours: int, deep: bool) -> None
         sys.exit(1)
     click.echo(st.render())
     sys.exit(0 if st.ok else 1)
+
+
+@cli.command()
+@click.argument("lock_a", type=click.Path(exists=True))
+@click.argument("lock_b", type=click.Path(exists=True))
+def diff(lock_a: str, lock_b: str) -> None:
+    """Diff two locks: provenance, anchor, and crawler-level structural differences."""
+    try:
+        result = diff_locks(Path(lock_a).read_text(), Path(lock_b).read_text())
+    except LockError as e:
+        click.secho("Lock invalid", fg="red", bold=True)
+        for error in e.errors:
+            click.secho(f"  ERROR: {error}", fg="red")
+        sys.exit(1)
+    click.echo(result.render())
+    sys.exit(0 if result.identical else 1)
 
 
 @cli.group()

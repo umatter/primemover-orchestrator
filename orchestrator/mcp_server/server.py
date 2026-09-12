@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import Any
 
 from experiment_designer.lock.build import compile_spec
+from experiment_designer.lock.diff import diff_locks
 from experiment_designer.lock.io import LockError, dump_lock, is_lock_document, load_lock
 from experiment_designer.lock.secrets import PLACEHOLDER_RE, SecretStore, find_placeholders
 from experiment_designer.lock.status import experiment_status
@@ -2622,6 +2623,40 @@ def experiment_status_tool(
             "bound_to_any_lock": st.bound_to_any_lock,
             "verify": verify_payload,
             "render": st.render(),
+        }
+    )
+
+
+@mcp.tool(name="diff_locks")
+def diff_locks_tool(lock_a: str, lock_b: str) -> str:
+    """Diff two locks: provenance side by side, anchor, and crawler-level structural
+    differences (built at a fixed reference anchor, so a re-anchored-but-otherwise
+    -identical lock differs only in the anchor line). Read-only, purely local -- no
+    live experiment or API call involved.
+
+    Args:
+        lock_a: first lock's text
+        lock_b: second lock's text
+
+    Returns:
+        JSON: {"identical", "differences", "only_in_a", "only_in_b", "anchor_a",
+        "anchor_b", "render"} or {"error": ..., "errors": [...]}
+    """
+    try:
+        d = diff_locks(lock_a, lock_b)
+    except LockError as e:
+        return json.dumps({"error": "invalid lock", "errors": e.errors})
+
+    d.differences = _redact_differences(d.differences)
+    return json.dumps(
+        {
+            "identical": d.identical,
+            "differences": [x.__dict__ for x in d.differences],
+            "only_in_a": d.only_in_a,
+            "only_in_b": d.only_in_b,
+            "anchor_a": d.anchor_a,
+            "anchor_b": d.anchor_b,
+            "render": d.render(),
         }
     )
 
