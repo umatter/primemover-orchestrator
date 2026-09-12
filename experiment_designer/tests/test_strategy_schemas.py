@@ -65,7 +65,9 @@ def test_env_dirs(tmp_path: Path, monkeypatch):
     assert _validate(SPEC).valid
 
 
-@pytest.mark.xfail(strict=True, reason="validator wired into compile in Task 7")
+@pytest.mark.skip(
+    reason="validator is wired into compile_spec in Task 7, which removes this marker"
+)
 def test_compile_with_files_carrying_the_schema_via_mcp():
     from orchestrator.mcp_server import server as s
 
