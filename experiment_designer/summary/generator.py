@@ -65,21 +65,15 @@ class SummaryGenerator:
         seed: int | None = None,
     ) -> ExperimentSummary:
         """Generate summary from YAML content string."""
-        from ..spec.converter import SpecConverter
-        from ..spec.parser import SpecParser
+        from ..lock import build
 
-        seed = seed or self.seed
+        seed = seed if seed is not None else self.seed
 
-        # Parse the YAML spec
-        parser = SpecParser(base_dir=base_dir, seed=seed)
-        parsed = parser.parse(yaml_content)
-
-        # Convert to get expanded crawlers. An explicit seed must win over the
-        # spec's own design.seed here too -- compile_spec (lock side) already
-        # does this, and the round-trip (spec -> lock -> summary == spec ->
-        # summary) only holds if both paths draw from the same stream.
-        converter = SpecConverter(seed=seed)
-        result = converter.convert(parsed)
+        # Parse and convert through the one seed helper compile_spec uses: an
+        # explicit seed wins over design.seed, the parser's pool stream is
+        # seed + 1 and the converter's design stream is seed, so the round-trip
+        # (spec -> lock -> summary == spec -> summary) draws the same rows.
+        parsed, result = build.parse_and_convert(yaml_content, base_dir=base_dir, seed=seed)
 
         # Build summary from parsed spec and conversion result
         summary = ExperimentSummary(

@@ -10,9 +10,9 @@ from typing import Any
 
 import yaml
 
-from experiment_designer.spec.converter import SpecConverter
+from experiment_designer.spec.converter import ConversionResult, SpecConverter
 from experiment_designer.spec.file_loader import create_file_tag_loader, resolve_file_references
-from experiment_designer.spec.parser import SpecParser
+from experiment_designer.spec.parser import ParsedSpec, SpecParser
 from experiment_designer.spec.validator import SpecValidator
 
 from .anchor import AnchorError, derive_anchor
@@ -63,6 +63,40 @@ def merge_reports(
     return merged_errors, merged_warnings
 
 
+def parser_seed(seed: int | None) -> int | None:
+    """The seed for the parser's stream (pools, `!file` selections): ``seed + 1``.
+    The converter's design-expansion stream draws from ``seed`` itself. Two
+    independent streams, one recorded number -- and ``0`` is a seed, so this
+    tests ``is not None``, never truthiness."""
+    return None if seed is None else seed + 1
+
+
+def parse_and_convert(
+    spec_text: str,
+    *,
+    base_dir: Path | None,
+    seed: int | None,
+    lax: bool = False,
+    resolve_times: bool = True,
+    report_unknown_items: bool = True,
+) -> tuple[ParsedSpec, ConversionResult]:
+    """Parse and convert a spec under the one seed rule (see ``parser_seed``).
+
+    Every path that expands a spec -- compile_spec, the summary generator,
+    `pmspec preview`/`validate` -- goes through here, so a summary and a lock
+    built from the same seed draw the same random pool rows. Nothing else in
+    the pipeline may construct a seeded SpecParser or SpecConverter."""
+    parser = SpecParser(
+        base_dir=base_dir,
+        seed=parser_seed(seed),
+        lax=lax,
+        report_unknown_items=report_unknown_items,
+    )
+    parsed = parser.parse(spec_text)
+    converter = SpecConverter(seed=seed, resolve_times=resolve_times, lax=lax)
+    return parsed, converter.convert(parsed)
+
+
 def recorded_spec_path(spec_path: str, repo_dir: Path) -> str:
     """The spec path as the lock records it: relative to the spec repo's toplevel,
     so the same spec compiled from any cwd (or any checkout) yields the same bytes;
@@ -91,9 +125,7 @@ def compile_spec(
     # The raw YAML, fully resolved (!file tags included), is what the strict
     # contract validates -- structurally and semantically, before a single
     # construct has been expanded or converted.
-    FileTagLoader, file_loader = create_file_tag_loader(
-        base_dir=base_dir, seed=None if seed is None else seed + 1
-    )
+    FileTagLoader, file_loader = create_file_tag_loader(base_dir=base_dir, seed=parser_seed(seed))
     try:
         raw = yaml.load(spec_text, Loader=FileTagLoader)
         raw = resolve_file_references(raw, file_loader)
@@ -103,17 +135,16 @@ def compile_spec(
         raw if isinstance(raw, dict) else {}
     )
 
-    # Pools/file selections draw from seed+1, the design expander from seed:
-    # two independent streams, one recorded number.
     # The validator above already names every unknown workflow item; the parser
     # must not report it a second time (report_unknown_items=False).
-    parser = SpecParser(
+    parsed, result = parse_and_convert(
+        spec_text,
         base_dir=base_dir,
-        seed=None if seed is None else seed + 1,
+        seed=seed,
         lax=lax,
+        resolve_times=False,
         report_unknown_items=False,
     )
-    parsed = parser.parse(spec_text)
     if parsed.errors:
         dropped = validation.dropped + parsed.dropped
         errors, warnings = merge_reports(
@@ -138,14 +169,17 @@ def compile_spec(
         )
         return CompileResult(None, errors, warnings, dropped)
     if seed is None:
-        # design.seed only: re-parse so the pool stream is seeded from it too.
-        parser = SpecParser(
-            base_dir=base_dir, seed=effective_seed + 1, lax=lax, report_unknown_items=False
+        # design.seed only: redo both streams from it, so the pool draws are
+        # seeded from the same number the lock records.
+        parsed, result = parse_and_convert(
+            spec_text,
+            base_dir=base_dir,
+            seed=effective_seed,
+            lax=lax,
+            resolve_times=False,
+            report_unknown_items=False,
         )
-        parsed = parser.parse(spec_text)
 
-    converter = SpecConverter(seed=effective_seed, resolve_times=False, lax=lax)
-    result = converter.convert(parsed)
     dropped = validation.dropped + parsed.dropped + result.dropped
     errors, warnings = merge_reports(
         [validation.errors, parsed.errors, result.errors],

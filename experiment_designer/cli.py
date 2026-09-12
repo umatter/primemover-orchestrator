@@ -40,7 +40,7 @@ except ImportError:
 
 from .lock.anchor import AnchorError
 from .lock.api import ApiError, ApiSession
-from .lock.build import compile_spec, merge_reports
+from .lock.build import compile_spec, merge_reports, parse_and_convert, parser_seed
 from .lock.cleanup import CleanupError, delete_experiments, find_test_experiments, parse_age
 from .lock.diff import diff_locks
 from .lock.io import LockError, dump_lock, is_lock_document, load_lock
@@ -50,10 +50,8 @@ from .lock.secrets import InsecureSecretsFile, MissingSecret, SecretStore, find_
 from .lock.status import experiment_status
 from .lock.upload import MODES, UploadOptions, UploadRefused, upload_lock
 from .lock.verify import verify_lock
-from .spec.converter import SpecConverter
 from .spec.design_expander import DesignExpander
 from .spec.job_registry import JobRegistry
-from .spec.parser import SpecParser
 from .spec.validator import SpecValidator
 
 
@@ -111,8 +109,8 @@ def validate(file: str, format: str, strict: bool, lax: bool, seed: int | None):
         click.echo(f"Anchor:     {lock.schedule['anchor']}")
         sys.exit(0)
 
-    # Create custom YAML loader with !file tag support
-    FileTagLoader, file_loader = create_file_tag_loader(base_dir=base_dir, seed=seed)
+    # Create custom YAML loader with !file tag support (the parser's stream, seed + 1)
+    FileTagLoader, file_loader = create_file_tag_loader(base_dir=base_dir, seed=parser_seed(seed))
 
     # Parse YAML first (using custom loader for !file tag support)
     try:
@@ -136,12 +134,10 @@ def validate(file: str, format: str, strict: bool, lax: bool, seed: int | None):
     # Also parse and convert to catch additional errors. All three components
     # get `lax`, or a parser/converter drop stays an error under --lax; the
     # validator has already named every unknown workflow item, so the parser
-    # does not report it again.
-    parser = SpecParser(base_dir=base_dir, seed=seed, lax=lax, report_unknown_items=False)
-    parsed = parser.parse(content)
-
-    converter = SpecConverter(lax=lax)
-    result = converter.convert(parsed)
+    # does not report it again. Seeded the way compile_spec seeds.
+    parsed, result = parse_and_convert(
+        content, base_dir=base_dir, seed=seed, lax=lax, report_unknown_items=False
+    )
 
     # Combine all errors and warnings: de-duplicated, one drop-count line
     all_errors, all_warnings = merge_reports(
@@ -649,8 +645,7 @@ def preview(file: str, seed: int | None):
         click.echo(f"Commit:      {lock.provenance.git_commit or 'unknown'}")
         return
 
-    parser = SpecParser(base_dir=base_dir, seed=seed)
-    parsed = parser.parse(content)
+    parsed, _ = parse_and_convert(content, base_dir=base_dir, seed=seed)
 
     if parsed.errors:
         click.secho("Parse errors:", fg="red")
