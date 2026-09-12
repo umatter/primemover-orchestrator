@@ -60,7 +60,9 @@ def find_literal_credentials(crawlers: list[dict[str, Any]]) -> list[str]:
             continue
         for field in _CREDENTIAL_FIELDS:
             value = proxy.get(field)
-            if isinstance(value, str) and value and not PLACEHOLDER_RE.fullmatch(value):
+            # A value *containing* a placeholder is templated (Oxylabs wraps the
+            # account in geo/session targeting); only a value with none is literal.
+            if isinstance(value, str) and value and not PLACEHOLDER_RE.search(value):
                 paths.append(f"crawlers[{i}].proxy.{field}")
     return paths
 

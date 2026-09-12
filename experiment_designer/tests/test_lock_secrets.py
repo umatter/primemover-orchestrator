@@ -36,6 +36,23 @@ def test_literal_credentials_are_reported_by_path():
     assert find_literal_credentials(crawlers) == ["crawlers[0].proxy.password"]
 
 
+def test_credential_with_an_embedded_placeholder_is_not_a_literal():
+    """Oxylabs puts geo/session targeting *around* the account in the username:
+    customer-<user>-cc-us-city-charlotte-sessid-b1. The account is the secret;
+    the rest is not, so a value that contains a placeholder is a templated
+    credential, not a literal one."""
+    crawlers = [
+        {
+            "proxy": {
+                "type": "http",
+                "username": "customer-${secret:oxylabs.user}-cc-us-city-charlotte-sessid-b1",
+                "password": "${secret:oxylabs.password}",
+            }
+        }
+    ]
+    assert find_literal_credentials(crawlers) == []
+
+
 def test_self_configuring_proxy_may_carry_literals():
     crawlers = [{"proxy": {"type": "oxylabs", "username": "acct", "password": "testpass"}}]
     assert find_literal_credentials(crawlers) == []
