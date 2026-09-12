@@ -19,6 +19,7 @@ from typing import Any
 from experiment_designer.lock.build import compile_spec
 from experiment_designer.lock.io import LockError, dump_lock, is_lock_document, load_lock
 from experiment_designer.lock.secrets import PLACEHOLDER_RE, SecretStore, find_placeholders
+from experiment_designer.lock.status import experiment_status
 from experiment_designer.lock.upload import MODES, UploadOptions, UploadRefused, upload_lock
 from experiment_designer.lock.verify import Difference, verify_lock
 from orchestrator import status
@@ -2562,6 +2563,65 @@ def verify_experiment(experiment_id: int, lock_content: str, deep: bool = False)
             "differences": [d.__dict__ for d in r.differences],
             "extra_live_crawlers": r.extra_live_crawlers,
             "render": r.render(),
+        }
+    )
+
+
+@mcp.tool(name="experiment_status")
+def experiment_status_tool(
+    experiment_id: int,
+    hours: int = 24,
+    lock_content: str | None = None,
+    deep: bool = False,
+) -> str:
+    """Provenance (what pmspec uploaded) plus health (how it is running) for a live
+    experiment, and -- when a lock is given -- whether the two still agree.
+
+    Args:
+        experiment_id: the live experiment to inspect
+        hours: health window in hours
+        lock_content: optional lock text; when given, also runs verify against it
+        deep: with lock_content, also compare each queue's jobs/behaviours
+
+    Returns:
+        JSON: {"experiment_id", "name", "runner_user_id", "uploads": [{"label", "values"}],
+        "health", "ok", "bound_to_any_lock", "verify": {...}|None, "render"}.
+    """
+    try:
+        st = experiment_status(
+            _McpSession(), experiment_id, hours=hours, lock_text=lock_content, deep=deep
+        )
+    except LockError as e:
+        return json.dumps({"error": "invalid lock", "errors": e.errors})
+    except Exception as e:
+        return json.dumps({"error": str(e)})
+
+    verify_payload = None
+    if st.verify is not None:
+        st.verify.differences = _redact_differences(st.verify.differences)
+        verify_payload = {
+            "ok": st.verify.ok,
+            "bound": st.verify.bound,
+            "local_sha256": st.verify.local_sha256,
+            "live_sha256s": st.verify.live_sha256s,
+            "anchor": st.verify.anchor,
+            "deep": st.verify.deep,
+            "differences": [d.__dict__ for d in st.verify.differences],
+            "extra_live_crawlers": st.verify.extra_live_crawlers,
+            "render": st.verify.render(),
+        }
+
+    return json.dumps(
+        {
+            "experiment_id": st.experiment_id,
+            "name": st.name,
+            "runner_user_id": st.runner_user_id,
+            "uploads": [{"label": u.label, "values": u.values} for u in st.uploads],
+            "health": st.health,
+            "ok": st.ok,
+            "bound_to_any_lock": st.bound_to_any_lock,
+            "verify": verify_payload,
+            "render": st.render(),
         }
     )
 

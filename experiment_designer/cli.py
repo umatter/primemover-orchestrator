@@ -12,6 +12,7 @@ Commands:
     pmspec summary <file.yaml>        Generate experiment summary
     pmspec upload <file.yaml|.lock.yaml>  Upload a lock (compiling a spec first) and verify it
     pmspec verify <exp_id> <lock>     Check a live experiment is bound to, and identical to, a lock
+    pmspec status <exp_id> [lock]     Provenance + health of a live experiment; with lock, also verify
     pmspec secrets check <lock>       List a lock's secret placeholders and which are missing
     pmspec schema jobs                List all job types
     pmspec schema job <type>          Show job type details
@@ -42,6 +43,7 @@ from .lock.io import LockError, dump_lock, is_lock_document, load_lock
 from .lock.model import Lock
 from .lock.resolve import resolve_for_upload
 from .lock.secrets import InsecureSecretsFile, MissingSecret, SecretStore, find_placeholders
+from .lock.status import experiment_status
 from .lock.upload import MODES, UploadOptions, UploadRefused, upload_lock
 from .lock.verify import verify_lock
 from .spec.converter import SpecConverter
@@ -480,6 +482,34 @@ def verify(experiment_id: int, lock: str, deep: bool) -> None:
         sys.exit(1)
     click.echo(result.render())
     sys.exit(0 if result.ok else 1)
+
+
+@cli.command()
+@click.argument("experiment_id", type=int)
+@click.argument("lock", required=False, type=click.Path(exists=True))
+@click.option("--hours", default=24, show_default=True, type=int, help="Health window")
+@click.option("--deep", is_flag=True, help="With LOCK, also compare jobs and behaviours")
+def status(experiment_id: int, lock: str | None, hours: int, deep: bool) -> None:
+    """Provenance + health of a live experiment; with LOCK, also verify."""
+    session = _session_from_env()
+    try:
+        st = experiment_status(
+            session,
+            experiment_id,
+            hours=hours,
+            lock_text=Path(lock).read_text() if lock else None,
+            deep=deep,
+        )
+    except ApiError as e:
+        click.secho(f"Status failed: {e}", fg="red")
+        sys.exit(1)
+    except LockError as e:
+        click.secho("Lock invalid", fg="red", bold=True)
+        for error in e.errors:
+            click.secho(f"  ERROR: {error}", fg="red")
+        sys.exit(1)
+    click.echo(st.render())
+    sys.exit(0 if st.ok else 1)
 
 
 @cli.group()
