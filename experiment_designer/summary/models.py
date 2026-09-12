@@ -18,6 +18,7 @@ class DataSource(Enum):
     YAML_SPEC = "yaml_spec"
     JSON_SPEC = "json_spec"
     API_RESPONSE = "api_response"
+    LOCK = "lock"
 
 
 @dataclass
@@ -219,6 +220,7 @@ class ExperimentSummary:
     source: DataSource = DataSource.YAML_SPEC
     source_file: str | None = None
     source_timestamp: datetime | None = None
+    source_commit: str | None = None  # lock provenance.git_commit; unused by other sources
 
     # Experiment identity (DESIGN_TIME)
     name: str = ""
@@ -348,9 +350,17 @@ class ExperimentSummary:
             f"Experiment Summary: {self.name}",
             f"{'=' * 60}",
             f"Description: {self.description or '(none)'}",
-            f"Source: {self.source.value}"
-            + (f" (ID: {self.experiment_id})" if self.experiment_id else ""),
         ]
+
+        if self.source == DataSource.LOCK:
+            lines.append(
+                f"Source: lock (seed {self.design_seed}, commit {self.source_commit or 'unknown'})"
+            )
+        else:
+            lines.append(
+                f"Source: {self.source.value}"
+                + (f" (ID: {self.experiment_id})" if self.experiment_id else "")
+            )
 
         if self.source_file:
             lines.append(f"File: {self.source_file}")

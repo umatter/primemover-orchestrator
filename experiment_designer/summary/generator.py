@@ -11,12 +11,15 @@ import json
 import sys
 from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import requests
 
 # Add parent directory to path for imports
 sys.path.insert(0, str(Path(__file__).parent.parent))
+
+if TYPE_CHECKING:
+    from ..lock.model import Lock
 
 from .analyzer import (
     ExperimentAnalyzer,
@@ -71,8 +74,11 @@ class SummaryGenerator:
         parser = SpecParser(base_dir=base_dir, seed=seed)
         parsed = parser.parse(yaml_content)
 
-        # Convert to get expanded crawlers
-        converter = SpecConverter()
+        # Convert to get expanded crawlers. An explicit seed must win over the
+        # spec's own design.seed here too -- compile_spec (lock side) already
+        # does this, and the round-trip (spec -> lock -> summary == spec ->
+        # summary) only holds if both paths draw from the same stream.
+        converter = SpecConverter(seed=seed)
         result = converter.convert(parsed)
 
         # Build summary from parsed spec and conversion result
@@ -234,6 +240,55 @@ class SummaryGenerator:
         summary.statistics = analyzer.analyze()
 
         return summary
+
+    def from_lock(self, lock: "Lock") -> ExperimentSummary:
+        """Generate summary from an already-compiled lock.
+
+        A lock is post-expansion: every crawler, queue and job already exists,
+        every random draw already made. There is no design to report -- only
+        its result -- so `has_design` is always False here and no design
+        formula/factors/parameters are populated.
+        """
+        summary = ExperimentSummary(
+            source=DataSource.LOCK,
+            source_timestamp=datetime.now(),
+            name=lock.experiment.get("name", "Unnamed Experiment"),
+            description=lock.experiment.get("description", ""),
+            has_design=False,
+            design_seed=lock.provenance.seed,
+            source_commit=lock.provenance.git_commit,
+            is_valid=True,
+        )
+
+        summary.crawler_count = len(lock.crawlers)
+
+        all_jobs = []
+        for crawler_data in lock.crawlers:
+            # Lock queues carry `start_offset` instead of `start_at`; the
+            # extractor never reads either field, so this is harmless.
+            crawler_summary = self._extract_crawler_summary_from_json(crawler_data)
+            summary.crawlers.append(crawler_summary)
+            summary.total_queues += crawler_summary.queue_count
+            summary.total_jobs += crawler_summary.total_jobs
+
+            for queue in crawler_data.get("queues", []):
+                all_jobs.extend(queue.get("jobs", []))
+
+        # Compute job statistics
+        summary.jobs_by_type = compute_job_type_distribution(all_jobs)
+        summary.estimated_duration_seconds = estimate_duration_from_jobs(all_jobs)
+
+        # Compute statistics
+        analyzer = ExperimentAnalyzer(summary)
+        summary.statistics = analyzer.analyze()
+
+        return summary
+
+    def from_lock_text(self, text: str) -> ExperimentSummary:
+        """Generate summary from a lock document's YAML text."""
+        from ..lock.io import load_lock
+
+        return self.from_lock(load_lock(text))
 
     def from_api(
         self,

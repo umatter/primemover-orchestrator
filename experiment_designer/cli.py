@@ -22,6 +22,7 @@ Commands:
 import json
 import sys
 from pathlib import Path
+from typing import Any
 
 # Load .env file if present
 try:
@@ -362,6 +363,18 @@ def _load_lock_or_exit(lock_text: str) -> Lock:
         sys.exit(1)
 
 
+def _load_summary(generator: Any, file_path: str, seed: int | None, json_spec: bool) -> Any:
+    """A summary for FILE, whichever of spec/JSON-spec/lock it turns out to be."""
+    content = Path(file_path).read_text()
+    if is_lock_document(content):
+        summary = generator.from_lock_text(content)
+        summary.source_file = str(file_path)
+        return summary
+    if json_spec:
+        return generator.from_json_file(file_path)
+    return generator.from_yaml_file(file_path, seed=seed)
+
+
 def _secrets_report(lock_text: str, store: SecretStore | None) -> list[str]:
     """Print referenced keys with OK/MISSING; return the missing ones."""
     needed = sorted(find_placeholders(_load_lock_or_exit(lock_text).crawlers))
@@ -613,6 +626,29 @@ def preview(file: str, seed: int | None):
     with open(file) as f:
         content = f.read()
 
+    if is_lock_document(content):
+        try:
+            lock = load_lock(content)
+        except LockError as e:
+            click.secho("Lock invalid", fg="red", bold=True)
+            for error in e.errors:
+                click.secho(f"  ERROR: {error}", fg="red")
+            sys.exit(1)
+        total_queues = sum(len(c["queues"]) for c in lock.crawlers)
+        total_jobs = sum(len(q["jobs"]) for c in lock.crawlers for q in c["queues"])
+        click.secho(f"Experiment: {lock.experiment.get('name', 'N/A')}", bold=True)
+        click.echo()
+        click.secho("Lock (post-expansion -- no design formula)", bold=True, underline=True)
+        click.echo()
+        click.echo(f"Crawlers:    {len(lock.crawlers)}")
+        click.echo(f"Queues:      {total_queues}")
+        click.echo(f"Jobs:        {total_jobs}")
+        click.echo(f"Anchor:      {lock.schedule['anchor']}")
+        click.echo(f"Seed:        {lock.provenance.seed}")
+        click.echo(f"Spec:        {lock.provenance.spec_path}")
+        click.echo(f"Commit:      {lock.provenance.git_commit or 'unknown'}")
+        return
+
     parser = SpecParser(base_dir=base_dir, seed=seed)
     parsed = parser.parse(content)
 
@@ -730,20 +766,12 @@ def summary(
             click.secho(f"Failed to fetch experiment: {e}", fg="red")
             sys.exit(1)
 
-    elif json_spec and files:
-        # Summarize JSON spec
-        try:
-            summary_data = generator.from_json_file(files[0])
-        except Exception as e:
-            click.secho(f"Failed to parse JSON: {e}", fg="red")
-            sys.exit(1)
-
     elif files:
-        # Summarize YAML spec
+        # Summarize a YAML spec, a JSON spec, or a lock (auto-detected)
         try:
-            summary_data = generator.from_yaml_file(files[0], seed=seed)
+            summary_data = _load_summary(generator, files[0], seed=seed, json_spec=json_spec)
         except Exception as e:
-            click.secho(f"Failed to parse YAML: {e}", fg="red")
+            click.secho(f"Failed to summarize {files[0]}: {e}", fg="red")
             sys.exit(1)
 
     else:
@@ -758,9 +786,9 @@ def summary(
 
         # Get second summary
         if len(files) >= 2:
-            summary_b = generator.from_yaml_file(files[1], seed=seed)
+            summary_b = _load_summary(generator, files[1], seed=seed, json_spec=json_spec)
         elif experiment_id and files:
-            summary_b = generator.from_yaml_file(files[0], seed=seed)
+            summary_b = _load_summary(generator, files[0], seed=seed, json_spec=json_spec)
             summary_data, summary_b = summary_b, summary_data  # Swap so API is B
         else:
             click.secho("Need two sources for comparison", fg="red")

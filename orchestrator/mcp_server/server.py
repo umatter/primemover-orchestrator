@@ -2973,13 +2973,16 @@ crawlers:
 @mcp.tool()
 def summarize_yaml_spec(yaml_content: str) -> str:
     """
-    Generate a structured summary from a YAML experiment specification.
+    Generate a structured summary from a YAML experiment specification or a
+    compiled lock (`pmspec_lock: 1` document, auto-detected).
 
     Provides an overview of the experiment design including crawler counts,
-    parameter distributions, workflow structure, and more.
+    parameter distributions, workflow structure, and more. A lock has no
+    design to report -- only its already-expanded result -- so its summary
+    omits the design section and names its seed and commit instead.
 
     Args:
-        yaml_content: YAML experiment specification content
+        yaml_content: YAML experiment specification, or lock, content
 
     Returns:
         JSON with structured summary including:
@@ -2990,13 +2993,18 @@ def summarize_yaml_spec(yaml_content: str) -> str:
         - statistics: parameter distributions, location/browser breakdown
     """
     try:
+        from experiment_designer.lock.io import is_lock_document
         from experiment_designer.summary import SummaryGenerator
     except ImportError as e:
         return json.dumps({"error": f"experiment_designer.summary not available: {e}"})
 
     try:
         generator = SummaryGenerator()
-        summary = generator.from_yaml_string(yaml_content)
+        summary = (
+            generator.from_lock_text(yaml_content)
+            if is_lock_document(yaml_content)
+            else generator.from_yaml_string(yaml_content)
+        )
 
         return json.dumps(
             {
