@@ -188,6 +188,19 @@ class TestValidatorKeepsWarnings:
         assert r.valid and r.dropped == 0
         assert any("no hostname" in w for w in r.warnings), r.warnings
 
+    def test_template_and_repeat_items_with_only_their_own_keys_are_clean(self):
+        text = (
+            BASE.replace(
+                "        - visit: https://example.com\n",
+                "        - template: t\n          with: {x: 1}\n"
+                "        - repeat: 2\n          template: t\n"
+                "        - repeat: 2\n          jobs: [{wait: 1s}]\n",
+            )
+            + "templates:\n  t:\n    - wait: 1s\n"
+        )
+        r = _validate(text)
+        assert r.valid and r.dropped == 0, r.errors
+
     def test_every_example_spec_and_research_spec_uses_only_known_keys(self):
         """The structural key sets (_KEYS_ROOT ... _KEYS_DESIGN) are a whitelist;
         this pins them to the specs that exist. Only the structural
@@ -448,3 +461,64 @@ crawlers:
             w for w in r.warnings if re.match(r"^\d+ construct\(s\) would have been dropped", w)
         ]
         assert count_lines == ["2 construct(s) would have been dropped (lax mode)"], r.warnings
+
+
+class TestValidateLaxIsFullyWired:
+    """`--lax` on `validate` (CLI and MCP) reached only the validator; the parser
+    and converter it also runs were still strict, so a parser- or converter-only
+    drop stayed an error under --lax."""
+
+    PARSER_DROP = BASE.replace("        - visit: https://example.com\n", "        - teleport: x\n")
+    CONVERTER_DROP = (
+        BASE.replace(
+            "        - visit: https://example.com\n",
+            "        - template: t\n",
+        )
+        + "templates:\n  t:\n    - type: {text: '${reliability}', selector: '//x'}\n"
+    )
+
+    def test_cli_validate_lax_downgrades_a_parser_drop(self, tmp_path):
+        from click.testing import CliRunner
+
+        from experiment_designer.cli import cli
+
+        (tmp_path / "s.yaml").write_text(self.PARSER_DROP)
+        strict = CliRunner().invoke(cli, ["validate", str(tmp_path / "s.yaml")])
+        assert strict.exit_code == 1 and "teleport" in strict.output
+        lax = CliRunner().invoke(cli, ["validate", str(tmp_path / "s.yaml"), "--lax"])
+        assert lax.exit_code == 0, lax.output
+        assert "WARNING" in lax.output and "teleport" in lax.output, lax.output
+        # One report for the construct, not one from the validator and one from the parser.
+        assert lax.output.count("teleport") == 1, lax.output
+
+    def test_cli_validate_lax_downgrades_a_converter_drop(self, tmp_path):
+        from click.testing import CliRunner
+
+        from experiment_designer.cli import cli
+
+        (tmp_path / "s.yaml").write_text(self.CONVERTER_DROP)
+        strict = CliRunner().invoke(cli, ["validate", str(tmp_path / "s.yaml")])
+        assert strict.exit_code == 1 and "${reliability}" in strict.output
+        lax = CliRunner().invoke(cli, ["validate", str(tmp_path / "s.yaml"), "--lax"])
+        assert lax.exit_code == 0 and "${reliability}" in lax.output, lax.output
+
+    def test_mcp_validate_lax_downgrades_a_converter_drop(self):
+        import json
+
+        from orchestrator.mcp_server import server as s
+
+        strict = json.loads(s.validate_experiment_spec(self.CONVERTER_DROP))
+        assert strict["valid"] is False
+        assert any("${reliability}" in e for e in strict["errors"]), strict
+        lax = json.loads(s.validate_experiment_spec(self.CONVERTER_DROP, lax=True))
+        assert lax["valid"] is True, lax
+        assert any("${reliability}" in w for w in lax["warnings"]), lax
+
+    def test_mcp_validate_reports_a_parser_drop_once(self):
+        import json
+
+        from orchestrator.mcp_server import server as s
+
+        out = json.loads(s.validate_experiment_spec(self.PARSER_DROP, lax=True))
+        assert out["valid"] is True, out
+        assert len([w for w in out["warnings"] if "teleport" in w]) == 1, out

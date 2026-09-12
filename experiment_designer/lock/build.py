@@ -44,7 +44,7 @@ def _merge(*lists: list[str]) -> list[str]:
     return merged
 
 
-def _finish(
+def merge_reports(
     errors: list[list[str]], warnings: list[list[str]], dropped: int, lax: bool
 ) -> tuple[list[str], list[str]]:
     """De-duplicate errors/warnings across components, then collapse however many
@@ -53,7 +53,9 @@ def _finish(
     Every return path -- the two early returns and the main one -- must go through
     this, or a hard failure alongside lax drops prints one stale count line per
     component instead of one correct combined line. The line is a lax-mode line
-    only: in strict mode the drops are already the errors."""
+    only: in strict mode the drops are already the errors. `pmspec validate` and
+    the MCP validate_experiment_spec run the same three components and combine
+    their reports through this too."""
     merged_errors = _merge(*errors)
     merged_warnings = [w for w in _merge(*warnings) if not _DROP_COUNT_LINE_RE.match(w)]
     if dropped and lax:
@@ -114,7 +116,7 @@ def compile_spec(
     parsed = parser.parse(spec_text)
     if parsed.errors:
         dropped = validation.dropped + parsed.dropped
-        errors, warnings = _finish(
+        errors, warnings = merge_reports(
             [validation.errors, parsed.errors],
             [validation.warnings, parsed.warnings],
             dropped,
@@ -125,7 +127,7 @@ def compile_spec(
     effective_seed = seed if seed is not None else (parsed.design or {}).get("seed")
     if effective_seed is None:
         dropped = validation.dropped + parsed.dropped
-        errors, warnings = _finish(
+        errors, warnings = merge_reports(
             [
                 validation.errors,
                 ["no seed: pass --seed N or set design.seed; a lock is never unseeded"],
@@ -145,7 +147,7 @@ def compile_spec(
     converter = SpecConverter(seed=effective_seed, resolve_times=False, lax=lax)
     result = converter.convert(parsed)
     dropped = validation.dropped + parsed.dropped + result.dropped
-    errors, warnings = _finish(
+    errors, warnings = merge_reports(
         [validation.errors, parsed.errors, result.errors],
         [validation.warnings, parsed.warnings, result.warnings],
         dropped,

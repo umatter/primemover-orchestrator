@@ -37,7 +37,7 @@ except ImportError:
 
 from .lock.anchor import AnchorError
 from .lock.api import ApiError, ApiSession
-from .lock.build import compile_spec
+from .lock.build import compile_spec, merge_reports
 from .lock.io import LockError, dump_lock, is_lock_document, load_lock
 from .lock.model import Lock
 from .lock.resolve import resolve_for_upload
@@ -127,16 +127,23 @@ def validate(file: str, format: str, strict: bool, lax: bool, seed: int | None):
     validator = SpecValidator(base_dir=base_dir, lax=lax)
     validation_result = validator.validate(raw_spec)
 
-    # Also parse and convert to catch additional errors
-    parser = SpecParser(base_dir=base_dir, seed=seed)
+    # Also parse and convert to catch additional errors. All three components
+    # get `lax`, or a parser/converter drop stays an error under --lax; the
+    # validator has already named every unknown workflow item, so the parser
+    # does not report it again.
+    parser = SpecParser(base_dir=base_dir, seed=seed, lax=lax, report_unknown_items=False)
     parsed = parser.parse(content)
 
-    converter = SpecConverter()
+    converter = SpecConverter(lax=lax)
     result = converter.convert(parsed)
 
-    # Combine all errors and warnings
-    all_errors = list(set(validation_result.errors + parsed.errors + result.errors))
-    all_warnings = list(set(validation_result.warnings + parsed.warnings + result.warnings))
+    # Combine all errors and warnings: de-duplicated, one drop-count line
+    all_errors, all_warnings = merge_reports(
+        [validation_result.errors, parsed.errors, result.errors],
+        [validation_result.warnings, parsed.warnings, result.warnings],
+        validation_result.dropped + parsed.dropped + result.dropped,
+        lax,
+    )
 
     # In strict mode, warnings become errors
     if strict:

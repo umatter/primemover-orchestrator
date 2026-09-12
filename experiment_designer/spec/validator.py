@@ -674,7 +674,9 @@ class SpecValidator:
             if isinstance(nested, list):
                 for k, sub in enumerate(nested):
                     self._validate_workflow_item(sub, f"{prefix}.jobs[{k}]", errors, warnings, spec)
-            return
+
+        if "template" in item or "repeat" in item:
+            return  # not a job shorthand; everything on it was checked above
 
         # Validate job types
         job_types = [

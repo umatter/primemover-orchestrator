@@ -2234,6 +2234,7 @@ def validate_experiment_spec(
     try:
         import yaml as yaml_lib
 
+        from experiment_designer.lock.build import merge_reports
         from experiment_designer.spec import SpecConverter, SpecParser, SpecValidator
         from experiment_designer.spec.file_loader import (
             create_file_tag_loader,
@@ -2270,16 +2271,23 @@ def validate_experiment_spec(
         validator = SpecValidator(base_dir=base_dir, lax=lax)
         validation_result = validator.validate(raw_spec)
 
-        # Also parse and convert to catch additional errors
-        parser = SpecParser(base_dir=base_dir)
+        # Also parse and convert to catch additional errors. All three
+        # components get `lax`, or a parser/converter drop stays an error under
+        # lax=True; the validator has already named every unknown workflow
+        # item, so the parser does not report it again.
+        parser = SpecParser(base_dir=base_dir, lax=lax, report_unknown_items=False)
         parsed = parser.parse(yaml_content)
 
-        converter = SpecConverter()
+        converter = SpecConverter(lax=lax)
         result = converter.convert(parsed)
 
-    # Combine all errors and warnings
-    all_errors = list(set(validation_result.errors + parsed.errors + result.errors))
-    all_warnings = list(set(validation_result.warnings + parsed.warnings + result.warnings))
+    # Combine all errors and warnings: de-duplicated, one drop-count line
+    all_errors, all_warnings = merge_reports(
+        [validation_result.errors, parsed.errors, result.errors],
+        [validation_result.warnings, parsed.warnings, result.warnings],
+        validation_result.dropped + parsed.dropped + result.dropped,
+        lax,
+    )
 
     if strict:
         all_errors.extend(all_warnings)
