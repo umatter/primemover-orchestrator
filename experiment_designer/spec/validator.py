@@ -558,6 +558,10 @@ class SpecValidator:
                 self._validate_session(session, f"{prefix}.session", errors, warnings, spec)
             for j, queue in enumerate(queues):
                 self._validate_session(queue, f"{prefix}.queues[{j}]", errors, warnings, spec)
+            for j, extra in enumerate(crawler.get("additional_sessions") or []):
+                self._validate_session(
+                    extra, f"{prefix}.additional_sessions[{j}]", errors, warnings, spec
+                )
 
         return errors, warnings
 

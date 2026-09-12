@@ -302,10 +302,20 @@ class SpecParser:
             expanded["agent"]["identification"] = defaults.get("browser", "mlx")
 
         # Expand session/queues
+        extra = expanded.pop("additional_sessions", None)
+        if "session" in expanded and "queues" in expanded:
+            self.errors.append(
+                f"crawler[{index}]: use either session/additional_sessions or queues, not both"
+            )
         if "session" in expanded:
             # Convert session shorthand to queues array
             session = expanded.pop("session")
             expanded["queues"] = [self._expand_session(session, defaults, templates)]
+            for extra_session in extra or []:
+                expanded["queues"].append(self._expand_session(extra_session, defaults, templates))
+        elif extra:
+            self.errors.append(f"crawler[{index}]: additional_sessions needs a session to add to")
+            expanded["queues"] = []
         elif "queues" in expanded:
             expanded["queues"] = [
                 self._expand_session(q, defaults, templates) for q in expanded["queues"]
