@@ -566,3 +566,43 @@ class TestValidateLaxIsFullyWired:
 
         errors, warnings = merge_reports([["b issue"], ["a issue"]], [[], []], 0, False)
         assert errors == ["b issue", "a issue"]
+
+
+class TestRepeatPassesWith:
+    """`repeat: N` + `template:` ignored `with:` -- the template's ${var} survived
+    to design expansion, which replaced only the `{var}` part and handed the
+    decision function `$green`. A real study's treatment vehicle."""
+
+    SPEC = """
+version: "1.0"
+experiment: {name: R}
+templates:
+  visit_arm:
+    - lambda_select:
+        task: t
+        function: f
+        strategy: s
+        treatment: {reliability: "${reliability}"}
+crawlers:
+  - name: bot
+    session:
+      start: "+1m"
+      workflow:
+        - repeat: 2
+          template: visit_arm
+          with: {reliability: green}
+"""
+
+    def test_with_is_applied_on_every_repetition(self):
+        parsed = SpecParser().parse(self.SPEC)
+        assert not parsed.errors, parsed.errors
+        jobs = parsed.crawlers[0]["queues"][0]["jobs"]
+        assert len(jobs) == 2
+        values = [b["value"] for j in jobs for b in j["behaviors"] if b["name"] == "reliability"]
+        assert values == ["green", "green"]
+
+    def test_repeat_without_with_leaves_the_placeholder_for_the_scan(self):
+        text = self.SPEC.replace("          with: {reliability: green}\n", "")
+        parsed = SpecParser().parse(text)
+        r = SpecConverter().convert(parsed)
+        assert any("${reliability}" in e for e in r.errors), r.errors

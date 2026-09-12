@@ -645,6 +645,13 @@ class SpecParser:
         if "template" in item:
             template_name = item["template"]
             template_jobs = self._get_template_jobs(template_name, templates, defaults)
+            # `with:` applies to every repetition, exactly as on a plain template
+            # call. It was ignored here until 2026-09-12: the template's ${var}
+            # survived to design expansion, which replaced only the {var} part
+            # and handed the decision function "$green".
+            variables = item.get("with")
+            if isinstance(variables, dict) and variables:
+                template_jobs = self._apply_variables(template_jobs, variables)
             for _ in range(count):
                 jobs.extend(copy.deepcopy(template_jobs))
         elif "jobs" in item:
