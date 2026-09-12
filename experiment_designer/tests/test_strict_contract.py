@@ -421,6 +421,18 @@ class TestCompileIsStrict:
         lax = CliRunner().invoke(cli, ["compile", str(tmp_path / "s.yaml"), "--seed", "1", "--lax"])
         assert lax.exit_code == 0 and "would have been dropped" in lax.output
 
+    def test_cli_compile_lax_prints_the_count_exactly_once(self, tmp_path):
+        """The dropped-construct count used to be printed twice: once from the merged
+        warnings, once from an extra hand-written summary line."""
+        from click.testing import CliRunner
+
+        from experiment_designer.cli import cli
+
+        (tmp_path / "s.yaml").write_text(self.SPEC)
+        lax = CliRunner().invoke(cli, ["compile", str(tmp_path / "s.yaml"), "--seed", "1", "--lax"])
+        assert lax.exit_code == 0, lax.output
+        assert lax.output.count("would have been dropped") == 1, lax.output
+
     def test_mcp_compile_reports_dropped(self):
         import json
 
@@ -522,3 +534,35 @@ class TestValidateLaxIsFullyWired:
         out = json.loads(s.validate_experiment_spec(self.PARSER_DROP, lax=True))
         assert out["valid"] is True, out
         assert len([w for w in out["warnings"] if "teleport" in w]) == 1, out
+
+    def test_cli_validate_json_reports_dropped_count(self, tmp_path):
+        import json
+
+        from click.testing import CliRunner
+
+        from experiment_designer.cli import cli
+
+        (tmp_path / "s.yaml").write_text(self.PARSER_DROP)
+        out = CliRunner().invoke(
+            cli, ["validate", str(tmp_path / "s.yaml"), "--lax", "--format", "json"]
+        )
+        assert out.exit_code == 0, out.output
+        payload = json.loads(out.output)
+        assert payload["dropped"] == 1, payload
+
+    def test_mcp_validate_reports_dropped_count(self):
+        import json
+
+        from orchestrator.mcp_server import server as s
+
+        out = json.loads(s.validate_experiment_spec(self.PARSER_DROP, lax=True))
+        assert out["dropped"] == 1, out
+
+    def test_merge_reports_preserves_order_across_components(self):
+        """`_merge` (used by merge_reports) concatenates and de-duplicates without
+        reordering -- a `validate` JSON caller sees errors in the order its
+        components produced them, not sorted or hashed."""
+        from experiment_designer.lock.build import merge_reports
+
+        errors, warnings = merge_reports([["b issue"], ["a issue"]], [[], []], 0, False)
+        assert errors == ["b issue", "a issue"]

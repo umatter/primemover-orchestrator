@@ -4,6 +4,7 @@ import pytest
 
 from experiment_designer.lock.api import ApiError
 from experiment_designer.lock.cleanup import (
+    CleanupCandidate,
     CleanupError,
     delete_experiments,
     find_test_experiments,
@@ -18,13 +19,16 @@ class FakeSession:
     base_url = "http://fake"
 
     def __init__(self, experiments, fail_delete=None):
-        self.experiments = experiments  # id -> {"name", "prefs"}
+        self.experiments = experiments  # id -> {"name", "prefs", "in_flight"?}
         self.deleted, self.calls, self.fail_delete = [], [], fail_delete
 
     def get(self, path, params=None):
         self.calls.append(("GET", path))
         if path == "experiments/experiments-list":
             return [{"id": i, "name": e["name"]} for i, e in self.experiments.items()]
+        if path.endswith("/queues-unprocessed"):
+            i = int(path.split("/")[1])
+            return [{"id": 900}] if self.experiments[i].get("in_flight") else []
         i = int(path.split("/")[1])
         return {
             "id": i,
@@ -114,9 +118,23 @@ def test_naive_uploaded_at_is_unparseable_not_an_exception():
     assert ids == []
 
 
+def _candidates(*ids, in_flight_ids=()):
+    return [
+        CleanupCandidate(
+            experiment_id=i,
+            name=f"test-{i}",
+            uploaded_at=None,
+            mode="test",
+            in_flight=i in in_flight_ids,
+        )
+        for i in ids
+    ]
+
+
 def test_delete_deletes_only_the_given_ids():
     fake = FakeSession(EXPS)
-    assert delete_experiments(fake, [1, 2]) == [1, 2]
+    result = delete_experiments(fake, [1, 2], candidates=_candidates(1, 2))
+    assert result.deleted == [1, 2] and result.skipped_in_flight == []
     assert fake.calls[-2:] == [
         ("DELETE", "experiments/1/destroy"),
         ("DELETE", "experiments/2/destroy"),
@@ -126,8 +144,35 @@ def test_delete_deletes_only_the_given_ids():
 def test_delete_stops_at_first_failure_and_reports_progress():
     fake = FakeSession(EXPS, fail_delete=2)
     with pytest.raises(CleanupError) as exc:
-        delete_experiments(fake, [1, 2])
+        delete_experiments(fake, [1, 2], candidates=_candidates(1, 2))
     assert exc.value.deleted == [1] and exc.value.failed_id == 2
+
+
+def test_delete_skips_in_flight_ids_by_default():
+    fake = FakeSession(EXPS)
+    result = delete_experiments(fake, [1, 2], candidates=_candidates(1, 2, in_flight_ids={2}))
+    assert result.deleted == [1] and result.skipped_in_flight == [2]
+    assert ("DELETE", "experiments/2/destroy") not in fake.calls
+
+
+def test_delete_force_deletes_in_flight_ids():
+    fake = FakeSession(EXPS)
+    result = delete_experiments(
+        fake, [1, 2], candidates=_candidates(1, 2, in_flight_ids={2}), force=True
+    )
+    assert result.deleted == [1, 2] and result.skipped_in_flight == []
+
+
+def test_find_test_experiments_reports_in_flight():
+    exps = {1: {"name": "test-a", "prefs": _p("test"), "in_flight": True}}
+    fake = FakeSession(exps)
+    candidates = find_test_experiments(fake, now=NOW)
+    assert len(candidates) == 1 and candidates[0].in_flight is True
+
+
+def test_find_test_experiments_default_not_in_flight():
+    candidates = find_test_experiments(FakeSession(EXPS), now=NOW)
+    assert all(c.in_flight is False for c in candidates)
 
 
 @pytest.mark.parametrize(

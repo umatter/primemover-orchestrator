@@ -997,10 +997,16 @@ def pm_delete(entity: str, id: int, confirm: bool = False) -> str:
 
 
 @mcp.tool()
-def pm_cleanup_test_experiments(older_than: str | None = None, confirm: bool = False) -> str:
+def pm_cleanup_test_experiments(
+    older_than: str | None = None,
+    confirm: bool = False,
+    experiment_ids: list[int] | None = None,
+    force: bool = False,
+) -> str:
     """Delete pmspec TEST experiments only. A candidate is an experiment whose name starts
     with 'test-' AND whose preferences carry pmspec.mode == 'test' -- the name only narrows
-    which experiments are fetched; the preference is what actually authorises deletion.
+    which experiments are fetched; the preference is what actually authorises deletion. A
+    candidate with an in-flight (unprocessed) queue is skipped unless force=true.
     Dry-run (lists candidates) unless confirm=true. Local API only.
 
     Args:
@@ -1008,6 +1014,10 @@ def pm_cleanup_test_experiments(older_than: str | None = None, confirm: bool = F
             latest pmspec.uploaded_at is at least this old are candidates. An experiment
             with no parseable uploaded_at is a candidate only when this is omitted.
         confirm: delete the candidates (uses the cascading experiments/{id}/destroy route).
+        experiment_ids: restrict to these ids -- only those that are (still) candidates are
+            previewed/deleted; the rest are reported under "not_candidates" and left alone.
+            Omit to act on every candidate.
+        force: also delete candidates with in-flight (unprocessed) queues.
     """
     try:
         age = parse_age(older_than) if older_than else None
@@ -1020,19 +1030,33 @@ def pm_cleanup_test_experiments(older_than: str | None = None, confirm: bool = F
     except Exception as e:
         return json.dumps({"error": str(e), "deleted": getattr(e, "deleted", [])})
 
+    candidates_by_id = {c.experiment_id: c for c in candidates}
+    if experiment_ids is None:
+        selected = candidates
+        not_candidates: list[int] = []
+    else:
+        selected = [candidates_by_id[i] for i in experiment_ids if i in candidates_by_id]
+        not_candidates = [i for i in experiment_ids if i not in candidates_by_id]
+
     rows = [
         {
             "experiment_id": c.experiment_id,
             "name": c.name,
             "uploaded_at": c.uploaded_at,
             "mode": c.mode,
+            "in_flight": c.in_flight,
         }
-        for c in candidates
+        for c in selected
     ]
 
     if not confirm:
         return json.dumps(
-            {"dry_run": True, "candidates": rows, "to_apply": "call again with confirm=true"}
+            {
+                "dry_run": True,
+                "candidates": rows,
+                "not_candidates": not_candidates,
+                "to_apply": "call again with confirm=true",
+            }
         )
 
     guard = _require_local_write_target()
@@ -1040,10 +1064,18 @@ def pm_cleanup_test_experiments(older_than: str | None = None, confirm: bool = F
         return json.dumps({"error": guard})
 
     try:
-        deleted = delete_experiments(session, [c.experiment_id for c in candidates])
+        result = delete_experiments(
+            session, [c.experiment_id for c in selected], candidates=selected, force=force
+        )
     except Exception as e:
         return json.dumps({"error": str(e), "deleted": getattr(e, "deleted", [])})
-    return json.dumps({"deleted": deleted})
+    return json.dumps(
+        {
+            "deleted": result.deleted,
+            "skipped_in_flight": result.skipped_in_flight,
+            "not_candidates": not_candidates,
+        }
+    )
 
 
 @mcp.tool()
@@ -2319,10 +2351,11 @@ def validate_experiment_spec(
         result = converter.convert(parsed)
 
     # Combine all errors and warnings: de-duplicated, one drop-count line
+    dropped = validation_result.dropped + parsed.dropped + result.dropped
     all_errors, all_warnings = merge_reports(
         [validation_result.errors, parsed.errors, result.errors],
         [validation_result.warnings, parsed.warnings, result.warnings],
-        validation_result.dropped + parsed.dropped + result.dropped,
+        dropped,
         lax,
     )
 
@@ -2336,6 +2369,7 @@ def validate_experiment_spec(
             "kind": "spec",
             "errors": all_errors,
             "warnings": all_warnings,
+            "dropped": dropped,
             "summary": {
                 "experiment_name": parsed.experiment.get("name", ""),
                 "crawler_count": result.crawler_count,

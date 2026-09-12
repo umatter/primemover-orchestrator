@@ -41,6 +41,13 @@ class CleanupCandidate:
     name: str
     uploaded_at: str | None
     mode: str
+    in_flight: bool = False
+
+
+@dataclass
+class CleanupResult:
+    deleted: list[int]
+    skipped_in_flight: list[int]
 
 
 class CleanupError(RuntimeError):
@@ -88,6 +95,14 @@ def _latest_uploaded_at(preferences: list[dict[str, Any]]) -> tuple[str, datetim
     return best
 
 
+def _has_in_flight_queue(session: Any, experiment_id: int) -> bool:
+    """True if the experiment has at least one unprocessed (in-flight) queue.
+
+    ``per_page=1`` is enough: only presence/absence matters, never the count."""
+    rows = session.get(f"experiments/{experiment_id}/queues-unprocessed", params={"per_page": 1})
+    return bool(rows)
+
+
 def find_test_experiments(
     session: Any, *, older_than: timedelta | None = None, now: datetime | None = None
 ) -> list[CleanupCandidate]:
@@ -102,6 +117,10 @@ def find_test_experiments(
     uploaded_at cannot be determined (never uploaded by pmspec, or an unparseable value) is
     kept only when ``older_than`` is ``None`` -- with an age filter given, "we cannot tell
     its age" must never be treated as "old enough to delete".
+
+    Every surviving candidate is also checked for in-flight (unprocessed) queues via ``GET
+    experiments/{id}/queues-unprocessed`` -- ``delete_experiments`` refuses those unless
+    told to ``force``, so callers need to know before they ever try.
     """
     now = now or datetime.now(API_TIMEZONE)
     listing = session.get("experiments/experiments-list") or []
@@ -127,29 +146,52 @@ def find_test_experiments(
             if latest is None or now - latest[1] < older_than:
                 continue
 
+        experiment_id = int(row["id"])
         candidates.append(
             CleanupCandidate(
-                experiment_id=int(row["id"]),
+                experiment_id=experiment_id,
                 name=detail.get("name", name),
                 uploaded_at=latest[0] if latest else None,
                 mode=",".join(sorted(modes)),
             )
         )
+
+    # A second pass, after every candidate is known: keeps call order predictable
+    # (listing, then one detail GET per test--named row, then one in-flight check per
+    # surviving candidate) instead of interleaving the two kinds of follow-up GET.
+    for candidate in candidates:
+        candidate.in_flight = _has_in_flight_queue(session, candidate.experiment_id)
     return candidates
 
 
-def delete_experiments(session: Any, ids: list[int]) -> list[int]:
+def delete_experiments(
+    session: Any,
+    ids: list[int],
+    *,
+    candidates: list[CleanupCandidate],
+    force: bool = False,
+) -> CleanupResult:
     """``DELETE experiments/{id}/destroy`` (the cascading route) for each id, in order.
 
-    Stops at the first failure and re-raises as :class:`CleanupError`, which carries the ids
-    already deleted -- callers must never retry the whole list, which would attempt to
-    re-delete experiments that are already gone.
+    An id whose candidate is in-flight (an unprocessed queue exists) is skipped rather than
+    deleted, unless ``force=True`` -- deleting an experiment mid-run would pull the rug out
+    from under a runner that is still working it. ``candidates`` must include a
+    :class:`CleanupCandidate` for every id in ``ids``.
+
+    Stops at the first failure among the ids actually attempted and re-raises as
+    :class:`CleanupError`, which carries the ids already deleted -- callers must never retry
+    the whole list, which would attempt to re-delete experiments that are already gone.
     """
+    in_flight_by_id = {c.experiment_id: c.in_flight for c in candidates}
     deleted: list[int] = []
+    skipped_in_flight: list[int] = []
     for experiment_id in ids:
+        if in_flight_by_id.get(experiment_id, False) and not force:
+            skipped_in_flight.append(experiment_id)
+            continue
         try:
             session.delete(f"experiments/{experiment_id}/destroy")
         except Exception as e:
             raise CleanupError(deleted, experiment_id, e) from e
         deleted.append(experiment_id)
-    return deleted
+    return CleanupResult(deleted=deleted, skipped_in_flight=skipped_in_flight)

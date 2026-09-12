@@ -140,10 +140,11 @@ def validate(file: str, format: str, strict: bool, lax: bool, seed: int | None):
     )
 
     # Combine all errors and warnings: de-duplicated, one drop-count line
+    dropped = validation_result.dropped + parsed.dropped + result.dropped
     all_errors, all_warnings = merge_reports(
         [validation_result.errors, parsed.errors, result.errors],
         [validation_result.warnings, parsed.warnings, result.warnings],
-        validation_result.dropped + parsed.dropped + result.dropped,
+        dropped,
         lax,
     )
 
@@ -157,6 +158,7 @@ def validate(file: str, format: str, strict: bool, lax: bool, seed: int | None):
             "valid": len(all_errors) == 0,
             "errors": all_errors,
             "warnings": all_warnings,
+            "dropped": dropped,
             "summary": {
                 "experiment_name": parsed.experiment.get("name", ""),
                 "crawler_count": result.crawler_count,
@@ -243,10 +245,6 @@ def compile(
     click.echo(f"  Seed:     {lock.provenance.seed}")
     click.echo(f"  Anchor:   {lock.schedule['anchor']}")
     click.echo(f"  Commit:   {lock.provenance.git_commit or 'none'}")
-    if result.dropped:
-        click.secho(
-            f"  {result.dropped} construct(s) would have been dropped -- lax lock", fg="yellow"
-        )
 
 
 @cli.command()
@@ -296,8 +294,10 @@ def generate(file: str, output: str | None, pretty: bool, seed: int | None, reso
     json_output = json.dumps(crawlers, indent=2 if pretty else None, ensure_ascii=False)
     if output:
         Path(output).write_text(json_output)
+        total_jobs = sum(len(q.get("jobs", [])) for c in crawlers for q in c.get("queues", []))
         click.secho(f"Generated: {output}", fg="green")
         click.echo(f"  Crawlers: {len(crawlers)}")
+        click.echo(f"  Jobs: {total_jobs}")
     else:
         click.echo(json_output)
 
@@ -487,6 +487,9 @@ def verify(experiment_id: int, lock: str, deep: bool) -> None:
     except ApiError as e:
         click.secho(f"Verify failed: {e}", fg="red")
         sys.exit(1)
+    except AnchorError as e:
+        click.secho(f"Refused: {e}", fg="red")
+        sys.exit(1)
     except LockError as e:
         click.secho("Lock invalid", fg="red", bold=True)
         for error in e.errors:
@@ -531,12 +534,16 @@ def status(experiment_id: int, lock: str | None, hours: int, deep: bool) -> None
 @click.option("--older-than", help="Only experiments at least this old, e.g. 7d, 36h, 90m")
 @click.option("--dry-run", is_flag=True, help="List candidates and exit; never delete")
 @click.option("--yes", is_flag=True, help="Skip the confirmation prompt")
-def cleanup(older_than: str | None, dry_run: bool, yes: bool) -> None:
+@click.option(
+    "--force", is_flag=True, help="Also delete candidates with in-flight (unprocessed) queues"
+)
+def cleanup(older_than: str | None, dry_run: bool, yes: bool, force: bool) -> None:
     """Delete pmspec TEST experiments only.
 
     A candidate is an experiment whose name starts with "test-" AND whose preferences carry
     pmspec.mode == "test" -- the name only narrows which experiments are fetched; the
-    preference is what actually authorises deletion.
+    preference is what actually authorises deletion. A candidate with an in-flight
+    (unprocessed) queue is skipped unless --force is given.
     """
     try:
         age = parse_age(older_than) if older_than else None
@@ -555,19 +562,31 @@ def cleanup(older_than: str | None, dry_run: bool, yes: bool) -> None:
         click.echo("No test experiments to clean up.")
         sys.exit(0)
 
-    click.echo(f"{'id':>6}  {'name':<40}  {'mode':<6}  uploaded_at")
+    click.echo(f"{'id':>6}  {'name':<40}  {'mode':<6}  {'in-flight':<9}  uploaded_at")
     for c in candidates:
-        click.echo(f"{c.experiment_id:>6}  {c.name:<40}  {c.mode:<6}  {c.uploaded_at or '-'}")
+        in_flight = "yes" if c.in_flight else "no"
+        click.echo(
+            f"{c.experiment_id:>6}  {c.name:<40}  {c.mode:<6}  {in_flight:<9}  {c.uploaded_at or '-'}"
+        )
 
     if dry_run:
         sys.exit(0)
 
-    if not yes and not click.confirm(f"Delete {len(candidates)} test experiment(s)?"):
+    in_flight_count = sum(1 for c in candidates if c.in_flight)
+    to_delete_count = len(candidates) if force else len(candidates) - in_flight_count
+    if in_flight_count and not force:
+        click.echo(
+            f"{in_flight_count} in-flight experiment(s) will be skipped (use --force to include them)."
+        )
+
+    if not yes and not click.confirm(f"Delete {to_delete_count} test experiment(s)?"):
         click.echo("Aborted.")
         sys.exit(0)
 
     try:
-        deleted = delete_experiments(session, [c.experiment_id for c in candidates])
+        result = delete_experiments(
+            session, [c.experiment_id for c in candidates], candidates=candidates, force=force
+        )
     except CleanupError as e:
         click.secho(
             f"Deleted {e.deleted} before failing on experiment {e.failed_id}: {e.cause}",
@@ -575,7 +594,11 @@ def cleanup(older_than: str | None, dry_run: bool, yes: bool) -> None:
         )
         sys.exit(1)
 
-    click.secho(f"Deleted {len(deleted)} test experiment(s).", fg="green")
+    click.secho(f"Deleted {len(result.deleted)} test experiment(s).", fg="green")
+    if result.skipped_in_flight:
+        click.secho(
+            f"Skipped {len(result.skipped_in_flight)} in-flight experiment(s).", fg="yellow"
+        )
     sys.exit(0)
 
 

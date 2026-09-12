@@ -55,6 +55,18 @@ def test_validate_reports_lock_schema_errors(tmp_path: Path):
     assert out.exit_code == 1 and "provenance" in out.output
 
 
+def test_generate_with_output_flag_prints_the_job_count(tmp_path: Path):
+    spec = _write(tmp_path)
+    CliRunner().invoke(cli, ["compile", str(spec), "--seed", "3"])
+    out_json = tmp_path / "study.json"
+    out = CliRunner().invoke(
+        cli, ["generate", str(tmp_path / "study.lock.yaml"), "-o", str(out_json)]
+    )
+    assert out.exit_code == 0, out.output
+    assert "Crawlers: 1" in out.output
+    assert "Jobs: 1" in out.output
+
+
 def test_generate_from_lock_resolves_start_at_and_keeps_placeholders(tmp_path: Path):
     spec = (
         _write(tmp_path)

@@ -76,12 +76,15 @@ _DETAIL_3 = {
 
 
 def test_cleanup_dry_run_lists_candidates_and_makes_no_delete(monkeypatch):
-    api = scripted(monkeypatch, _LISTING, _DETAIL_1, _DETAIL_3)
+    # Trailing [] answers the in-flight check (queues-unprocessed) for candidate 1.
+    api = scripted(monkeypatch, _LISTING, _DETAIL_1, _DETAIL_3, [])
 
     out = json.loads(s.pm_cleanup_test_experiments())
 
     assert out["dry_run"] is True
     assert [c["experiment_id"] for c in out["candidates"]] == [1]
+    assert out["candidates"][0]["in_flight"] is False
+    assert out["not_candidates"] == []
     assert "confirm=true" in out["to_apply"]
     assert api.writes == []
     # Only test- named experiments are ever fetched -- id 2 never is.
@@ -93,7 +96,7 @@ def test_cleanup_confirm_against_remote_target_is_refused(monkeypatch):
         pm_api_base_url = "https://pm-api.example.org/api/v1"
 
     monkeypatch.setattr(s, "get_settings", lambda: _Remote())
-    api = scripted(monkeypatch, _LISTING, _DETAIL_1, _DETAIL_3)
+    api = scripted(monkeypatch, _LISTING, _DETAIL_1, _DETAIL_3, [])
 
     out = json.loads(s.pm_cleanup_test_experiments(confirm=True))
 
@@ -102,12 +105,52 @@ def test_cleanup_confirm_against_remote_target_is_refused(monkeypatch):
 
 
 def test_cleanup_confirm_local_deletes_only_candidates(monkeypatch):
-    api = scripted(monkeypatch, _LISTING, _DETAIL_1, _DETAIL_3, {})
+    api = scripted(monkeypatch, _LISTING, _DETAIL_1, _DETAIL_3, [], {})
 
     out = json.loads(s.pm_cleanup_test_experiments(confirm=True))
 
     assert out["deleted"] == [1]
+    assert out["skipped_in_flight"] == []
     assert api.signature()[-1] == ("DELETE", "experiments/1/destroy")
+    assert all(endpoint != "experiments/3/destroy" for _, endpoint in api.signature())
+
+
+def test_cleanup_in_flight_candidate_is_skipped_unless_forced(monkeypatch):
+    # The in-flight check for candidate 1 returns a non-empty list this time.
+    api = scripted(monkeypatch, _LISTING, _DETAIL_1, _DETAIL_3, [{"id": 900}])
+
+    out = json.loads(s.pm_cleanup_test_experiments(confirm=True))
+
+    assert out["deleted"] == [] and out["skipped_in_flight"] == [1]
+    assert ("DELETE", "experiments/1/destroy") not in api.signature()
+
+
+def test_cleanup_force_deletes_an_in_flight_candidate(monkeypatch):
+    scripted(monkeypatch, _LISTING, _DETAIL_1, _DETAIL_3, [{"id": 900}], {})
+
+    out = json.loads(s.pm_cleanup_test_experiments(confirm=True, force=True))
+
+    assert out["deleted"] == [1] and out["skipped_in_flight"] == []
+
+
+def test_cleanup_experiment_ids_scopes_to_those_ids_only(monkeypatch):
+    # id 3 is listed but is not a candidate (pmspec.mode == "real").
+    scripted(monkeypatch, _LISTING, _DETAIL_1, _DETAIL_3, [])
+
+    out = json.loads(s.pm_cleanup_test_experiments(experiment_ids=[1, 3]))
+
+    assert out["dry_run"] is True
+    assert [c["experiment_id"] for c in out["candidates"]] == [1]
+    assert out["not_candidates"] == [3]
+
+
+def test_cleanup_experiment_ids_confirm_deletes_only_those_ids(monkeypatch):
+    api = scripted(monkeypatch, _LISTING, _DETAIL_1, _DETAIL_3, [], {})
+
+    out = json.loads(s.pm_cleanup_test_experiments(confirm=True, experiment_ids=[1, 3]))
+
+    assert out["deleted"] == [1]
+    assert out["not_candidates"] == [3]
     assert all(endpoint != "experiments/3/destroy" for _, endpoint in api.signature())
 
 

@@ -3,7 +3,7 @@ from click.testing import CliRunner
 
 from experiment_designer import cli as cli_module
 from experiment_designer.cli import cli
-from experiment_designer.lock.cleanup import CleanupCandidate, CleanupError
+from experiment_designer.lock.cleanup import CleanupCandidate, CleanupError, CleanupResult
 
 
 class _Status:
@@ -68,6 +68,22 @@ def test_status_reports_an_unresolvable_anchor_as_a_refusal(monkeypatch, tmp_pat
     assert "Traceback" not in out.output
 
 
+def test_verify_reports_an_unresolvable_anchor_as_a_refusal(monkeypatch, tmp_path):
+    from experiment_designer.lock.anchor import AnchorError
+
+    def _raise(*a, **k):
+        raise AnchorError("anchor '2020-01-01T00:00:00' is in the past")
+
+    monkeypatch.setattr(cli_module, "_session_from_env", lambda: object())
+    monkeypatch.setattr(cli_module, "verify_lock", _raise)
+    lock = tmp_path / "s.lock.yaml"
+    lock.write_text("pmspec_lock: 1\n")
+    out = CliRunner().invoke(cli, ["verify", "181", str(lock)])
+    assert out.exit_code == 1
+    assert "Refused" in out.output and "in the past" in out.output
+    assert "Traceback" not in out.output
+
+
 class _Diff:
     def __init__(self, identical: bool):
         self.identical = identical
@@ -125,9 +141,11 @@ def fake_cleanup(monkeypatch: pytest.MonkeyPatch):
         calls["older_than"] = older_than
         return calls.get("candidates", candidates)
 
-    def _delete(session, ids):
+    def _delete(session, ids, *, candidates=None, force=False):
         calls["deleted_ids"] = ids
-        return calls.get("deleted_result", ids)
+        calls["force"] = force
+        calls["candidates_arg"] = candidates
+        return calls.get("deleted_result", CleanupResult(deleted=ids, skipped_in_flight=[]))
 
     monkeypatch.setattr(cli_module, "_session_from_env", lambda: object())
     monkeypatch.setattr(cli_module, "find_test_experiments", _find)
@@ -142,6 +160,22 @@ def test_cleanup_dry_run_never_deletes(fake_cleanup):
     assert fake_cleanup["deleted_ids"] is None
 
 
+def test_cleanup_lists_an_in_flight_column(fake_cleanup):
+    fake_cleanup["candidates"] = [
+        CleanupCandidate(
+            experiment_id=2,
+            name="test-Study-2",
+            uploaded_at="2026-09-01",
+            mode="test",
+            in_flight=True,
+        )
+    ]
+    out = CliRunner().invoke(cli, ["cleanup", "--dry-run"])
+    assert out.exit_code == 0, out.output
+    assert "in-flight" in out.output
+    assert "yes" in out.output
+
+
 def test_cleanup_without_yes_prompts_and_a_no_answer_deletes_nothing(fake_cleanup):
     out = CliRunner().invoke(cli, ["cleanup"], input="n\n")
     assert out.exit_code == 0, out.output
@@ -153,10 +187,32 @@ def test_cleanup_with_yes_deletes_without_prompting(fake_cleanup):
     out = CliRunner().invoke(cli, ["cleanup", "--yes"])
     assert out.exit_code == 0, out.output
     assert fake_cleanup["deleted_ids"] == [1]
+    assert fake_cleanup["force"] is False
+
+
+def test_cleanup_force_flag_is_forwarded(fake_cleanup):
+    out = CliRunner().invoke(cli, ["cleanup", "--yes", "--force"])
+    assert out.exit_code == 0, out.output
+    assert fake_cleanup["force"] is True
+
+
+def test_cleanup_prompt_warns_how_many_will_be_skipped(fake_cleanup):
+    fake_cleanup["candidates"] = [
+        CleanupCandidate(
+            experiment_id=1, name="test-a", uploaded_at=None, mode="test", in_flight=True
+        ),
+        CleanupCandidate(
+            experiment_id=2, name="test-b", uploaded_at=None, mode="test", in_flight=False
+        ),
+    ]
+    out = CliRunner().invoke(cli, ["cleanup"], input="n\n")
+    assert out.exit_code == 0, out.output
+    assert "1 in-flight experiment(s) will be skipped" in out.output
+    assert "Delete 1 test experiment(s)?" in out.output
 
 
 def test_cleanup_reports_cleanup_error_and_exits_nonzero(monkeypatch, fake_cleanup):
-    def _delete(session, ids):
+    def _delete(session, ids, *, candidates=None, force=False):
         raise CleanupError([], 1, RuntimeError("boom"))
 
     monkeypatch.setattr(cli_module, "delete_experiments", _delete)
