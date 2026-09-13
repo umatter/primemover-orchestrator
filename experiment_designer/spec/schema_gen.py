@@ -614,19 +614,37 @@ def build_schema() -> dict[str, Any]:
                     "description": "Try to click (continues on failure)",
                 },
                 "type": {
-                    **_shorthand_options(
-                        "type",
-                        "Type text into field",
+                    # `type` is overloaded: it is the shorthand key for the
+                    # `type:` (enter text) job (an object), and it is also
+                    # the key a *full* job definition uses to name its API
+                    # job type (a string such as "visitjob") --
+                    # JobRegistry.is_api_type is what SpecParser and
+                    # SpecValidator use to tell the two apart at runtime, so
+                    # the schema must accept both shapes here.
+                    "anyOf": [
                         {
-                            "text": {"type": "string"},
-                            "selector": {"type": "string"},
-                            "selection_type": {"type": "string", "enum": _SELECTION_TYPES},
-                            "typing_mode": {"type": "string", "enum": _TYPING_MODES},
-                            "submit": {"type": "boolean"},
-                            "captcha_mode": {"type": "string", "enum": _CAPTCHA_MODES},
+                            "type": "string",
+                            "enum": sorted(j.api_type for j in JobRegistry.list_all()),
+                            "description": (
+                                "Full job definition: a registered API job type. See the "
+                                "`job` definition for the other allowed keys (name, "
+                                "description, active, behaviors)."
+                            ),
                         },
-                        required=["text", "selector"],
-                    ),
+                        _shorthand_options(
+                            "type",
+                            "Type text into field",
+                            {
+                                "text": {"type": "string"},
+                                "selector": {"type": "string"},
+                                "selection_type": {"type": "string", "enum": _SELECTION_TYPES},
+                                "typing_mode": {"type": "string", "enum": _TYPING_MODES},
+                                "submit": {"type": "boolean"},
+                                "captcha_mode": {"type": "string", "enum": _CAPTCHA_MODES},
+                            },
+                            required=["text", "selector"],
+                        ),
+                    ],
                 },
                 "try_type": {
                     **_shorthand_options(

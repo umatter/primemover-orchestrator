@@ -398,6 +398,18 @@ class SpecParser:
         if "template" in item:
             return self._expand_template_ref(item, defaults, templates)
 
+        # Check for a full job definition *before* the shorthand loop below:
+        # `type` is also the shorthand key for the `type:` (enter text) job,
+        # so a full job's `type: visitjob` would otherwise be caught by that
+        # shorthand -- which requires a dict value -- and error ("'type' job
+        # requires dict with 'text' and 'selector'") instead of being
+        # recognised as a full job. JobRegistry.is_api_type tells the two
+        # apart by the value's shape: a registered API type string means a
+        # full job; a dict, or any other string, still falls through to the
+        # `type:` shorthand below exactly as before.
+        if JobRegistry.is_api_type(item.get("type")):
+            return [self._normalize_job(item, defaults)]
+
         # Check for shorthand syntax (single key like 'visit', 'wait', etc.)
         shorthand_keys = [
             "visit",

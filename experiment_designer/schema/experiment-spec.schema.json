@@ -831,48 +831,75 @@
           "description": "Try to click (continues on failure)"
         },
         "type": {
-          "type": "object",
-          "description": "Type text into field",
-          "properties": {
-            "captcha_mode": {
+          "anyOf": [
+            {
               "type": "string",
               "enum": [
-                "never",
-                "always",
-                "ondemand"
-              ]
+                "clickjob",
+                "entertextfieldjob",
+                "handlealertjob",
+                "lambdasingleselectjob",
+                "scrollbydurationjob",
+                "scrollbylengthjob",
+                "singleselectjob",
+                "singleselecturljob",
+                "switchjob",
+                "tryclickjob",
+                "tryentertextfieldjob",
+                "tryhandlealertjob",
+                "tryscrollbydurationjob",
+                "tryscrollbylengthjob",
+                "tryswitchjob",
+                "visitjob",
+                "waitjob"
+              ],
+              "description": "Full job definition: a registered API job type. See the `job` definition for the other allowed keys (name, description, active, behaviors)."
             },
-            "selection_type": {
-              "type": "string",
-              "enum": [
-                "XPATH",
-                "CSS",
-                "ID",
-                "NAME"
-              ]
-            },
-            "selector": {
-              "type": "string"
-            },
-            "submit": {
-              "type": "boolean"
-            },
-            "text": {
-              "type": "string"
-            },
-            "typing_mode": {
-              "type": "string",
-              "enum": [
-                "INSTANT",
-                "SIMULATED",
-                "SIMULATED_FIXINGTYPOS"
+            {
+              "type": "object",
+              "description": "Type text into field",
+              "properties": {
+                "captcha_mode": {
+                  "type": "string",
+                  "enum": [
+                    "never",
+                    "always",
+                    "ondemand"
+                  ]
+                },
+                "selection_type": {
+                  "type": "string",
+                  "enum": [
+                    "XPATH",
+                    "CSS",
+                    "ID",
+                    "NAME"
+                  ]
+                },
+                "selector": {
+                  "type": "string"
+                },
+                "submit": {
+                  "type": "boolean"
+                },
+                "text": {
+                  "type": "string"
+                },
+                "typing_mode": {
+                  "type": "string",
+                  "enum": [
+                    "INSTANT",
+                    "SIMULATED",
+                    "SIMULATED_FIXINGTYPOS"
+                  ]
+                }
+              },
+              "additionalProperties": true,
+              "required": [
+                "text",
+                "selector"
               ]
             }
-          },
-          "additionalProperties": true,
-          "required": [
-            "text",
-            "selector"
           ]
         },
         "try_type": {

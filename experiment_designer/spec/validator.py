@@ -205,6 +205,14 @@ class SpecValidator:
     # item (see _expand_template_ref / _expand_repeat).
     _TEMPLATE_ITEM_KEYS: frozenset[str] = frozenset({"template", "repeat", "with", "jobs"})
 
+    # The only keys SpecParser._normalize_job reads on a full job definition
+    # (`type:` holding a registered API type string, e.g. `visitjob` --
+    # JobRegistry.is_api_type -- as opposed to the `type:` *shorthand*, whose
+    # value is a dict or a non-API-type string).
+    _FULL_JOB_KEYS: frozenset[str] = frozenset(
+        {"type", "name", "description", "active", "behaviors"}
+    )
+
     # The only keys DesignExpander._parse_factor reads on a design factor
     # definition. Note there is no per-factor "description" or "proportions":
     # a level's own weight is `levels[i].proportion` (singular, nested inside
@@ -808,6 +816,26 @@ class SpecValidator:
 
         if "template" in item or "repeat" in item:
             return  # not a job shorthand; everything on it was checked above
+
+        # A full job definition: `type` holds a registered API type string
+        # (e.g. `visitjob`), not a `type:` shorthand value (a dict, or a
+        # non-API-type string). Must be checked before the shorthand loop
+        # below for the same reason SpecParser._expand_workflow_item checks
+        # it first: `type` is also the shorthand key for the `type:` (enter
+        # text) job, and a full job's `type: visitjob` would otherwise be
+        # validated as that shorthand instead (and fail it, since the value
+        # is a string, not a dict). Checked as its own shape entirely
+        # separate from the shorthand path below -- an unknown key here is a
+        # stray key on the job, not an unrecognised job-shorthand option.
+        if JobRegistry.is_api_type(item.get("type")):
+            for key in item:
+                if key not in self._FULL_JOB_KEYS:
+                    self.drops.report(
+                        f"{prefix}.{key}",
+                        "stray key on a workflow item; only the first job shorthand is used",
+                        "one job per item",
+                    )
+            return
 
         # Validate job types
         job_types = [

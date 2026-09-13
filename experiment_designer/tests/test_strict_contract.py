@@ -335,6 +335,79 @@ class TestUnknownWorkflowItemDrop:
         assert parsed.dropped == 1
 
 
+class TestFullJobWorkflowItem:
+    """`type` is overloaded: it is both the key of a full job definition
+    (`type: visitjob`, a registered API type string) and the shorthand key of
+    the `type:` (enter text) job (`type: {text: ..., selector: ...}`, a
+    dict). `_expand_workflow_item`'s shorthand loop used to check `type` as a
+    shorthand key first, so a full job's `type: visitjob` was swallowed by
+    that shorthand and errored ("'type' job requires dict with 'text' and
+    'selector'") instead of being recognised as a full job -- full jobs in
+    `workflow:` have been broken since shorthand support was added.
+    `JobRegistry.is_api_type` now gates full-job detection ahead of the
+    shorthand loop in both the parser and the validator."""
+
+    FULL_JOB = BASE.replace(
+        "        - visit: https://example.com\n",
+        "        - type: visitjob\n"
+        "          name: My Visit\n"
+        "          description: go there\n"
+        "          behaviors:\n"
+        "            - {name: url, value: 'https://example.com', description: '', active: true}\n",
+    )
+
+    def test_full_job_parses_to_one_job_with_its_behaviours(self):
+        parsed = SpecParser().parse(self.FULL_JOB)
+        assert not parsed.errors, parsed.errors
+        jobs = parsed.crawlers[0]["queues"][0]["jobs"]
+        assert len(jobs) == 1
+        job = jobs[0]
+        assert job["type"] == "visitjob"
+        assert job["name"] == "My Visit"
+        assert job["behaviors"] == [
+            {
+                "name": "url",
+                "value": "https://example.com",
+                "description": "",
+                "active": True,
+            }
+        ]
+
+    def test_full_job_validates_clean(self):
+        r = _validate(self.FULL_JOB)
+        assert r.valid and r.dropped == 0, (r.errors, r.warnings)
+
+    def test_full_job_with_a_typo_key_is_a_drop(self):
+        text = self.FULL_JOB.replace("          behaviors:\n", "          behaviours:\n")
+        r = _validate(text)
+        assert not r.valid
+        assert any("behaviours" in e for e in r.errors), r.errors
+        assert r.dropped >= 1
+
+    def test_full_job_with_a_stray_key_is_a_drop(self):
+        text = self.FULL_JOB.replace(
+            "          description: go there\n",
+            "          description: go there\n          weight: 0.7\n",
+        )
+        r = _validate(text)
+        assert not r.valid
+        assert any("weight" in e for e in r.errors), r.errors
+        assert r.dropped >= 1
+
+    def test_type_shorthand_with_a_dict_still_works(self):
+        text = BASE.replace(
+            "        - visit: https://example.com\n",
+            "        - type: {text: hello, selector: '//input'}\n",
+        )
+        parsed = SpecParser().parse(text)
+        assert not parsed.errors, parsed.errors
+        jobs = parsed.crawlers[0]["queues"][0]["jobs"]
+        assert len(jobs) == 1 and jobs[0]["type"] == "entertextfieldjob"
+
+        r = _validate(text)
+        assert r.valid and r.dropped == 0, (r.errors, r.warnings)
+
+
 class TestFormatSpecs:
     """design_expander must resolve {name:spec} (e.g. {pi:.2f}), not just the
     handful of bare {name} forms -- our own shipped examples use it."""
