@@ -4,11 +4,8 @@ from pathlib import Path
 
 import pytest
 
-from experiment_designer.spec.draws import DRAW_TOKEN_RE, make_token, parse_token
-
-# NOTE: SpecConverter is imported by the Task 3 tests appended to this file
-# (draw-token resolution in the converter); not used by the parser/validator
-# tests here.
+from experiment_designer.spec.converter import SpecConverter
+from experiment_designer.spec.draws import DRAW_TOKEN_RE, is_draw, make_token, parse_token
 from experiment_designer.spec.parser import SpecParser
 from experiment_designer.spec.validator import SpecValidator
 
@@ -89,3 +86,88 @@ def test_validator_accepts_a_draw_and_rejects_other_dicts():
     )
     r = SpecValidator().validate(yaml.safe_load(counted))
     assert any("count" in e for e in r.errors)
+
+
+def test_is_draw_rejects_names_outside_the_token_charset():
+    assert is_draw({"from_pool": "queries", "field": "term"})
+    assert not is_draw({"from_pool": "qu/eries", "field": "term"})
+    assert not is_draw({"from_pool": "queries", "field": "te rm"})
+
+
+def test_validator_rejects_names_outside_the_token_charset():
+    import yaml
+
+    bad = SPEC.replace("field: term", "field: te/rm")
+    r = SpecValidator().validate(yaml.safe_load(bad))
+    assert any("with.query" in e and "letters, digits" in e for e in r.errors), r.errors
+
+
+def _convert(spec_dir, text=SPEC, seed=7):
+    parsed = SpecParser(base_dir=spec_dir, seed=seed).parse(text)
+    assert not parsed.errors, parsed.errors
+    return SpecConverter(seed=seed).convert(parsed)
+
+
+def _typed(result):
+    out = {}
+    for c in result.json_data:
+        out[c["name"]] = [
+            b["value"]
+            for q in c["queues"]
+            for j in q["jobs"]
+            for b in j["behaviors"]
+            if b["name"] == "text"
+        ]
+    return out
+
+
+def test_each_bot_draws_its_own_values_without_replacement(spec_dir):
+    r = _convert(spec_dir)
+    assert r.errors == [], r.errors
+    typed = _typed(r)
+    assert len(typed) == 6
+    for values in typed.values():
+        assert (
+            len(values) == 2
+            and len(set(values)) == 2
+            and set(values)
+            <= set(CSV.split()[1:]) | {"alpha", "beta", "gamma", "delta", "epsilon", "zeta"}
+        )
+    assert len({tuple(v) for v in typed.values()}) > 1, "bots differ"
+    assert not any(DRAW_TOKEN_RE.search(v) for vs in typed.values() for v in vs)
+
+
+def test_draws_are_deterministic_per_seed(spec_dir):
+    assert _typed(_convert(spec_dir, seed=7)) == _typed(_convert(spec_dir, seed=7))
+    assert _typed(_convert(spec_dir, seed=7)) != _typed(_convert(spec_dir, seed=8))
+
+
+def test_exhaustion_is_an_error(spec_dir):
+    (spec_dir / "queries.csv").write_text("term\nonly\n")
+    r = _convert(spec_dir)
+    assert any("exhausted" in e and "queries" in e for e in r.errors), r.errors
+
+
+def test_missing_field_column_is_an_error(spec_dir):
+    r = _convert(spec_dir, SPEC.replace("field: term", "field: nope"))
+    assert any("nope" in e and "term" in e for e in r.errors), r.errors
+
+
+def test_first_select_is_stable(spec_dir):
+    r = _convert(spec_dir, SPEC.replace("field: term}", "field: term, select: first}"))
+    assert all(v == ["alpha", "beta"] for v in _typed(r).values())
+
+
+def test_compile_never_writes_a_token(spec_dir):
+    from experiment_designer.lock.build import compile_spec
+    from experiment_designer.lock.io import dump_lock
+
+    result = compile_spec(SPEC, base_dir=spec_dir, spec_path="s.yaml", seed=7)
+    assert result.lock is not None, result.errors
+    assert "%%pmspec-draw" not in dump_lock(result.lock)
+
+
+def test_unknown_pool_draw_is_reported_by_the_strict_scan(spec_dir):
+    r = _convert(spec_dir, SPEC.replace("from_pool: queries", "from_pool: missing"))
+    assert any("unknown pool" in e and "missing" in e for e in r.errors), r.errors
+    assert any("unresolved pool draw" in e for e in r.errors), r.errors

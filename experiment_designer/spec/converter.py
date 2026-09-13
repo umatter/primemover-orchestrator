@@ -15,6 +15,7 @@ from typing import Any
 
 from .data_pools import DataPoolManager, resolve_pool_references
 from .design_expander import DesignExpander
+from .draws import DRAW_TOKEN_RE, resolve_draws
 from .drops import Drops
 from .parser import ParsedSpec, SpecParser
 from .time_utils import parse_relative_time
@@ -185,7 +186,8 @@ class SpecConverter:
         # Expand design if present
         # Extract seed from design for reproducibility
         design_seed = parsed.design.get("seed") if parsed.design else None
-        expander = DesignExpander(seed=self.seed if self.seed is not None else design_seed)
+        effective_seed = self.seed if self.seed is not None else design_seed
+        expander = DesignExpander(seed=effective_seed)
         all_crawlers = []
 
         for crawler_template in parsed.crawlers:
@@ -217,6 +219,14 @@ class SpecConverter:
             self.warnings.extend(parsed.pool_manager.warnings)
             parsed.pool_manager.errors = []
             parsed.pool_manager.warnings = []
+
+        # Resolve per-bot template draws (deferred `%%pmspec-draw:...%%` tokens
+        # from a `with: {from_pool: ..., field: ...}` value) now that each
+        # crawler's identity (name, index) is fixed -- one seeded draw sequence
+        # per crawler, without replacement within it. A token that fails to
+        # resolve is left in place; `_scan_unresolved` below reports it as a
+        # drop, so it can never reach a lock.
+        self.errors.extend(resolve_draws(all_crawlers, parsed.pool_manager, effective_seed))
 
         # A crawler without its own proxy block inherits `defaults.proxy`. Copy it
         # onto the crawler *before* pool assignment, or a pooled default
@@ -651,12 +661,20 @@ class SpecConverter:
         # not 1200: group by (token, path with every index replaced by [*]) and
         # report each group once, with the count and the first concrete path.
         groups: dict[tuple[str, str], list[str]] = {}
+        # A surviving `%%pmspec-draw:...%%` token: `resolve_draws` failed on it
+        # (unknown pool, missing field, exhaustion -- already in self.errors)
+        # and left it in place rather than guess. Reported separately so the
+        # message names it as a draw, not a plain unresolved variable.
+        draw_groups: dict[tuple[str, str], list[str]] = {}
 
         def walk(node: Any, path: str) -> None:
             if isinstance(node, str):
                 for m in _UNRESOLVED_RE.finditer(node):
                     generic = _INDEX_RE.sub("[*]", path)
                     groups.setdefault((m.group(0), generic), []).append(path)
+                for m in DRAW_TOKEN_RE.finditer(node):
+                    generic = _INDEX_RE.sub("[*]", path)
+                    draw_groups.setdefault((m.group(0), generic), []).append(path)
             elif isinstance(node, dict):
                 for k, v in node.items():
                     if k == "multilogin_profile":
@@ -686,6 +704,22 @@ class SpecConverter:
                     f"unresolved variable {token!r} would reach the bot as a literal in "
                     f"{len(places)} place(s) (first: {places[0]})",
                     fix,
+                )
+
+        draw_fix = "see the unknown-pool/missing-field/exhaustion error reported above"
+        for (token, generic), places in draw_groups.items():
+            if len(places) == 1:
+                self.drops.report(
+                    places[0],
+                    f"unresolved pool draw {token!r} would reach the bot as a literal",
+                    draw_fix,
+                )
+            else:
+                self.drops.report(
+                    generic,
+                    f"unresolved pool draw {token!r} would reach the bot as a literal in "
+                    f"{len(places)} place(s) (first: {places[0]})",
+                    draw_fix,
                 )
 
     def _deep_merge(self, base: dict[str, Any], override: dict[str, Any]) -> None:

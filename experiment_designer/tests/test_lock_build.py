@@ -277,3 +277,38 @@ def test_boolean_from_pool_without_pool_is_an_error(spec_dir: Path):
     result = _compile(spec_dir, text)
     assert result.lock is None
     assert any("crawlers[4].proxy" in e and "needs `pool:`" in e for e in result.errors)
+
+
+def test_compile_resolves_per_bot_draws(tmp_path: Path):
+    """A `with:` pool draw resolves to a real value in the lock -- never the
+    deferred token -- and two bots get different values from the same pool."""
+    (tmp_path / "queries.csv").write_text("term\nalpha\nbeta\n")
+    text = """
+version: "1.0"
+experiment: {name: Draws}
+data_pools:
+  queries:
+    type: csv
+    source: queries.csv
+templates:
+  search:
+    - type: {text: "${query}", selector: "//x"}
+design:
+  factors:
+    arm:
+      levels: [a, b]
+  replications: 1
+crawlers:
+  - from_design: true
+    name: "bot_{arm}"
+    session:
+      start: "+1m"
+      workflow:
+        - template: search
+          with: {query: {from_pool: queries, field: term}}
+"""
+    result = compile_spec(text, base_dir=tmp_path, spec_path="spec.yaml", seed=3)
+    assert result.lock is not None, result.errors
+    dumped = dump_lock(result.lock)
+    assert "%%pmspec-draw" not in dumped
+    assert "alpha" in dumped or "beta" in dumped

@@ -22,7 +22,7 @@ try:
 except ImportError:
     HAS_JSONSCHEMA = False
 
-from .draws import is_draw
+from .draws import is_draw, is_valid_name
 from .drops import Drops
 from .job_registry import JobRegistry
 from .time_utils import is_relative_time
@@ -666,7 +666,18 @@ class SpecValidator:
                 for key, value in with_block.items():
                     if not isinstance(value, dict):
                         continue  # a literal template variable, not a draw
-                    if not is_draw(value):
+                    from_pool, draw_field = value.get("from_pool"), value.get("field")
+                    if (
+                        isinstance(from_pool, str)
+                        and isinstance(draw_field, str)
+                        and not (is_valid_name(from_pool) and is_valid_name(draw_field))
+                    ):
+                        self.drops.report(
+                            f"{prefix}.with.{key}",
+                            "pool/field names may only contain letters, digits, _ . -",
+                            "rename the pool or the field so from_pool/field fit that charset",
+                        )
+                    elif not is_draw(value):
                         self.drops.report(
                             f"{prefix}.with.{key}",
                             "not a valid pool draw (missing/invalid from_pool or field)",
