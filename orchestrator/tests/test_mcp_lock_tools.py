@@ -7,6 +7,7 @@ from typing import Any
 import pytest
 
 from experiment_designer.lock.io import dump_lock
+from experiment_designer.lock.model import LOCK_FORMAT_VERSION
 from experiment_designer.tests.test_lock_io import make_lock
 from orchestrator.mcp_server import server as s
 
@@ -50,7 +51,9 @@ def test_compile_with_files_returns_a_lock():
     out = json.loads(s.compile_experiment_spec(SPEC, files=FILES, seed=5))
     assert "lock" in out, out
     assert (
-        out["lock"].startswith("pmspec_lock: 1") and out["seed"] == 5 and out["crawler_count"] == 1
+        out["lock"].startswith(f"pmspec_lock: {LOCK_FORMAT_VERSION}")
+        and out["seed"] == 5
+        and out["crawler_count"] == 1
     )
 
 

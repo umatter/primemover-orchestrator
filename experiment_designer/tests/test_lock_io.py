@@ -89,7 +89,7 @@ def test_dump_is_deterministic_and_starts_with_the_format_marker():
 def test_top_level_key_order_is_fixed():
     text = dump_lock(make_lock())
     keys = [line.split(":")[0] for line in text.splitlines() if line and not line.startswith(" ")]
-    assert keys == ["pmspec_lock", "provenance", "experiment", "schedule", "crawlers"]
+    assert keys == ["pmspec_lock", "provenance", "experiment", "schedule", "parts", "crawlers"]
 
 
 def test_round_trip():
@@ -122,7 +122,7 @@ def test_schema_rejects_start_at_in_a_lock():
 
 
 def test_load_raises_lock_error_with_all_messages():
-    text = dump_lock(make_lock()).replace("pmspec_lock: 1", "pmspec_lock: 99")
+    text = dump_lock(make_lock()).replace(f"pmspec_lock: {LOCK_FORMAT_VERSION}", "pmspec_lock: 99")
     with pytest.raises(LockError) as exc:
         load_lock(text)
     assert exc.value.errors and "pmspec_lock" in exc.value.errors[0]

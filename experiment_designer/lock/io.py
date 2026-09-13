@@ -9,9 +9,12 @@ from typing import Any
 
 import yaml
 
-from .model import LOCK_FORMAT_VERSION, Lock
+from .model import Lock
 
-_SCHEMA_PATH = Path(__file__).parent.parent / "schema" / "lock-1.schema.json"
+_SCHEMA_PATHS = {
+    1: Path(__file__).parent.parent / "schema" / "lock-1.schema.json",
+    2: Path(__file__).parent.parent / "schema" / "lock-2.schema.json",
+}
 
 
 class LockError(ValueError):
@@ -61,17 +64,18 @@ def dump_lock(lock: Lock) -> str:
 def validate_lock_dict(d: dict[str, Any]) -> list[str]:
     import jsonschema
 
-    with open(_SCHEMA_PATH) as f:
+    version = d.get("pmspec_lock")
+    schema_path = _SCHEMA_PATHS.get(version) if isinstance(version, int) else None
+    if schema_path is None:
+        return [f"pmspec_lock: expected 1 or 2, got {version!r}"]
+
+    with open(schema_path) as f:
         schema = json.load(f)
     validator = jsonschema.Draft202012Validator(schema)
     errors = []
     for e in sorted(validator.iter_errors(d), key=lambda e: list(e.absolute_path)):
         path = "/".join(str(p) for p in e.absolute_path) or "<root>"
         errors.append(f"{path}: {e.message}")
-    if d.get("pmspec_lock") != LOCK_FORMAT_VERSION:
-        errors.insert(
-            0, f"pmspec_lock: expected {LOCK_FORMAT_VERSION}, got {d.get('pmspec_lock')!r}"
-        )
     return errors
 
 

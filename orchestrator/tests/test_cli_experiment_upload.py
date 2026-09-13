@@ -6,6 +6,7 @@ import pytest
 
 from experiment_designer.lock.api import ApiError
 from experiment_designer.lock.io import dump_lock
+from experiment_designer.lock.model import LOCK_FORMAT_VERSION
 from experiment_designer.lock.upload import UploadResult
 from experiment_designer.tests.test_lock_io import make_lock
 from orchestrator.cli import cli
@@ -127,7 +128,9 @@ def test_upload_reports_an_invalid_lock_instead_of_a_traceback(
     cli_runner, tmp_path, patched_upload
 ):
     bad = tmp_path / "bad.lock.yaml"
-    bad.write_text(dump_lock(make_lock()).replace("pmspec_lock: 1", "pmspec_lock: 99"))
+    bad.write_text(
+        dump_lock(make_lock()).replace(f"pmspec_lock: {LOCK_FORMAT_VERSION}", "pmspec_lock: 99")
+    )
     out = cli_runner.invoke(cli, ["experiment", "upload", str(bad), "--mode", "test"])
     assert out.exit_code == 1, out.output
     assert "Lock invalid" in out.output and "pmspec_lock" in out.output

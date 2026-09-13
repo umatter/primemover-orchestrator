@@ -10,7 +10,9 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass, field
 from typing import Any
 
-LOCK_FORMAT_VERSION = 1
+from .parts import factor_crawlers, materialise
+
+LOCK_FORMAT_VERSION = 2
 
 
 @dataclass
@@ -33,6 +35,7 @@ class Lock:
 
     def to_dict(self) -> dict[str, Any]:
         # Key order here IS the canonical order dump_lock() writes.
+        parts, refs = factor_crawlers(self.crawlers)
         return {
             "pmspec_lock": LOCK_FORMAT_VERSION,
             "provenance": asdict(self.provenance),
@@ -43,7 +46,11 @@ class Lock:
                 "contact": self.experiment.get("contact"),
             },
             "schedule": {"anchor": self.schedule["anchor"]},
-            "crawlers": self.crawlers,
+            "parts": {
+                "queues": dict(sorted(parts["queues"].items())),
+                "agents": dict(sorted(parts["agents"].items())),
+            },
+            "crawlers": refs,
         }
 
     @classmethod
@@ -52,6 +59,10 @@ class Lock:
         prov.setdefault("generator", None)
         prov.setdefault("git_commit", None)
         prov.setdefault("lax", False)
+        if d.get("pmspec_lock") == 2:
+            crawlers = materialise(d["parts"], d["crawlers"])
+        else:
+            crawlers = list(d["crawlers"])
         return cls(
             provenance=Provenance(**prov),
             # Normalise so a lock written before `contact` existed round-trips equal.
@@ -62,5 +73,5 @@ class Lock:
                 "contact": d["experiment"].get("contact"),
             },
             schedule=dict(d["schedule"]),
-            crawlers=list(d["crawlers"]),
+            crawlers=crawlers,
         )
