@@ -846,18 +846,25 @@ implementation: `orchestrator/e2e/runner.py:_upload_experiment()`.
 
 The experiment designer uses YAML to define experiments with factorial designs: factorial
 expansion, reusable templates, parameter distributions, data pools with scoring, and relative
-timestamps (`now`, `+5m`).
+timestamps (`now`, `+5m`). A `with:` value on a `template:`/`repeat:` item can also be a per-bot
+pool draw (`{from_pool, field, select: random|first}`), taken without replacement within each
+crawler and seeded so the lock stays deterministic (`docs/experiment-designer.md` § Per-bot
+template draws).
 
 The reproducibility artifact is the *lock* (`docs/experiment-designer.md` § Locks): committed,
 hashed, bound to the experiment via `pmspec.*` preferences, checked by `pmspec verify`.
-`upload_experiment` takes a lock and a required `mode`.
+`upload_experiment` takes a lock and a required `mode`. Format 2 (`pmspec_lock: 2`, the default
+`compile` writes) factors each distinct queue/agent body once under `parts`, keyed by its own
+content hash, instead of repeating it per crawler; `validate` still accepts format 1.
 
 Day to day, once a study is running: `pmspec status <id> [lock] [--hours N] [--deep]` (provenance +
 health always; with a lock, also `verify`), `pmspec diff <lock_a> <lock_b>` (compare two locks, no
-live experiment involved), and `pmspec cleanup [--older-than 7d] [--dry-run] [--yes]`. `cleanup`
+live experiment involved), `pmspec audit <id> <lock> [--hours N] [--sample K] [--strict]` (did each
+finished lambda job apply the treatment the lock says it should, per the decision function's own
+verdict), and `pmspec cleanup [--older-than 7d] [--dry-run] [--yes]`. `cleanup`
 never deletes by name — a candidate must have a name starting `test-` **and** `pmspec.mode ==
 "test"` in its preferences, the prefix only narrows the fetch. MCP equivalents: `experiment_status`,
-`diff_locks`, `pm_cleanup_test_experiments`.
+`diff_locks`, `audit_experiment`, `pm_cleanup_test_experiments`.
 
 `pmspec compile` (and MCP `compile_experiment_spec`) is **strict by default**
 (`docs/experiment-designer.md` § The strict contract): a construct the pipeline would silently

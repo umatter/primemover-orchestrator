@@ -89,6 +89,7 @@ about execution — use `GET /experiments/{id}/health` for that.
 pmspec status 181                                    # provenance + health, no lock needed
 pmspec status 181 my-study.lock.yaml --deep          # + verify: BOUND, and jobs/behaviours too
 pmspec diff my-study.lock.yaml my-study-v2.lock.yaml # what changed between two locks
+pmspec audit 181 my-study.lock.yaml --hours 24       # did the treated bots actually get the treatment?
 pmspec cleanup --dry-run                             # list test-mode experiments eligible for deletion
 pmspec cleanup --older-than 7d --yes                 # delete them
 ```
@@ -103,6 +104,32 @@ lock is not bound or not identical, or when any job lost its treatment.
 `diff` compares two locks directly — provenance side by side, the anchor, and crawler-level
 structural differences — with no live experiment or API call. Use it before uploading a revision,
 to see exactly what would change relative to the lock already bound to a live experiment.
+
+`audit` closes the gap `verify` leaves open: `verify`/`status` prove the *lock* matches what was
+*uploaded*, not what the bots *did*. For every job in the lock that carries a `strategy` behaviour
+(see "Treatment via the decision strategy" below), matched to the live job by (crawler name, queue
+name, job ordinal) and considering only finished jobs in queues that finished inside `--hours`,
+`audit` compares the lock's expected treatment against the decision function's own reported
+verdict:
+
+| outcome | meaning |
+|---|---|
+| `ok` | the job requested and received exactly the treatment the lock's behaviours describe |
+| `unfinished` | the job's `status_code` is not yet terminal — never a failure, `--strict` or not |
+| `unreported` | the job finished but carries no decision verdict at all — unknown, not clean |
+| `mismatch` | the decision function requested a different filter set than the lock's treatment implies |
+| `lost` | `decision_treatment_lost` — the bot was configured to be treated and produced control-arm data |
+| `degraded` | some, but not all, of the requested filters applied |
+| `missing` | the lock names a crawler, queue or job ordinal with no live counterpart |
+
+`pi`/`psi`/`kappa`/`tau`/`beta` treatments under the `youtube_v1` strategy map to decision-function
+filters as `pi→mainstream_media`, `psi→children_entertainment`, `kappa→similar`, `tau→political`,
+`beta≠0→fringe`; any other strategy expects every non-empty treatment key as a filter of the same
+name, unless its schema declares `x-requested: {<key>: <filter name>}`. `audit` exits 1 on any
+`mismatch` or `lost` regardless of `--strict`; `--strict` additionally fails on `unreported`,
+`degraded` and `missing`. `--sample K` audits a seeded random sample of `K` crawlers instead of all
+of them, to bound how many jobs it reads. See `.claude/skills/primemover-debug/SKILL.md` for using
+it to diagnose a study that finished green but may have lost its treatment arm.
 
 `cleanup` never deletes by name. A candidate must have a name starting `test-` **and**
 `pmspec.mode == "test"` in its preferences — the prefix only narrows which experiments are fetched;
@@ -153,8 +180,9 @@ The `experiment:` mapping accepts an optional runner choice:
 ### Locks, provenance and verify — for generators
 
 A lock can also be *written* directly by a generator (R, Python) instead of compiled from a
-spec; `pmspec validate my.lock.yaml` checks it against
-`experiment_designer/schema/lock-1.schema.json`. Shape:
+spec; `pmspec validate my.lock.yaml` accepts either format below, checked against
+`experiment_designer/schema/lock-1.schema.json` or `lock-2.schema.json` by its own `pmspec_lock`
+value. Format 1 shape:
 
 ```yaml
 pmspec_lock: 1
@@ -166,6 +194,29 @@ crawlers:            # the API upload shape, except:
     proxy: {…, username: "${secret:k.u}", password: "${secret:k.p}"}   # placeholders, never literals
     queues:
       - start_offset: "+5m"                                            # not start_at
+```
+
+**Format 2** factors out the repetition a large study's crawlers otherwise repeat verbatim: each
+distinct queue body and agent body is written once under `parts`, keyed by a `q:`/`a:`-prefixed,
+16-hex-character sha256 of its own canonical JSON, and each crawler carries only a `{ref: "q:…",
+start_offset: "+0s"}` / `{ref: "a:…", name: …}` pointing at one. `pmspec compile` now writes format
+2 by default (a study with 300 crawlers drawn from a handful of distinct diets shrinks
+accordingly); a hand-written generator may still emit format 1, and `validate`/`load_lock`
+materialise either one back into the same full-crawler shape everything downstream (`upload`,
+`verify`, `diff`, `status`, `audit`, the MCP) already expects, so nothing else needs to change:
+
+```yaml
+pmspec_lock: 2
+parts:
+  queues:
+    q:3f9a1c2b4d5e6f70: {name: Daily diet, jobs: […]}       # everything but start_offset
+  agents:
+    a:77b0e29a1c3d4f56: {identification: mlx, location: US-IL-CHICAGO}   # everything but name
+crawlers:
+  - name: bot_01
+    agent: {ref: "a:77b0e29a1c3d4f56", name: Agent 01}
+    queues:
+      - {ref: "q:3f9a1c2b4d5e6f70", start_offset: "+0s"}
 ```
 
 Through the MCP: `compile_experiment_spec(yaml_content, files={"pool.csv": "<content>"}, seed=…)`
@@ -183,7 +234,9 @@ For checking in later, two more MCP tools mirror the CLI's day-to-day commands:
 `experiment_status(experiment_id, hours=24, lock_content=None, deep=False)` reports provenance and
 health always, and — when `lock_content` is given — the same BOUND/structural verify as
 `verify_experiment`, `deep` included, all in one call; `diff_locks(lock_a, lock_b)` compares two
-locks' provenance, anchor and crawler structure with no live experiment or API call at all.
+locks' provenance, anchor and crawler structure with no live experiment or API call at all;
+`audit_experiment(experiment_id, lock_content, hours=24, sample=None, strict=False)` mirrors
+`pmspec audit` — did each finished lambda job apply the treatment the lock says it should.
 `summarize_yaml_spec` accepts a lock as well as a spec (auto-detected), like `pmspec summary`.
 
 ## The strict contract
@@ -828,6 +881,7 @@ crawlers:
 | `verify <experiment_id> <lock> [--deep]` | Check a live experiment is bound to, and identical to, a lock |
 | `status <experiment_id> [lock] [--hours N] [--deep]` | Provenance + health of a live experiment; with a lock, also verify |
 | `diff <lock_a> <lock_b>` | Diff two locks: provenance, anchor, crawler-level structural differences |
+| `audit <experiment_id> <lock> [--hours N] [--sample K] [--strict]` | Did each finished lambda job apply the treatment the lock says it should |
 | `cleanup [--older-than 7d] [--dry-run] [--yes]` | Delete pmspec TEST experiments only (`test-` name **and** `pmspec.mode=test`) |
 | `secrets check <lock> [--secrets]` | List the secrets a lock references and which are missing |
 | `generate <file> [-o output.json] [--seed N] [--resolve-secrets]` | Convert a spec or lock to API JSON (GUI upload only; carries no provenance) |
@@ -931,6 +985,29 @@ Relative timestamps are resolved to ISO 8601 format with local timezone offset d
 A `template:`/`repeat:` item carries only `template`, `repeat`, `with` and `jobs`. There is no
 `condition:`, `weight:` or `description:` on such an item; any other key is a drop (strict
 contract above), because the parser would ignore it and every bot would run every step.
+
+### Per-bot template draws
+
+A `with:` value can draw a distinct row per bot from a data pool, instead of every bot substituting
+the same literal:
+
+```yaml
+- template: diet_search_google
+  with:
+    query: {from_pool: queries, field: term, select: random}
+    reliability: "{reliability}"          # a literal `{var}` substitution still works alongside a draw
+```
+
+- `from_pool` and `field` are required (names restricted to `[A-Za-z0-9_.-]+`); `field` names the
+  pool column substituted in. `select` is `random` (default) or `first`; `count` is not accepted —
+  one value per `with:` key, since N distinct values are N template calls.
+- **Without replacement per crawler**: every draw from the same pool by the same crawler takes a
+  row that crawler has not already drawn (across the whole session, `repeat:` included); running out
+  is a compile error naming the crawler, pool and how many draws it had already made. Draws are
+  seeded from the lock's seed and the crawler's index, so two bots draw independently but the whole
+  lock stays byte-deterministic for a given seed.
+- A `repeat:`+`template:` item draws again on every repetition, still without replacement within
+  that crawler.
 
 ## Treatment via the decision strategy (behaviours channel)
 
