@@ -65,7 +65,12 @@ def validate_lock_dict(d: dict[str, Any]) -> list[str]:
     import jsonschema
 
     version = d.get("pmspec_lock")
-    schema_path = _SCHEMA_PATHS.get(version) if isinstance(version, int) else None
+    schema_path = None
+    # bool is an int subclass in Python, so isinstance(version, int) alone is
+    # True for `pmspec_lock: true` (== 1) -- excluded explicitly so it can't
+    # silently validate against the lock-1 schema.
+    if isinstance(version, int) and not isinstance(version, bool):
+        schema_path = _SCHEMA_PATHS.get(version)
     if schema_path is None:
         return [f"pmspec_lock: expected 1 or 2, got {version!r}"]
 

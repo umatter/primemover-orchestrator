@@ -9,6 +9,7 @@ checks it on every insert.
 
 from __future__ import annotations
 
+import copy
 import hashlib
 import json
 from typing import Any
@@ -103,7 +104,12 @@ def materialise(
             key = agent_ref["ref"]
             if key not in agents:
                 raise KeyError(key)
-            agent = dict(agents[key])
+            # Every crawler referencing this part must get its own copy: a
+            # shallow dict() here would leave nested structures (e.g. a
+            # multilogin_profile dict) aliased across every crawler sharing
+            # the part, so mutating one bot's materialised agent would
+            # corrupt its siblings.
+            agent = copy.deepcopy(agents[key])
             agent["name"] = agent_ref.get("name")
             crawler["agent"] = agent
 
@@ -113,7 +119,11 @@ def materialise(
                 key = queue_ref["ref"]
                 if key not in queues:
                     raise KeyError(key)
-                queue = dict(queues[key])
+                # Same aliasing concern as the agent above, and sharper here:
+                # the body includes the `jobs` list, so without a deep copy
+                # every crawler sharing this queue part would alias the same
+                # job/behavior dicts.
+                queue = copy.deepcopy(queues[key])
                 queue["start_offset"] = queue_ref.get("start_offset")
                 new_queues.append(queue)
             crawler["queues"] = new_queues

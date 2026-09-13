@@ -93,6 +93,18 @@ def test_unknown_format_is_refused():
     assert any("pmspec_lock" in e for e in errors)
 
 
+def test_materialised_crawlers_do_not_alias_shared_parts():
+    lock = _fleet(2)
+    parts, refs = factor_crawlers(lock.crawlers)
+    crawlers = materialise(parts, refs)
+
+    crawlers[0]["queues"][0]["jobs"][0]["name"] = "mutated"
+    assert crawlers[1]["queues"][0]["jobs"][0]["name"] != "mutated"
+
+    crawlers[0]["agent"]["location"] = "mutated"
+    assert crawlers[1]["agent"]["location"] != "mutated"
+
+
 def test_dangling_ref_is_an_error():
     parts, refs = factor_crawlers(_fleet(1).crawlers)
     refs[0]["queues"][0]["ref"] = "q:0000000000000000"

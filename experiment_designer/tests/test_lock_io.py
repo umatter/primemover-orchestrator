@@ -121,6 +121,15 @@ def test_schema_rejects_start_at_in_a_lock():
     assert any("start_at" in e for e in validate_lock_dict(d))
 
 
+def test_schema_rejects_a_boolean_pmspec_lock():
+    # bool is an int subclass in Python (True == 1), so a naive isinstance(v,
+    # int) check would let `pmspec_lock: true` silently validate as format 1.
+    d = make_lock().to_dict()
+    d["pmspec_lock"] = True
+    errors = validate_lock_dict(d)
+    assert any("pmspec_lock" in e and "expected 1 or 2" in e for e in errors)
+
+
 def test_load_raises_lock_error_with_all_messages():
     text = dump_lock(make_lock()).replace(f"pmspec_lock: {LOCK_FORMAT_VERSION}", "pmspec_lock: 99")
     with pytest.raises(LockError) as exc:
