@@ -42,8 +42,28 @@
       "required": ["queues", "agents"],
       "additionalProperties": false,
       "properties": {
-        "queues": {"type": "object", "additionalProperties": {"type": "object"}},
-        "agents": {"type": "object", "additionalProperties": {"type": "object"}}
+        "queues": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "object",
+            "required": ["name", "jobs"],
+            "not": {"anyOf": [{"required": ["start_at"]}, {"required": ["start_offset"]}]},
+            "properties": {
+              "name": {"type": "string", "minLength": 1},
+              "jobs": {"type": "array"},
+              "start_at": false,
+              "start_offset": false
+            }
+          }
+        },
+        "agents": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "object",
+            "not": {"required": ["name"]},
+            "properties": {"name": false}
+          }
+        }
       }
     },
     "crawlers": {

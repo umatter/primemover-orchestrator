@@ -10,9 +10,20 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass, field
 from typing import Any
 
-from .parts import factor_crawlers, materialise
+from .parts import DanglingRefError, factor_crawlers, materialise
 
 LOCK_FORMAT_VERSION = 2
+
+
+class LockError(ValueError):
+    """A lock document that cannot be used: schema violations, an unknown
+    format, or a crawler referencing a part the file does not carry. Every
+    consumer (validate/summary/audit/verify/upload) catches this and nothing
+    else, so anything ``load_lock`` can refuse must surface as one."""
+
+    def __init__(self, errors: list[str]) -> None:
+        super().__init__("; ".join(errors))
+        self.errors = errors
 
 
 @dataclass
@@ -60,7 +71,12 @@ class Lock:
         prov.setdefault("git_commit", None)
         prov.setdefault("lax", False)
         if d.get("pmspec_lock") == 2:
-            crawlers = materialise(d["parts"], d["crawlers"])
+            try:
+                crawlers = materialise(d["parts"], d["crawlers"])
+            except DanglingRefError as e:
+                # The schema checks each ref's *shape*; only materialising
+                # can tell whether the part it names exists.
+                raise LockError([str(e)]) from e
         else:
             crawlers = list(d["crawlers"])
         return cls(

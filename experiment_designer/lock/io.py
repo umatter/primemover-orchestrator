@@ -9,18 +9,12 @@ from typing import Any
 
 import yaml
 
-from .model import Lock
+from .model import Lock, LockError
 
 _SCHEMA_PATHS = {
     1: Path(__file__).parent.parent / "schema" / "lock-1.schema.json",
     2: Path(__file__).parent.parent / "schema" / "lock-2.schema.json",
 }
-
-
-class LockError(ValueError):
-    def __init__(self, errors: list[str]) -> None:
-        super().__init__("; ".join(errors))
-        self.errors = errors
 
 
 class _CanonicalDumper(yaml.SafeDumper):

@@ -21,6 +21,30 @@ class PartCollision(ValueError):
     """Two distinct queue or agent bodies hashed to the same content-addressed key."""
 
 
+class DanglingRefError(KeyError):
+    """A crawler references a part the lock does not carry.
+
+    A ``KeyError`` so an existing ``except KeyError`` still catches it, but one
+    that knows *where* the ref sits: ``Lock.from_dict`` turns it into a
+    ``LockError`` naming ``crawlers[i].queues[j].ref`` / ``crawlers[i].agent.ref``.
+    """
+
+    def __init__(self, key: str, crawler_index: int, queue_index: int | None = None) -> None:
+        super().__init__(key)
+        self.key = key
+        self.crawler_index = crawler_index
+        self.queue_index = queue_index
+
+    @property
+    def path(self) -> str:
+        if self.queue_index is None:
+            return f"crawlers[{self.crawler_index}].agent.ref"
+        return f"crawlers[{self.crawler_index}].queues[{self.queue_index}].ref"
+
+    def __str__(self) -> str:
+        return f"{self.path}: unknown part {self.key}"
+
+
 def canonical_json(obj: Any) -> str:
     return json.dumps(obj, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
 
@@ -91,19 +115,20 @@ def materialise(
 ) -> list[dict[str, Any]]:
     """Inverse of ``factor_crawlers``: expand crawler refs back into full
     crawlers carrying complete ``agent`` and ``queues`` bodies. An unresolvable
-    ref raises ``KeyError`` naming the dangling ref."""
+    ref raises :class:`DanglingRefError` (a ``KeyError``) naming the dangling ref
+    and where it sits."""
     queues = parts.get("queues", {})
     agents = parts.get("agents", {})
     crawlers: list[dict[str, Any]] = []
 
-    for ref in refs:
+    for i, ref in enumerate(refs):
         crawler = dict(ref)
 
         agent_ref = ref.get("agent")
         if agent_ref is not None:
             key = agent_ref["ref"]
             if key not in agents:
-                raise KeyError(key)
+                raise DanglingRefError(key, i)
             # Every crawler referencing this part must get its own copy: a
             # shallow dict() here would leave nested structures (e.g. a
             # multilogin_profile dict) aliased across every crawler sharing
@@ -115,10 +140,10 @@ def materialise(
 
         if "queues" in ref:
             new_queues = []
-            for queue_ref in ref["queues"]:
+            for j, queue_ref in enumerate(ref["queues"]):
                 key = queue_ref["ref"]
                 if key not in queues:
-                    raise KeyError(key)
+                    raise DanglingRefError(key, i, j)
                 # Same aliasing concern as the agent above, and sharper here:
                 # the body includes the `jobs` list, so without a deep copy
                 # every crawler sharing this queue part would alias the same
