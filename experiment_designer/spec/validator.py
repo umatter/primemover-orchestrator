@@ -204,6 +204,53 @@ class SpecValidator:
     # item (see _expand_template_ref / _expand_repeat).
     _TEMPLATE_ITEM_KEYS: frozenset[str] = frozenset({"template", "repeat", "with", "jobs"})
 
+    # The only keys DesignExpander._parse_factor reads on a design factor
+    # definition. Note there is no per-factor "description" or "proportions":
+    # a level's own weight is `levels[i].proportion` (singular, nested inside
+    # the level item), not a factor-level key.
+    _KEYS_FACTOR: frozenset[str] = frozenset({"levels", "maps_to"})
+
+    # Per-shorthand dict-form option keys SpecParser._expand_shorthand actually
+    # reads (verified against every branch, not copied from job_registry.py's
+    # BehaviorSchema names, which are the *API* behavior names emitted after
+    # expansion -- see _BEHAVIOR_KEYS above for that distinction). Used to build
+    # the generated JSON schema's per-shorthand `options` object (schema_gen.py)
+    # and, from phase 5 task 2 on, to report an option key outside this set as a
+    # drop ("the runner never sees it"). Not wired to any drop site yet -- this
+    # task only builds the table.
+    #
+    # visit/wait have no dict form at all today: _expand_shorthand uses the
+    # scalar value directly (visit) or only accepts int/float/str
+    # (wait/_parse_duration), so a dict value here is silently mishandled, not
+    # read key-by-key.
+    _OPTION_KEYS: dict[str, frozenset[str]] = {
+        "visit": frozenset(),
+        "wait": frozenset(),
+        "click": frozenset({"selector", "selection_type", "captcha_mode", "task", "flag"}),
+        "try_click": frozenset({"selector", "selection_type", "captcha_mode", "task", "flag"}),
+        "type": frozenset(
+            {"text", "selector", "selection_type", "typing_mode", "submit", "captcha_mode"}
+        ),
+        "try_type": frozenset(
+            {"text", "selector", "selection_type", "typing_mode", "submit", "captcha_mode"}
+        ),
+        "scroll": frozenset({"duration", "direction"}),
+        "try_scroll": frozenset({"duration", "direction"}),
+        "scroll_length": frozenset({"pixels", "length", "direction"}),
+        "try_scroll_length": frozenset({"pixels", "length", "direction"}),
+        "lambda_select": frozenset(
+            {"task", "link_type", "function", "link_value", "captcha_mode", "strategy", "treatment"}
+        ),
+        # switch/try_switch/single_select/single_select_url share one code
+        # branch in _expand_shorthand, so they share one option-key set.
+        "single_select": frozenset({"selector", "target", "selection_type", "captcha_mode"}),
+        "single_select_url": frozenset({"selector", "target", "selection_type", "captcha_mode"}),
+        "switch": frozenset({"selector", "target", "selection_type", "captcha_mode"}),
+        "try_switch": frozenset({"selector", "target", "selection_type", "captcha_mode"}),
+        "handle_alert": frozenset({"action"}),
+        "try_handle_alert": frozenset({"action"}),
+    }
+
     def __init__(
         self,
         schema_path: str | None = None,
@@ -423,17 +470,36 @@ class SpecValidator:
                 check(queue, self._KEYS_SESSION, f"{prefix}.queues[{j}]")
 
     def _validate_schema(self, spec: dict[str, Any]) -> list[str]:
-        """Validate against JSON Schema."""
+        """Validate against JSON Schema.
+
+        Since schema_gen.py builds the schema's object definitions from the
+        exact key sets `_validate_unknown_keys`/`_validate_workflow_item` use
+        for their own "unknown key"/"unknown job type" checks, every
+        ``additionalProperties`` violation this schema can raise is -- by
+        construction -- already reported (and, under ``--lax``, downgraded to
+        a warning) by one of those two, lax-aware, drop sites. Surfacing the
+        same violation here too, as a hard error jsonschema has no concept of
+        ``--lax`` for, would make a spec whose only problem is a
+        lax-downgraded drop still fail ``--lax`` validation. So
+        ``additionalProperties`` errors are filtered out here; every other
+        kind of schema violation (required/type/enum/pattern/...) is not
+        covered by those checks and is still reported as before.
+        """
         if not HAS_JSONSCHEMA or not self.schema:
             return []
 
         errors = []
         try:
-            jsonschema.validate(spec, self.schema)
-        except jsonschema.ValidationError as e:
-            # Get a human-readable path
-            path = ".".join(str(p) for p in e.absolute_path) if e.absolute_path else "root"
-            errors.append(f"Schema validation error at '{path}': {e.message}")
+            validator = jsonschema.Draft7Validator(self.schema)
+            relevant = (
+                e for e in validator.iter_errors(spec) if e.validator != "additionalProperties"
+            )
+            best = jsonschema.exceptions.best_match(relevant)
+            if best is not None:
+                path = (
+                    ".".join(str(p) for p in best.absolute_path) if best.absolute_path else "root"
+                )
+                errors.append(f"Schema validation error at '{path}': {best.message}")
         except jsonschema.SchemaError as e:
             errors.append(f"Schema error: {e.message}")
 

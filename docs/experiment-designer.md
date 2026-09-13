@@ -331,6 +331,21 @@ session. It requires a `session` to add to (an error otherwise) and cannot be co
 bare `queues:` list on the same crawler. Each entry is checked exactly like `session` itself
 (unknown keys, missing start time, …).
 
+### Generated JSON Schema
+
+`experiment_designer/schema/experiment-spec.schema.json` is generated, not hand-written — run
+`make schema` (`python -m experiment_designer.spec.schema_gen`) after changing any `_KEYS_*`,
+`_OPTION_KEYS` or `_KNOWN_PARAMS` table in `spec/validator.py`, or the job registry.
+`experiment_designer/tests/test_schema_gen.py::test_checked_in_schema_is_generated` fails if the
+checked-in file and the generator's output disagree, so a table changed without regenerating is
+caught in CI rather than by the next person who edits the schema by hand and re-introduces drift.
+Every structural object (`experiment`, `defaults`, `design`, a factor, a crawler, its
+`configuration`/`proxy`/`agent`/`session`) sets `additionalProperties: false` from the same key
+set `_validate_unknown_keys` checks, so the two can no longer disagree; a per-job shorthand's
+options (e.g. `click: {selector, task, flag, ...}`) and `configuration.params` stay
+`additionalProperties: true`, since an unknown key there is the *validator's* drop to report
+(downgradable under `--lax`), not a hard schema rejection.
+
 ## Installation
 
 ```bash
@@ -1096,9 +1111,10 @@ experiment_designer/
 │   ├── file_loader.py      # External file loading (Phase 4)
 │   ├── distributions.py    # Parameter distributions (Phase 4)
 │   ├── expression.py       # Safe expression evaluator (Phase 4)
-│   └── data_pools.py       # Data pool management (Phase 4)
+│   ├── data_pools.py       # Data pool management (Phase 4)
+│   └── schema_gen.py       # Generates schema/experiment-spec.schema.json (Phase 5)
 ├── schema/
-│   └── experiment-spec.schema.json
+│   └── experiment-spec.schema.json  # Generated -- do not hand-edit, run `make schema`
 ├── examples/
 │   ├── data/
 │   │   ├── outlets_pool.csv      # Example media outlets

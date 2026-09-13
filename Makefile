@@ -10,7 +10,7 @@
 .PHONY: help prereqs setup-server setup setup-quick install venv clean \
         up down restart status doctor \
         db-migrate db-seed db-reset db-init \
-        test test-cov lint lint-sh format typecheck check \
+        test test-cov schema lint lint-sh format typecheck check \
         docker-build docker-run \
         pre-commit hooks \
         compat-check
@@ -43,6 +43,7 @@ help:
 	@echo "Development:"
 	@echo "  make test         - Run tests"
 	@echo "  make test-cov     - Run tests with coverage"
+	@echo "  make schema       - Regenerate experiment-spec.schema.json from the validator"
 	@echo "  make lint         - Run linter (ruff)"
 	@echo "  make format       - Format code (black)"
 	@echo "  make typecheck    - Run type checker (mypy)"
@@ -203,6 +204,13 @@ test:
 
 test-cov:
 	$(VENV_BIN)/pytest --cov=orchestrator --cov=experiment_designer --cov-report=term-missing
+
+# Regenerate experiment_designer/schema/experiment-spec.schema.json from
+# SpecValidator's key sets and the job registry (see spec/schema_gen.py).
+# Run after changing any _KEYS_*/_OPTION_KEYS table in spec/validator.py;
+# test_schema_gen.py fails CI if the checked-in file drifts from this.
+schema:
+	$(VENV_PYTHON) -m experiment_designer.spec.schema_gen
 
 lint:
 	$(VENV_BIN)/ruff check orchestrator/ experiment_designer/ scripts/
