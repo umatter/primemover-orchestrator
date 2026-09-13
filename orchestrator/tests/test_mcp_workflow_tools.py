@@ -27,6 +27,77 @@ def test_experiment_status_tool(monkeypatch):
     assert out["ok"] is True and out["uploads"][0]["label"] == "upload 1" and "render" in out
 
 
+def _lock_text() -> str:
+    from experiment_designer.lock.io import dump_lock
+    from experiment_designer.tests.test_lock_io import make_lock
+
+    return dump_lock(make_lock())
+
+
+def test_audit_experiment_tool(monkeypatch):
+    from experiment_designer.lock.audit import AuditResult, JobFinding
+
+    result = AuditResult(
+        experiment_id=181,
+        hours=24,
+        sampled=1,
+        total=1,
+        findings=[
+            JobFinding("bot_01", "s1", 1, 900, "pi=1,psi=0,kappa=0,tau=0", "ok", ""),
+            JobFinding(
+                "bot_01", "s1", 2, 901, "pi=1,psi=0,kappa=0,tau=0", "lost", "treatment_lost"
+            ),
+        ],
+    )
+    calls = {}
+
+    def _audit_experiment(session, experiment_id, lock_text, **kwargs):
+        calls["experiment_id"] = experiment_id
+        calls.update(kwargs)
+        return result
+
+    monkeypatch.setattr(s, "audit_experiment", _audit_experiment)
+    out = json.loads(s.audit_experiment_tool(181, _lock_text(), hours=6, sample=2, strict=True))
+
+    assert out["experiment_id"] == 181
+    assert out["ok"] is False
+    assert out["sampled"] == 1 and out["total"] == 1
+    assert {"arm": "pi=1,psi=0,kappa=0,tau=0", "outcome": "lost", "n": 1} in out["counts"]
+    assert {"arm": "pi=1,psi=0,kappa=0,tau=0", "outcome": "ok", "n": 1} in out["counts"]
+    assert len(out["findings"]) == 2
+    assert out["findings"][1] == {
+        "crawler": "bot_01",
+        "queue": "s1",
+        "ordinal": 2,
+        "job_id": 901,
+        "arm": "pi=1,psi=0,kappa=0,tau=0",
+        "outcome": "lost",
+        "detail": "treatment_lost",
+    }
+    assert "render" in out
+    assert calls["experiment_id"] == 181
+    assert calls["hours"] == 6 and calls["sample"] == 2 and calls["strict"] is True
+
+
+def test_audit_experiment_tool_caps_findings_at_50(monkeypatch):
+    from experiment_designer.lock.audit import AuditResult, JobFinding
+
+    findings = [JobFinding("bot", "s1", i, i, "arm", "ok", "") for i in range(60)]
+    result = AuditResult(experiment_id=1, hours=24, sampled=1, total=1, findings=findings)
+    monkeypatch.setattr(s, "audit_experiment", lambda *a, **k: result)
+    out = json.loads(s.audit_experiment_tool(1, _lock_text()))
+    assert len(out["findings"]) == 50
+
+
+def test_audit_experiment_tool_invalid_lock_never_calls_audit_experiment(monkeypatch):
+    def _raise(*a, **k):
+        raise AssertionError("audit_experiment should not be reached with an invalid lock")
+
+    monkeypatch.setattr(s, "audit_experiment", _raise)
+    out = json.loads(s.audit_experiment_tool(181, "not a lock"))
+    assert out["error"] == "invalid lock"
+
+
 def test_diff_locks_tool(monkeypatch):
     from experiment_designer.lock.diff import LockDiff
 

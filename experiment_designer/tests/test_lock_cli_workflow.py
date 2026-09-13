@@ -68,6 +68,149 @@ def test_status_reports_an_unresolvable_anchor_as_a_refusal(monkeypatch, tmp_pat
     assert "Traceback" not in out.output
 
 
+def _minimal_lock_text() -> str:
+    from experiment_designer.lock.io import dump_lock
+    from experiment_designer.lock.model import Lock, Provenance
+
+    crawler = {
+        "name": "bot",
+        "description": "d",
+        "configuration": {
+            "name": "c",
+            "description": "d",
+            "active": 1,
+            "params": {},
+            "preferences": [],
+        },
+        "proxy": {},
+        "agent": {"name": "a", "identification": "mlx", "location": "US-NC", "active": True},
+        "queues": [
+            {
+                "name": "s1",
+                "description": "d",
+                "start_offset": "+5m",
+                "timezone": "Europe/Zurich",
+                "timezone_utc_offset": "+02:00",
+                "active": True,
+                "jobs": [],
+            }
+        ],
+    }
+    lock = Lock(
+        provenance=Provenance(
+            spec_path="s.yaml",
+            spec_sha256="0" * 64,
+            generator=None,
+            git_commit=None,
+            pmspec_version="0.1.0",
+            seed=1,
+        ),
+        experiment={"name": "E", "description": "", "runner_user_id": None, "contact": None},
+        schedule={"anchor": "2026-01-01T00:00:00+01:00"},
+        crawlers=[crawler],
+    )
+    return dump_lock(lock)
+
+
+class _Audit:
+    def __init__(self, ok_value: bool):
+        self.ok_value = ok_value
+        self.ok_calls: list[bool] = []
+
+    def ok(self, strict: bool) -> bool:
+        self.ok_calls.append(strict)
+        return self.ok_value
+
+    def render(self):
+        return "AUDIT-RENDER-OK" if self.ok_value else "AUDIT-RENDER-BAD"
+
+
+@pytest.fixture
+def fake_audit(monkeypatch: pytest.MonkeyPatch):
+    calls = {}
+
+    def _audit_experiment(
+        session, experiment_id, lock_text, *, hours=24, sample=None, strict=False, schemas=None
+    ):
+        calls["experiment_id"] = experiment_id
+        calls["hours"] = hours
+        calls["sample"] = sample
+        calls["strict"] = strict
+        calls["schemas"] = schemas
+        return calls.get("result", _Audit(True))
+
+    monkeypatch.setattr(cli_module, "_session_from_env", lambda: object())
+    monkeypatch.setattr(cli_module, "audit_experiment", _audit_experiment)
+    return calls
+
+
+def test_audit_prints_render_and_exits_zero_when_ok(fake_audit, tmp_path):
+    lock = tmp_path / "e.lock.yaml"
+    lock.write_text(_minimal_lock_text())
+    out = CliRunner().invoke(cli, ["audit", "181", str(lock)])
+    assert out.exit_code == 0, out.output
+    assert "AUDIT-RENDER-OK" in out.output
+    assert fake_audit["experiment_id"] == 181
+    assert fake_audit["hours"] == 24
+    assert fake_audit["sample"] is None
+    assert fake_audit["strict"] is False
+    assert fake_audit["schemas"] == {}
+
+
+def test_audit_exit_code_follows_ok_false(fake_audit, tmp_path):
+    fake_audit["result"] = _Audit(False)
+    lock = tmp_path / "e.lock.yaml"
+    lock.write_text(_minimal_lock_text())
+    out = CliRunner().invoke(cli, ["audit", "181", str(lock)])
+    assert out.exit_code == 1
+    assert "AUDIT-RENDER-BAD" in out.output
+
+
+def test_audit_passes_hours_sample_and_strict_through(fake_audit, tmp_path):
+    result = _Audit(True)
+    fake_audit["result"] = result
+    lock = tmp_path / "e.lock.yaml"
+    lock.write_text(_minimal_lock_text())
+    out = CliRunner().invoke(
+        cli, ["audit", "181", str(lock), "--hours", "6", "--sample", "3", "--strict"]
+    )
+    assert out.exit_code == 0, out.output
+    assert fake_audit["hours"] == 6
+    assert fake_audit["sample"] == 3
+    assert fake_audit["strict"] is True
+    assert result.ok_calls == [True]
+
+
+def test_audit_reports_an_unresolvable_anchor_as_a_refusal(monkeypatch, tmp_path):
+    from experiment_designer.lock.anchor import AnchorError
+
+    def _raise(*a, **k):
+        raise AnchorError("anchor '2020-01-01T00:00:00' is in the past")
+
+    monkeypatch.setattr(cli_module, "_session_from_env", lambda: object())
+    monkeypatch.setattr(cli_module, "audit_experiment", _raise)
+    lock = tmp_path / "e.lock.yaml"
+    lock.write_text(_minimal_lock_text())
+    out = CliRunner().invoke(cli, ["audit", "181", str(lock)])
+    assert out.exit_code == 1
+    assert "Refused" in out.output and "in the past" in out.output
+    assert "Traceback" not in out.output
+
+
+def test_audit_reports_an_invalid_lock_before_ever_calling_audit_experiment(monkeypatch, tmp_path):
+    def _raise(*a, **k):
+        raise AssertionError("audit_experiment should not be reached with an invalid lock")
+
+    monkeypatch.setattr(cli_module, "_session_from_env", lambda: object())
+    monkeypatch.setattr(cli_module, "audit_experiment", _raise)
+    lock = tmp_path / "bad.lock.yaml"
+    lock.write_text("pmspec_lock: 1\nprovenance: {}\n")
+    out = CliRunner().invoke(cli, ["audit", "181", str(lock)])
+    assert out.exit_code == 1
+    assert "Lock invalid" in out.output
+    assert "Traceback" not in out.output
+
+
 def test_verify_reports_an_unresolvable_anchor_as_a_refusal(monkeypatch, tmp_path):
     from experiment_designer.lock.anchor import AnchorError
 

@@ -13,6 +13,7 @@ Commands:
     pmspec upload <file.yaml|.lock.yaml>  Upload a lock (compiling a spec first) and verify it
     pmspec verify <exp_id> <lock>     Check a live experiment is bound to, and identical to, a lock
     pmspec status <exp_id> [lock]     Provenance + health of a live experiment; with lock, also verify
+    pmspec audit <exp_id> <lock>      Did finished jobs apply the treatment the lock says they should
     pmspec diff <lock_a> <lock_b>     Diff two locks: provenance, anchor, crawler-level differences
     pmspec secrets check <lock>       List a lock's secret placeholders and which are missing
     pmspec schema jobs                List all job types
@@ -40,6 +41,7 @@ except ImportError:
 
 from .lock.anchor import AnchorError
 from .lock.api import ApiError, ApiSession
+from .lock.audit import audit_experiment, lock_strategies
 from .lock.build import compile_spec, merge_reports, parse_and_convert, parser_seed
 from .lock.cleanup import CleanupError, delete_experiments, find_test_experiments, parse_age
 from .lock.diff import diff_locks
@@ -533,6 +535,74 @@ def status(experiment_id: int, lock: str | None, hours: int, deep: bool) -> None
         sys.exit(1)
     click.echo(st.render())
     sys.exit(0 if st.ok else 1)
+
+
+def _strategy_schemas_for_lock(lock: Lock, base_dir: Path) -> dict[str, dict[str, Any]]:
+    """Resolve every strategy the lock's jobs name to its JSON schema.
+
+    Mirrors how ``pmspec validate`` resolves a spec's ``strategy_schemas``:
+    ``SpecValidator(base_dir=...)`` is built with no spec-supplied
+    ``strategy_schemas`` (the lock format carries none), so each lookup falls
+    through to ``PMSPEC_STRATEGY_SCHEMA_DIRS`` or the sibling ``bot-decision-yt``
+    checkout. A ``strategy_schemas`` directory placed next to the lock and
+    pointed at by ``PMSPEC_STRATEGY_SCHEMA_DIRS`` works the same way it would
+    for a spec. A strategy with no resolvable schema (``youtube_v1`` included --
+    it needs none, since :func:`~experiment_designer.lock.audit.expected_filters`
+    hard-codes its table) is simply left out; ``audit_experiment`` falls back to
+    the generic truthy-key rule for any strategy missing from ``schemas``.
+    """
+    validator = SpecValidator(base_dir=base_dir)
+    schemas: dict[str, dict[str, Any]] = {}
+    for strategy in sorted(lock_strategies(lock)):
+        schema = validator._strategy_schema(strategy, "audit")
+        if schema is not None:
+            schemas[strategy] = schema
+    return schemas
+
+
+@cli.command()
+@click.argument("experiment_id", type=int)
+@click.argument("lock", type=click.Path(exists=True))
+@click.option("--hours", default=24, show_default=True, type=int, help="Audit window")
+@click.option("--sample", type=int, default=None, help="Audit a seeded random sample of K crawlers")
+@click.option(
+    "--strict", is_flag=True, help="Also fail on unreported/degraded/missing decision reports"
+)
+def audit(experiment_id: int, lock: str, hours: int, sample: int | None, strict: bool) -> None:
+    """Did each finished lambda job in EXPERIMENT_ID apply the treatment LOCK says it should?"""
+    session = _session_from_env()
+    lock_text = Path(lock).read_text()
+    try:
+        parsed = load_lock(lock_text)
+    except LockError as e:
+        click.secho("Lock invalid", fg="red", bold=True)
+        for error in e.errors:
+            click.secho(f"  ERROR: {error}", fg="red")
+        sys.exit(1)
+    schemas = _strategy_schemas_for_lock(parsed, Path(lock).parent)
+    try:
+        result = audit_experiment(
+            session,
+            experiment_id,
+            lock_text,
+            hours=hours,
+            sample=sample,
+            strict=strict,
+            schemas=schemas,
+        )
+    except ApiError as e:
+        click.secho(f"Audit failed: {e}", fg="red")
+        sys.exit(1)
+    except AnchorError as e:
+        click.secho(f"Refused: {e}", fg="red")
+        sys.exit(1)
+    except LockError as e:
+        click.secho("Lock invalid", fg="red", bold=True)
+        for error in e.errors:
+            click.secho(f"  ERROR: {error}", fg="red")
+        sys.exit(1)
+    click.echo(result.render())
+    sys.exit(0 if result.ok(strict) else 1)
 
 
 @cli.command()

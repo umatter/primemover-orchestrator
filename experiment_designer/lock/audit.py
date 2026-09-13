@@ -56,6 +56,7 @@ from typing import Any
 from orchestrator import status as status_mod
 
 from .io import load_lock
+from .model import Lock
 from .verify import _paginate
 
 #: The decision function's own table (``lambda_function.py`` ~L996-1004):
@@ -227,6 +228,29 @@ def _arm_label(crawler: dict[str, Any]) -> str:
 
 def _behaviors(job: dict[str, Any]) -> dict[str, Any]:
     return {b["name"]: b.get("value") for b in job.get("behaviors", [])}
+
+
+def lock_strategies(lock: Lock) -> set[str]:
+    """Every distinct ``strategy`` behaviour value named across the lock's jobs.
+
+    The lock itself carries no schemas (see the module docstring), so a caller
+    building ``schemas=`` for :func:`audit_experiment` -- to resolve ``x-requested``
+    for a non-``youtube_v1`` strategy -- first needs to know which strategy names
+    to look up at all. Resolve each one the way ``pmspec validate`` resolves a
+    spec's own ``strategy_schemas``: via
+    ``experiment_designer.spec.validator.SpecValidator._strategy_schema``, which
+    honours an inline/path ``strategy_schemas`` entry (only ever present on a
+    spec, never a lock), then ``PMSPEC_STRATEGY_SCHEMA_DIRS``, then the sibling
+    ``bot-decision-yt`` checkout.
+    """
+    strategies: set[str] = set()
+    for crawler in lock.crawlers:
+        for queue in crawler.get("queues", []):
+            for job in queue.get("jobs", []):
+                strategy = _behaviors(job).get("strategy")
+                if strategy:
+                    strategies.add(str(strategy))
+    return strategies
 
 
 def _wall(value: Any) -> str:

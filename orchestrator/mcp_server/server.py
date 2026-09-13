@@ -16,6 +16,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from experiment_designer.lock.audit import audit_experiment, lock_strategies
 from experiment_designer.lock.build import compile_spec
 from experiment_designer.lock.cleanup import delete_experiments, find_test_experiments, parse_age
 from experiment_designer.lock.diff import diff_locks
@@ -2723,6 +2724,93 @@ def experiment_status_tool(
             "bound_to_any_lock": st.bound_to_any_lock,
             "verify": verify_payload,
             "render": st.render(),
+        }
+    )
+
+
+@mcp.tool(name="audit_experiment")
+def audit_experiment_tool(
+    experiment_id: int,
+    lock_content: str,
+    hours: int = 24,
+    sample: int | None = None,
+    strict: bool = False,
+) -> str:
+    """Did each finished lambda job in the live experiment apply the treatment its lock says
+    it should? Read-only: matches lock jobs to live jobs by (crawler, queue, ordinal) and
+    compares the decision function's own reported verdict against what the lock's behaviours
+    expected.
+
+    Args:
+        experiment_id: the live experiment to audit
+        lock_content: the lock text describing what each job should have requested
+        hours: only consider queues/jobs finished within this many hours
+        sample: audit a seeded random sample of this many crawlers instead of all of them
+        strict: also fail (`ok`) on unreported/degraded/missing decision reports, not just
+            an outright mismatch or a lost treatment
+
+    Strategy schemas for a non-``youtube_v1`` strategy's ``x-requested`` mapping are resolved
+    via ``SpecValidator(base_dir=None)._strategy_schema`` -- a lock has no directory of its
+    own here, so only ``PMSPEC_STRATEGY_SCHEMA_DIRS`` and the sibling ``bot-decision-yt``
+    checkout are consulted (the CLI additionally honours a ``strategy_schemas`` path next to
+    the lock file, which does not apply to lock text passed in over MCP).
+
+    Returns:
+        JSON: {"experiment_id", "ok", "sampled", "total", "counts": [{"arm", "outcome", "n"}],
+        "findings": [first 50 as dicts], "render"}.
+    """
+    from experiment_designer.spec.validator import SpecValidator
+
+    try:
+        parsed = load_lock(lock_content)
+    except LockError as e:
+        return json.dumps({"error": "invalid lock", "errors": e.errors})
+
+    validator = SpecValidator(base_dir=None)
+    schemas: dict[str, dict[str, Any]] = {}
+    for strategy in sorted(lock_strategies(parsed)):
+        schema = validator._strategy_schema(strategy, "audit")
+        if schema is not None:
+            schemas[strategy] = schema
+
+    try:
+        result = audit_experiment(
+            _McpSession(),
+            experiment_id,
+            lock_content,
+            hours=hours,
+            sample=sample,
+            strict=strict,
+            schemas=schemas,
+        )
+    except LockError as e:
+        return json.dumps({"error": "invalid lock", "errors": e.errors})
+    except Exception as e:
+        return json.dumps({"error": str(e)})
+
+    return json.dumps(
+        {
+            "experiment_id": result.experiment_id,
+            "ok": result.ok(strict),
+            "sampled": result.sampled,
+            "total": result.total,
+            "counts": [
+                {"arm": arm, "outcome": outcome, "n": n}
+                for (arm, outcome), n in sorted(result.counts().items())
+            ],
+            "findings": [
+                {
+                    "crawler": f.crawler,
+                    "queue": f.queue,
+                    "ordinal": f.ordinal,
+                    "job_id": f.job_id,
+                    "arm": f.arm,
+                    "outcome": f.outcome,
+                    "detail": f.detail,
+                }
+                for f in result.findings[:50]
+            ],
+            "render": result.render(),
         }
     )
 
