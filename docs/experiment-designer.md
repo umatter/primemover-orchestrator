@@ -107,16 +107,20 @@ to see exactly what would change relative to the lock already bound to a live ex
 
 `audit` closes the gap `verify` leaves open: `verify`/`status` prove the *lock* matches what was
 *uploaded*, not what the bots *did*. For every job in the lock that carries a `strategy` behaviour
-(see "Treatment via the decision strategy" below), matched to the live job by (crawler name, queue
-name, job ordinal) and considering only finished jobs in queues that finished inside `--hours`,
-`audit` compares the lock's expected treatment against the decision function's own reported
-verdict:
+(see "Treatment via the decision strategy" below) — or, with no `strategy`, every
+`lambdasingleselectjob`, which is a **params-based** YouTube study (the standing treatment canary,
+the e2e scenarios): its treatment is read from the crawler's `configuration.params`
+(`pi`/`psi`/`kappa`/`tau`/`beta`) and audited under `youtube_v1` — matched to the live job by
+(crawler name, queue name, job ordinal; queues sharing a name are ordered by `start_offset`) and
+considering only finished jobs in queues that finished inside `--hours`, `audit` compares the
+lock's expected treatment against the decision function's own reported verdict:
 
 | outcome | meaning |
 |---|---|
 | `ok` | the job requested and received exactly the treatment the lock's behaviours describe |
-| `unfinished` | the job's `status_code` is not yet terminal — never a failure, `--strict` or not |
-| `unreported` | the job finished but carries no decision verdict at all — unknown, not clean |
+| `unfinished` | the job's `status_code` is a running state — never a failure, `--strict` or not |
+| `shape` | the live job at this ordinal is a different `type` than the lock's — the queue drifted and nothing at that ordinal can be trusted; always a failure |
+| `unreported` | the job finished but carries no decision verdict at all (or a NULL/unrecognised `status_code`) — unknown, not clean |
 | `mismatch` | the decision function requested a different filter set than the lock's treatment implies |
 | `lost` | `decision_treatment_lost` — the bot was configured to be treated and produced control-arm data |
 | `degraded` | some, but not all, of the requested filters applied |
@@ -125,11 +129,18 @@ verdict:
 `pi`/`psi`/`kappa`/`tau`/`beta` treatments under the `youtube_v1` strategy map to decision-function
 filters as `pi→mainstream_media`, `psi→children_entertainment`, `kappa→similar`, `tau→political`,
 `beta≠0→fringe`; any other strategy expects every non-empty treatment key as a filter of the same
-name, unless its schema declares `x-requested: {<key>: <filter name>}`. `audit` exits 1 on any
-`mismatch` or `lost` regardless of `--strict`; `--strict` additionally fails on `unreported`,
-`degraded` and `missing`. `--sample K` audits a seeded random sample of `K` crawlers instead of all
-of them, to bound how many jobs it reads. See `.claude/skills/primemover-debug/SKILL.md` for using
-it to diagnose a study that finished green but may have lost its treatment arm.
+name, unless its schema declares `x-requested: {<key>: <filter name>}`. Two filters are **hygiene**,
+not treatment, and never count as a mismatch in either direction: `children_entertainment` runs for
+every crawler (the decision function reports it `ok` unconditionally and the runner persists it in
+`requested`, psi or not) and `already_watched` is always-on history filtering. A consequence: **`psi`
+cannot be verified from the report** — the filter's state is `ok` for `psi=0` and `psi=1` alike.
+`audit` exits 1 on any `shape`, `mismatch` or `lost` regardless of `--strict`; `--strict`
+additionally fails on `unreported`, `degraded` and `missing`, and on an audit that examined **no job
+at all** (a window that excludes everything is not a clean run; the report says so either way).
+`--sample K` audits a seeded random sample of `K` crawlers instead of all of them, to bound how many
+jobs it reads; `--hours` and `--sample` must be at least 1. See
+`.claude/skills/primemover-debug/SKILL.md` for using it to diagnose a study that finished green but
+may have lost its treatment arm.
 
 `cleanup` never deletes by name. A candidate must have a name starting `test-` **and**
 `pmspec.mode == "test"` in its preferences — the prefix only narrows which experiments are fetched;
@@ -1005,7 +1016,11 @@ the same literal:
   row that crawler has not already drawn (across the whole session, `repeat:` included); running out
   is a compile error naming the crawler, pool and how many draws it had already made. Draws are
   seeded from the lock's seed and the crawler's index, so two bots draw independently but the whole
-  lock stays byte-deterministic for a given seed.
+  lock stays byte-deterministic for a given seed. Because the key is the crawler *index*, adding a
+  crawler or a replication in the middle of the list reshuffles every later bot's draws — treat a
+  recompile after such an edit as a new draw, not a preserved one.
+- `select` outside `random`/`first` is refused on every path (compile, `orchestrator experiment
+  generate`, the MCP), not shipped to the bot as an unresolvable token.
 - A `repeat:`+`template:` item draws again on every repetition, still without replacement within
   that crawler.
 

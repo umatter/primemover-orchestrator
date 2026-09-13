@@ -67,8 +67,10 @@ explain the symptom.
 If the question is specifically **"did the treated bots actually get the treatment"** — not just
 "did the run finish" — reach for **`audit_experiment(experiment_id, lock_content, hours=24,
 sample=None, strict=False)`** (CLI: `pmspec audit`) instead of walking Step 5 by hand for every job.
-It matches each lock job carrying a `strategy` behaviour to its live counterpart and reports one of
-`ok | unreported | mismatch | lost | degraded | missing | unfinished` per job, aggregated by arm —
+It matches each lock job carrying a `strategy` behaviour (or, without one, each
+`lambdasingleselectjob`, audited from the crawler's `configuration.params`) to its live counterpart
+and reports one of `ok | shape | unreported | mismatch | lost | degraded | missing | unfinished` per
+job, aggregated by arm —
 `lost` is the same `treatment_lost` alarm Step 5 below investigates manually, found in bulk instead
 of one job at a time. Use Step 5 to explain *why* a specific job came back `lost`/`degraded` once
 `audit_experiment` has told you which ones did.
