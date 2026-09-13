@@ -59,7 +59,7 @@ act on. Never guess an id — read it.
   `upload_experiment(lock, mode='test', dry_run=true)` then `dry_run=false`;
   `verify_experiment(id, lock)` afterwards. Never upload a spec; `real` mode refuses a lock with
   no commit. The DSL, and the treatment-param traps
-  (pi/psi/kappa/tau are **0/1 switches**), are in the `doc://experiment-designer` and
+  (pi/psi/kappa/tau are **0/1 switches**), are in the `doc://pmspec` and
   `doc://treatment-params` MCP resources.
 
 ### Step 3 — Compose the run (preferred: one call)

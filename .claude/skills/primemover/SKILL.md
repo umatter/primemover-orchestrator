@@ -72,7 +72,7 @@ project owns which experiment id is recorded in `~/control_room/CLAUDE.md`
 - **Write/control** (`pm_*`, dry-run→confirm, local-only): create
   experiments/bots/runs/jobs/behaviours, `pm_compose_run`, `pm_delete`.
 - **Doc resources** (design knowledge for an MCP-only agent with no repo checkout):
-  `doc://experiment-designer`, `doc://integration-contract`, `doc://treatment-params`
+  `doc://pmspec`, `doc://integration-contract`, `doc://treatment-params`
   (the pi/psi/kappa/tau 0/1-switch semantics), `doc://capacity`.
 
 Start it: `primemover-orchestrator/scripts/mcp-server.sh` (stdio) or `--http --port 8100`. On ex63 it
