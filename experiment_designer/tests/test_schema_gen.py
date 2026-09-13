@@ -140,3 +140,50 @@ class TestExampleSpecsValidate:
         skips this test's parametrization instead of being noticed."""
         names = {Path(p).name for p in glob.glob(str(EXAMPLES_DIR / "*.yaml"))}
         assert names == set(self.CLEAN) | {"websearch-polarization-study.yaml"}
+
+
+class TestWaitScrollScalarValues:
+    """`oneOf` with both `{type: integer}` and `{type: number}` as separate
+    branches rejects a plain int -- "integer" is a subset of "number", so the
+    value is valid under two branches, and `oneOf` demands exactly one. Fixed
+    by a single `{"type": ["integer", "number"]}` branch for `wait` (matching
+    how `pixels`/`duration` already declare a multi-type property); `scroll`/
+    `try_scroll` drop the `number` branch entirely instead, since a bare
+    float there is not merely unmodelled but crashes the parser
+    (`_expand_shorthand`'s scroll branch does `value.get(...)` on anything
+    that is not `str`/`int`, and a `float` has no `.get`)."""
+
+    BASE = """
+version: "1.0"
+experiment:
+  name: X
+crawlers:
+  - name: bot
+    session:
+      start: "+1m"
+      workflow:
+        - {item}
+"""
+
+    @pytest.mark.parametrize(
+        "item",
+        ["wait: 5", "scroll: 10", "try_scroll: 10"],
+    )
+    def test_plain_integer_scalars_are_valid(self, item):
+        spec = yaml.safe_load(self.BASE.format(item=item))
+        result = SpecValidator().validate(spec)
+        assert result.valid, result.errors
+
+    def test_float_scroll_is_invalid(self):
+        """`scroll: 2.5` was never a supported construct -- the parser would
+        crash on it (see class docstring) -- so the schema must reject it."""
+        spec = yaml.safe_load(self.BASE.format(item="scroll: 2.5"))
+        result = SpecValidator().validate(spec)
+        assert not result.valid
+
+    def test_float_wait_is_valid(self):
+        """Unlike scroll, `_parse_duration` explicitly accepts float (and
+        int(value) truncates it), so wait has no analogous crash risk."""
+        spec = yaml.safe_load(self.BASE.format(item="wait: 2.5"))
+        result = SpecValidator().validate(spec)
+        assert result.valid, result.errors

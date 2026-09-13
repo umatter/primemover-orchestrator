@@ -153,6 +153,14 @@ class TestValidatorDropRules:
             "crawler[0].session.begin",
             id="unknown-session-key",
         ),
+        pytest.param(
+            BASE.replace(
+                "        - visit: https://example.com\n",
+                "        - visit: https://example.com\n          weight: 0.7\n",
+            ),
+            "crawler[0].session.workflow[0].weight",
+            id="stray-workflow-item-key",
+        ),
     ]
 
     @pytest.mark.parametrize("yaml_text,needle", ROWS)

@@ -339,12 +339,15 @@ bare `queues:` list on the same crawler. Each entry is checked exactly like `ses
 `experiment_designer/tests/test_schema_gen.py::test_checked_in_schema_is_generated` fails if the
 checked-in file and the generator's output disagree, so a table changed without regenerating is
 caught in CI rather than by the next person who edits the schema by hand and re-introduces drift.
-Every structural object (`experiment`, `defaults`, `design`, a factor, a crawler, its
+Every structural object (`experiment`, `defaults`, `design`, a crawler, its
 `configuration`/`proxy`/`agent`/`session`) sets `additionalProperties: false` from the same key
-set `_validate_unknown_keys` checks, so the two can no longer disagree; a per-job shorthand's
-options (e.g. `click: {selector, task, flag, ...}`) and `configuration.params` stay
-`additionalProperties: true`, since an unknown key there is the *validator's* drop to report
-(downgradable under `--lax`), not a hard schema rejection.
+set `_validate_unknown_keys` checks, so the two can no longer disagree; a workflow item does the
+same from `_validate_workflow_item`'s job-type list. A per-job shorthand's options (e.g.
+`click: {selector, task, flag, ...}`) and `configuration.params` stay `additionalProperties: true`,
+since an unknown key there is the *validator's* drop to report (downgradable under `--lax`), not a
+hard schema rejection. A factor's own keys (`levels`/`maps_to`) also get `additionalProperties:
+false` in the schema, but nothing enforces it yet at the Python level — that check, and the
+matching schema-error filter, arrive with phase 5 task 2's `_KEYS_FACTOR`-driven drop site.
 
 ## Installation
 

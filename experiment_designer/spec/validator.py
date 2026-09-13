@@ -101,11 +101,12 @@ class SpecValidator:
     )
 
     # Keys the parser/converter/design-expander actually read, per level. These
-    # are the whitelist for _validate_unknown_keys; the JSON schema is a drifted,
-    # partial mirror (it lacks data_pools, additional_sessions, proxy pools, ...)
-    # so the reading code is the authority, not additionalProperties. A key that
-    # is missing here but read somewhere is a false error, bounded by the
-    # example/research-spec whitelist test in test_strict_contract.py.
+    # are the whitelist for _validate_unknown_keys, and also the authority
+    # schema_gen.py builds experiment-spec.schema.json's `additionalProperties:
+    # false` object definitions from -- the two cannot drift apart again (see
+    # test_schema_gen.py). A key that is missing here but read somewhere is a
+    # false error, bounded by the example/research-spec whitelist test in
+    # test_strict_contract.py.
     _KEYS_ROOT: frozenset[str] = frozenset(
         {
             "version",
@@ -432,11 +433,15 @@ class SpecValidator:
     def _validate_unknown_keys(self, spec: dict[str, Any]) -> None:
         """Keys the pipeline never reads are dropped silently; report them.
 
-        The JSON schema is a drifted, partial mirror of the parser, so the
-        parser's accepted keys are the authority here, not additionalProperties.
-        Workflow items are not checked: unknown job *types* are, but option keys
-        inside a known job vary per type and false positives there would cost
-        more than the rare typo they would catch.
+        This is still the authority for these key sets (not
+        ``additionalProperties`` on the JSON schema, even though schema_gen.py
+        now builds the schema's object definitions from these same
+        ``_KEYS_*`` frozensets and can therefore no longer disagree with this
+        function -- see `_validate_schema`'s docstring). Workflow items are
+        not checked here: an unknown job *type*, and a stray sibling key on a
+        matched shorthand item, are `_validate_workflow_item`'s job; option
+        keys inside a known job vary per type and false positives there would
+        cost more than the rare typo they would catch.
         """
 
         def check(obj: Any, allowed: frozenset[str], path: str) -> None:
@@ -472,18 +477,34 @@ class SpecValidator:
     def _validate_schema(self, spec: dict[str, Any]) -> list[str]:
         """Validate against JSON Schema.
 
-        Since schema_gen.py builds the schema's object definitions from the
-        exact key sets `_validate_unknown_keys`/`_validate_workflow_item` use
-        for their own "unknown key"/"unknown job type" checks, every
-        ``additionalProperties`` violation this schema can raise is -- by
-        construction -- already reported (and, under ``--lax``, downgraded to
-        a warning) by one of those two, lax-aware, drop sites. Surfacing the
-        same violation here too, as a hard error jsonschema has no concept of
-        ``--lax`` for, would make a spec whose only problem is a
-        lax-downgraded drop still fail ``--lax`` validation. So
-        ``additionalProperties`` errors are filtered out here; every other
-        kind of schema violation (required/type/enum/pattern/...) is not
-        covered by those checks and is still reported as before.
+        schema_gen.py builds the schema's `additionalProperties: false` object
+        definitions from the exact key sets two other, lax-aware, Python-level
+        checks already use, so an ``additionalProperties`` violation here is
+        never new information:
+
+        - root, ``experiment``, ``defaults``, ``design``, each crawler, its
+          ``configuration``/``proxy``/``agent``/``session`` (and
+          ``defaults.proxy``) -- ``_validate_unknown_keys``.
+        - a workflow item's job-shorthand key and its stray sibling keys --
+          ``_validate_workflow_item``.
+
+        Surfacing the same violation again here too, as a hard error
+        jsonschema has no concept of ``--lax`` for, would make a spec whose
+        only problem is a lax-downgraded drop still fail ``--lax``
+        validation. So ``additionalProperties`` errors are filtered out
+        below; every other kind of schema violation (required/type/enum/
+        pattern/...) is not covered by those checks and is still reported as
+        before.
+
+        One gap, by design, not yet by omission: ``design.factors.<name>``'s
+        own keys (the ``factor`` definition, from `_KEYS_FACTOR`) have no
+        Python-level check yet -- phase 5 task 2 adds one. Filtering
+        ``additionalProperties`` unconditionally means an unknown factor key
+        is not caught by schema validation either, for now; that matches
+        today's behaviour (neither the old schema nor
+        `_validate_unknown_keys` checked factor keys) rather than silently
+        introducing new strictness for a container this task does not wire a
+        drop site for.
         """
         if not HAS_JSONSCHEMA or not self.schema:
             return []
@@ -809,11 +830,29 @@ class SpecValidator:
             "try_handle_alert",
         ]
 
-        matched = False
-        for job_type in job_types:
-            if job_type in item:
-                matched = True
-                self._validate_job_shorthand(job_type, item[job_type], prefix, errors, warnings)
+        matched_types = [job_type for job_type in job_types if job_type in item]
+        for job_type in matched_types:
+            self._validate_job_shorthand(job_type, item[job_type], prefix, errors, warnings)
+
+        # SpecParser._expand_workflow_item iterates its own shorthand_keys list
+        # (the same order as job_types above) and returns on the *first* match
+        # -- it never looks at the item again after that. So every other key on
+        # a matched item -- a second job-type key (`visit` + `wait` on one
+        # item), or an arbitrary typo (`weight: 0.7` beside `visit:`) -- is
+        # silently ignored by the parser exactly like a template/repeat item's
+        # stray keys above, and is a drop for the same reason. `with`/`jobs`
+        # are not exempt: they only pair with template/repeat items (handled
+        # above, which return before reaching here), so on a plain shorthand
+        # item they too are unread.
+        if matched_types:
+            used = matched_types[0]
+            for key in item:
+                if key != used:
+                    self.drops.report(
+                        f"{prefix}.{key}",
+                        "stray key on a workflow item; only the first job shorthand is used",
+                        "one job per item",
+                    )
 
         # An item that is neither a template/repeat block (returned above) nor a
         # known shorthand is skipped by the parser ("Unknown workflow item
@@ -821,7 +860,7 @@ class SpecValidator:
         # `jobs` a repeat block; anything else on such an item is a job type the
         # registry lacks, and an item left with nothing but those has no job at
         # all.
-        if not matched:
+        if not matched_types:
             unknown = [key for key in item if key not in ("with", "jobs")]
             for key in unknown:
                 self.drops.report(prefix, f"unknown job type '{key}'", "see `pmspec schema jobs`")

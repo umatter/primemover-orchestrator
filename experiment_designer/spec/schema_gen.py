@@ -567,9 +567,12 @@ def build_schema() -> dict[str, Any]:
             "properties": {
                 "visit": {"type": "string", "description": "URL to visit"},
                 "wait": {
+                    # A single {"type": ["integer", "number"]} branch, not two
+                    # separate oneOf alternatives: "integer" is a subset of
+                    # "number", so a plain int like `wait: 5` would satisfy
+                    # both and fail oneOf's "valid under exactly one" rule.
                     "oneOf": [
-                        {"type": "integer"},
-                        {"type": "number"},
+                        {"type": ["integer", "number"]},
                         {"type": "string", "pattern": r"^\d+(\.\d+)?\s*[a-z]*$"},
                     ],
                     "description": "Wait duration (e.g., 10, '10s', '5m')",
@@ -641,9 +644,15 @@ def build_schema() -> dict[str, Any]:
                     ),
                 },
                 "scroll": {
+                    # No "number" branch: unlike wait/_parse_duration, the
+                    # scalar-form scroll/try_scroll branch in
+                    # _expand_shorthand only special-cases `isinstance(value,
+                    # (str, int))`; a bare float falls into the `else` branch
+                    # and calls `.get()` on it, raising AttributeError. A
+                    # float scalar was never a supported value, so the schema
+                    # must not accept it either.
                     "oneOf": [
                         {"type": "integer"},
-                        {"type": "number"},
                         {"type": "string"},
                         _shorthand_options(
                             "scroll",
@@ -659,7 +668,6 @@ def build_schema() -> dict[str, Any]:
                 "try_scroll": {
                     "oneOf": [
                         {"type": "integer"},
-                        {"type": "number"},
                         {"type": "string"},
                         _shorthand_options(
                             "try_scroll",

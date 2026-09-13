@@ -730,10 +730,10 @@
         "wait": {
           "oneOf": [
             {
-              "type": "integer"
-            },
-            {
-              "type": "number"
+              "type": [
+                "integer",
+                "number"
+              ]
             },
             {
               "type": "string",
@@ -926,9 +926,6 @@
               "type": "integer"
             },
             {
-              "type": "number"
-            },
-            {
               "type": "string"
             },
             {
@@ -961,9 +958,6 @@
           "oneOf": [
             {
               "type": "integer"
-            },
-            {
-              "type": "number"
             },
             {
               "type": "string"
