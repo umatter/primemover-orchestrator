@@ -22,9 +22,15 @@ Commands:
 """
 
 import json
+import re
 import sys
 from pathlib import Path
 from typing import Any
+
+if sys.version_info >= (3, 11):
+    import tomllib
+else:  # pragma: no cover - exercised on the 3.10 CI job
+    import tomli as tomllib
 
 # Load .env file if present
 try:
@@ -340,6 +346,9 @@ def _load_store(path: str | None) -> SecretStore | None:
     except InsecureSecretsFile as e:
         click.secho(f"Refusing secrets file: {e}", fg="red")
         sys.exit(1)
+    except tomllib.TOMLDecodeError as e:
+        click.secho(f"Secrets file is not valid TOML: {e}", fg="red")
+        sys.exit(1)
 
 
 def _lock_text_for(file: str, seed: int | None) -> str:
@@ -401,6 +410,11 @@ def _secrets_report(lock_text: str, store: SecretStore | None) -> list[str]:
 _MISSING_LEAF = object()
 
 
+class _SkeletonConflictError(Exception):
+    """A shape in an existing secrets file that `secrets init --force` refuses to touch
+    or rewrite, rather than silently destroying or mangling a value."""
+
+
 def _get_leaf(data: dict[str, Any], key: str) -> Any:
     """The value at a dotted path in a parsed TOML table, or `_MISSING_LEAF`."""
     node: Any = data
@@ -412,27 +426,78 @@ def _get_leaf(data: dict[str, Any], key: str) -> Any:
 
 
 def _set_leaf(data: dict[str, Any], key: str, value: str) -> None:
-    """Set a dotted path in a parsed TOML table, creating intermediate tables."""
+    """Set a dotted path in a parsed TOML table, creating intermediate tables.
+
+    Raises `_SkeletonConflictError` rather than clobbering an existing value: if the store
+    already has, say, `[oxylabs] a = "secret"` and the lock now needs
+    `oxylabs.a.username`, `a` cannot become a table without destroying the string that
+    is already there. `_set_leaf` is only ever called for a key `_get_leaf` reported
+    missing, so the collision is always an existing *value* sitting where a table
+    is needed -- never the reverse.
+    """
     parts = key.split(".")
     node = data
-    for part in parts[:-1]:
+    for i, part in enumerate(parts[:-1]):
         child = node.get(part)
-        if not isinstance(child, dict):
+        if child is None:
             child = {}
             node[part] = child
+        elif not isinstance(child, dict):
+            colliding = ".".join(parts[: i + 1])
+            raise _SkeletonConflictError(
+                f"{key}: {colliding!r} already holds a value in the existing secrets "
+                "file, not a table"
+            )
         node = child
     node[parts[-1]] = value
 
 
+_TOML_SHORT_ESCAPES = {
+    "\\": "\\\\",
+    '"': '\\"',
+    "\b": "\\b",
+    "\t": "\\t",
+    "\n": "\\n",
+    "\f": "\\f",
+    "\r": "\\r",
+}
+_TOML_BARE_KEY_RE = re.compile(r"^[A-Za-z0-9_-]+$")
+
+
 def _toml_escape(value: str) -> str:
-    return value.replace("\\", "\\\\").replace('"', '\\"')
+    """Escape a string for a TOML basic string: the named short escapes, plus a
+    `\\uXXXX` for every other control character (U+0000-U+001F, U+007F) -- a bare
+    literal control character (e.g. an unescaped newline) is not valid inside a TOML
+    basic string and would make the file we write unparseable."""
+    out = []
+    for ch in value:
+        if ch in _TOML_SHORT_ESCAPES:
+            out.append(_TOML_SHORT_ESCAPES[ch])
+        elif ch == "\x7f" or ord(ch) < 0x20:
+            out.append(f"\\u{ord(ch):04X}")
+        else:
+            out.append(ch)
+    return "".join(out)
+
+
+def _toml_key(name: str) -> str:
+    """A bare key if `name` is safe as one, else a quoted TOML basic string key."""
+    if _TOML_BARE_KEY_RE.fullmatch(name):
+        return name
+    return f'"{_toml_escape(name)}"'
 
 
 def _dump_secrets_toml(data: dict[str, Any]) -> str:
     """Serialize a nested dict of string leaves as TOML: top-level scalars first
     (no header), then one `[a.b.c]` table per nesting level. No writer dependency --
     the only shapes `secrets init` ever produces or merges are string leaves and
-    tables, so this is the entire grammar it needs."""
+    tables, so this is the entire grammar it needs.
+
+    Raises `_SkeletonConflictError` if an existing leaf is not a string: stringifying it
+    (an int, bool, float, array, ...) would silently change its type the next time the
+    file is read, so a value this store cannot serve as a secret is left untouched by
+    refusing outright instead.
+    """
     lines: list[str] = []
 
     def emit(node: dict[str, Any], path: tuple[str, ...]) -> None:
@@ -441,9 +506,15 @@ def _dump_secrets_toml(data: dict[str, Any]) -> str:
         if path:
             if lines:
                 lines.append("")
-            lines.append(f"[{'.'.join(path)}]")
+            lines.append(f"[{'.'.join(_toml_key(p) for p in path)}]")
         for key in sorted(leaves):
-            lines.append(f'{key} = "{_toml_escape(str(leaves[key]))}"')
+            value = leaves[key]
+            if not isinstance(value, str):
+                dotted = ".".join(path + (key,))
+                raise _SkeletonConflictError(
+                    f"{dotted}: existing value is not a string; refusing to rewrite it"
+                )
+            lines.append(f'{_toml_key(key)} = "{_toml_escape(value)}"')
         for key in sorted(tables):
             emit(tables[key], path + (key,))
 
@@ -451,21 +522,24 @@ def _dump_secrets_toml(data: dict[str, Any]) -> str:
     return "\n".join(lines) + "\n" if lines else ""
 
 
-def _write_secrets_file(path: Path, text: str, *, exists: bool) -> None:
-    """Write TOML at mode 600. A fresh file is created O_EXCL so nothing can race
-    between the exists() check and the write; an existing file (only reached via
-    --force, after SecretStore.load already accepted its mode) is rewritten in place
-    and re-chmod'd, since its mode is already known-good."""
+def _write_secrets_file(path: Path, text: str) -> None:
+    """Write TOML at mode 600, atomically. The complete text is written to a sibling
+    temp file created with O_EXCL (so a reader can never observe a half-written file),
+    then moved into place with `os.replace`, which is atomic on POSIX -- the target
+    always either has its old content or its complete new content, never a partial
+    write from a killed process."""
     import os
 
     path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-    if exists:
-        path.write_text(text)
-        path.chmod(0o600)
-    else:
-        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-        with os.fdopen(fd, "w") as f:
+    tmp = path.with_name(path.name + ".tmp")
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
             f.write(text)
+        os.replace(tmp, path)
+    except BaseException:
+        tmp.unlink(missing_ok=True)
+        raise
 
 
 @cli.command()
@@ -831,21 +905,30 @@ def secrets_init(lock: str, secrets_path: str | None, force: bool) -> None:
         except InsecureSecretsFile as e:
             click.secho(f"Refusing secrets file: {e}", fg="red")
             sys.exit(1)
+        except tomllib.TOMLDecodeError as e:
+            click.secho(f"Secrets file is not valid TOML: {e}", fg="red")
+            sys.exit(1)
 
     added: list[str] = []
     present: list[str] = []
-    for key in needed:
-        if _get_leaf(data, key) is _MISSING_LEAF:
-            _set_leaf(data, key, "")
-            added.append(key)
-        else:
-            present.append(key)
+    try:
+        for key in needed:
+            if _get_leaf(data, key) is _MISSING_LEAF:
+                _set_leaf(data, key, "")
+                added.append(key)
+            else:
+                present.append(key)
 
-    if not added:
-        click.echo(f"{target}: all {len(present)} referenced key(s) already present")
-        return
+        if not added:
+            click.echo(f"{target}: all {len(present)} referenced key(s) already present")
+            return
 
-    _write_secrets_file(target, _dump_secrets_toml(data), exists=file_exists)
+        text = _dump_secrets_toml(data)
+    except _SkeletonConflictError as e:
+        click.secho(f"Refusing to rewrite {target}: {e}", fg="red")
+        sys.exit(1)
+
+    _write_secrets_file(target, text)
 
     click.secho(f"Wrote {target} (mode 600)", fg="green")
     click.echo("Added (fill in before uploading):")

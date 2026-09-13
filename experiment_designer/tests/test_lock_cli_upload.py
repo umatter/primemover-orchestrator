@@ -249,6 +249,101 @@ def test_secrets_init_then_check_reports_every_added_key_missing(lock_file, tmp_
     assert out.output.count("MISSING") == 2
 
 
+def test_secrets_init_force_refuses_a_leaf_table_collision(lock_file, tmp_path):
+    """The store already has `oxylabs.a` as a plain string; the lock needs it to be a
+    table (`oxylabs.a.username`/`.password`). Turning it into `{}` would destroy the
+    existing secret, so this must refuse rather than silently overwrite it."""
+    target = tmp_path / "secrets.toml"
+    original = '[oxylabs]\na = "hunter2"\n'
+    target.write_text(original)
+    target.chmod(0o600)
+    out = CliRunner().invoke(
+        cli, ["secrets", "init", str(lock_file), "--secrets", str(target), "--force"]
+    )
+    assert out.exit_code == 1
+    assert "oxylabs.a" in out.output
+    assert "hunter2" not in out.output
+    assert target.read_text() == original
+
+
+def test_secrets_init_force_refuses_a_non_string_existing_leaf(lock_file, tmp_path):
+    target = tmp_path / "secrets.toml"
+    original = "[oxylabs.a]\nusername = 5\n"
+    target.write_text(original)
+    target.chmod(0o600)
+    out = CliRunner().invoke(
+        cli, ["secrets", "init", str(lock_file), "--secrets", str(target), "--force"]
+    )
+    assert out.exit_code == 1
+    assert "not a string" in out.output
+    assert target.read_text() == original
+
+
+def test_secrets_init_force_round_trips_control_characters(lock_file, tmp_path):
+    """A value containing a raw newline or a NUL byte must come back identical after
+    --force adds an unrelated key -- proving the writer escapes rather than emits a
+    literal control character (which tomllib cannot parse back at all)."""
+    target = tmp_path / "secrets.toml"
+    target.write_text('[oxylabs.a]\nusername = "line1\\nline2"\nother = "\\u0000tail"\n')
+    target.chmod(0o600)
+    out = CliRunner().invoke(
+        cli, ["secrets", "init", str(lock_file), "--secrets", str(target), "--force"]
+    )
+    assert out.exit_code == 0, out.output
+    data = SecretStore.load(target).data
+    assert data["oxylabs"]["a"]["username"] == "line1\nline2"
+    assert data["oxylabs"]["a"]["other"] == "\x00tail"
+    assert data["oxylabs"]["a"]["password"] == ""
+
+
+def test_toml_escape_round_trips_every_control_character(tmp_path):
+    from experiment_designer.cli import _toml_escape
+
+    original = "".join(chr(cp) for cp in [*range(0x20), 0x7F]) + '"\\end'
+    p = tmp_path / "s.toml"
+    p.write_text(f'k = "{_toml_escape(original)}"\n')
+    p.chmod(0o600)
+    assert SecretStore.load(p).data["k"] == original
+
+
+def test_secrets_init_force_quotes_a_key_that_is_not_bare(lock_file, tmp_path):
+    target = tmp_path / "secrets.toml"
+    target.write_text('[oxylabs]\n"user.name" = "u"\n')
+    target.chmod(0o600)
+    out = CliRunner().invoke(
+        cli, ["secrets", "init", str(lock_file), "--secrets", str(target), "--force"]
+    )
+    assert out.exit_code == 0, out.output
+    data = SecretStore.load(target).data
+    assert data["oxylabs"]["user.name"] == "u"
+    assert data["oxylabs"]["a"]["username"] == ""
+    assert data["oxylabs"]["a"]["password"] == ""
+    assert '"user.name" = "u"' in target.read_text()
+
+
+def test_secrets_check_rejects_invalid_toml(lock_file, tmp_path):
+    target = tmp_path / "secrets.toml"
+    target.write_text("this = [is not valid")
+    target.chmod(0o600)
+    out = CliRunner().invoke(cli, ["secrets", "check", str(lock_file), "--secrets", str(target)])
+    assert out.exit_code == 1
+    assert "not valid TOML" in out.output
+    assert "Traceback" not in out.output
+
+
+def test_secrets_init_force_rejects_invalid_toml(lock_file, tmp_path):
+    target = tmp_path / "secrets.toml"
+    original = "this = [is not valid"
+    target.write_text(original)
+    target.chmod(0o600)
+    out = CliRunner().invoke(
+        cli, ["secrets", "init", str(lock_file), "--secrets", str(target), "--force"]
+    )
+    assert out.exit_code == 1
+    assert "not valid TOML" in out.output
+    assert target.read_text() == original
+
+
 def test_secrets_init_with_no_placeholders_writes_nothing(tmp_path):
     text = dump_lock(make_lock())
     text = text.replace("${secret:oxylabs.a.username}", "literal-user")
