@@ -21,7 +21,7 @@ from experiment_designer.lock.build import compile_spec
 from experiment_designer.lock.cleanup import delete_experiments, find_test_experiments, parse_age
 from experiment_designer.lock.diff import diff_locks
 from experiment_designer.lock.io import LockError, dump_lock, is_lock_document, load_lock
-from experiment_designer.lock.secrets import SecretStore, find_placeholders
+from experiment_designer.lock.secrets import InsecureSecretsFile, SecretStore, find_placeholders
 from experiment_designer.lock.status import experiment_status
 from experiment_designer.lock.upload import MODES, UploadOptions, UploadRefused, upload_lock
 from experiment_designer.lock.verify import redact_differences, verify_lock
@@ -3560,6 +3560,26 @@ def _auth_token_from_env() -> str | None:
     return token or None
 
 
+def _secrets_store_state() -> str:
+    """The secrets store's health, for the unauthenticated /health route.
+
+    Never returns the resolved path or a value -- only one of these four words.
+    A store that cannot even be parsed (bad TOML, permission error other than the
+    mode check) is "invalid": distinct from "missing" (no file) and "insecure"
+    (present but group/other readable), since none of those three mean the same
+    thing to whoever is reading the health check.
+    """
+    try:
+        SecretStore.load()
+    except FileNotFoundError:
+        return "missing"
+    except InsecureSecretsFile:
+        return "insecure"
+    except Exception:
+        return "invalid"
+    return "ok"
+
+
 def build_http_app(tokens: dict[str, str] | str):
     """Wrap the streamable-HTTP ASGI app so every MCP request needs a bearer token.
 
@@ -3572,7 +3592,7 @@ def build_http_app(tokens: dict[str, str] | str):
     import hmac
     import logging
 
-    from starlette.responses import JSONResponse, PlainTextResponse
+    from starlette.responses import JSONResponse
 
     if isinstance(tokens, str):
         tokens = {"default": tokens}
@@ -3596,7 +3616,8 @@ def build_http_app(tokens: dict[str, str] | str):
             return
 
         if scope["method"] == "GET" and scope["path"] == "/health":
-            await PlainTextResponse("ok")(scope, receive, send)
+            body = {"status": "ok", "secrets_store": _secrets_store_state()}
+            await JSONResponse(body)(scope, receive, send)
             return
 
         auth = ""

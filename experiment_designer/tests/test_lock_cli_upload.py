@@ -1,3 +1,4 @@
+import stat
 from pathlib import Path
 
 import pytest
@@ -7,6 +8,7 @@ from experiment_designer import cli as cli_module
 from experiment_designer.cli import cli
 from experiment_designer.lock.api import ApiError
 from experiment_designer.lock.io import dump_lock
+from experiment_designer.lock.secrets import SecretStore
 from experiment_designer.lock.upload import UploadResult
 
 from .test_lock_io import make_lock
@@ -185,6 +187,79 @@ def test_secrets_check_rejects_a_corrupt_lock(tmp_path):
     assert out.exit_code == 1
     assert "Lock invalid" in out.output
     assert "Traceback" not in out.output
+
+
+def test_secrets_init_creates_skeleton_with_mode_600(lock_file, tmp_path):
+    target = tmp_path / "new-secrets.toml"
+    out = CliRunner().invoke(cli, ["secrets", "init", str(lock_file), "--secrets", str(target)])
+    assert out.exit_code == 0, out.output
+    assert stat.S_IMODE(target.stat().st_mode) == 0o600
+    assert SecretStore.load(target).data == {"oxylabs": {"a": {"username": "", "password": ""}}}
+    assert "oxylabs.a.username" in out.output
+    assert "oxylabs.a.password" in out.output
+    assert str(target) in out.output
+
+
+def test_secrets_init_refuses_to_overwrite_without_force(lock_file, tmp_path):
+    target = tmp_path / "secrets.toml"
+    original = '[oxylabs.a]\nusername = "u"\n'
+    target.write_text(original)
+    target.chmod(0o600)
+    out = CliRunner().invoke(cli, ["secrets", "init", str(lock_file), "--secrets", str(target)])
+    assert out.exit_code == 1
+    assert "--force" in out.output
+    assert target.read_text() == original
+
+
+def test_secrets_init_force_merges_keeping_existing_values(lock_file, tmp_path):
+    target = tmp_path / "secrets.toml"
+    target.write_text('[oxylabs.a]\nusername = "keepme"\nother = "x"\n')
+    target.chmod(0o600)
+    out = CliRunner().invoke(
+        cli, ["secrets", "init", str(lock_file), "--secrets", str(target), "--force"]
+    )
+    assert out.exit_code == 0, out.output
+    data = SecretStore.load(target).data
+    assert data["oxylabs"]["a"]["username"] == "keepme"
+    assert data["oxylabs"]["a"]["other"] == "x"
+    assert data["oxylabs"]["a"]["password"] == ""
+    assert "oxylabs.a.password" in out.output
+    assert "oxylabs.a.username" in out.output
+    assert "keepme" not in out.output
+    assert stat.S_IMODE(target.stat().st_mode) == 0o600
+
+
+def test_secrets_init_force_on_an_insecure_existing_file_is_refused(lock_file, tmp_path):
+    target = tmp_path / "secrets.toml"
+    target.write_text('[oxylabs.a]\nusername = "keepme"\n')
+    target.chmod(0o644)
+    out = CliRunner().invoke(
+        cli, ["secrets", "init", str(lock_file), "--secrets", str(target), "--force"]
+    )
+    assert out.exit_code == 1
+    assert "chmod 600" in out.output
+    assert target.read_text() == '[oxylabs.a]\nusername = "keepme"\n'
+
+
+def test_secrets_init_then_check_reports_every_added_key_missing(lock_file, tmp_path):
+    target = tmp_path / "secrets.toml"
+    CliRunner().invoke(cli, ["secrets", "init", str(lock_file), "--secrets", str(target)])
+    out = CliRunner().invoke(cli, ["secrets", "check", str(lock_file), "--secrets", str(target)])
+    assert out.exit_code == 1
+    assert out.output.count("MISSING") == 2
+
+
+def test_secrets_init_with_no_placeholders_writes_nothing(tmp_path):
+    text = dump_lock(make_lock())
+    text = text.replace("${secret:oxylabs.a.username}", "literal-user")
+    text = text.replace("${secret:oxylabs.a.password}", "literal-pass")
+    lock_path = tmp_path / "no-secrets.lock.yaml"
+    lock_path.write_text(text)
+    target = tmp_path / "secrets.toml"
+    out = CliRunner().invoke(cli, ["secrets", "init", str(lock_path), "--secrets", str(target)])
+    assert out.exit_code == 0, out.output
+    assert "none referenced" in out.output
+    assert not target.exists()
 
 
 def test_upload_reports_an_anchor_error(lock_file, secrets_file, fake_upload, monkeypatch):

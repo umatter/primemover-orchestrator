@@ -59,10 +59,19 @@ the pmspec version and the seed; there is no timestamp.
 ### Step 4: Upload the lock
 
 ```bash
+pmspec secrets init my-study.lock.yaml        # scaffold ~/.config/primemover/secrets.toml
 pmspec secrets check my-study.lock.yaml       # which ${secret:…} keys it needs, none printed
 pmspec upload my-study.lock.yaml --mode test  # VM runner, name prefixed test-…, dirty commit ok
 pmspec upload my-study.lock.yaml --mode real  # as in the lock; refuses a dirty/unknown commit
 ```
+
+`secrets init` writes a mode-600 TOML skeleton with one `key = ""` per placeholder the lock
+references, grouped into `[section]` tables by the dotted key's prefix (`oxylabs.a.username` →
+`[oxylabs.a]`). `secrets check` reports each of those as MISSING until filled in by hand. It
+refuses to touch an existing file unless `--force`, which merges in place: every existing value
+(filled or not) and every table the lock does not reference are kept, and only the still-missing
+leaves are added -- it prints which keys were added and which were already present, and never a
+value.
 
 `--mode` is required. Upload resolves `${secret:key}` from `~/.config/primemover/secrets.toml`
 (mode 600; or `$PMSPEC_SECRETS_FILE`), resolves the anchor (`upload` = now, Europe/Zurich),
@@ -925,6 +934,7 @@ crawlers:
 | `audit <experiment_id> <lock> [--hours N] [--sample K] [--strict]` | Did each finished lambda job apply the treatment the lock says it should |
 | `cleanup [--older-than 7d] [--dry-run] [--yes]` | Delete pmspec TEST experiments only (`test-` name **and** `pmspec.mode=test`) |
 | `secrets check <lock> [--secrets]` | List the secrets a lock references and which are missing |
+| `secrets init <lock> [--secrets] [--force]` | Write (or, with --force, merge) a TOML skeleton for a lock's secrets |
 | `generate <file> [-o output.json] [--seed N] [--resolve-secrets]` | Convert a spec or lock to API JSON (GUI upload only; carries no provenance) |
 | `preview <file> [--seed N]` | Preview factorial design; given a lock, its counts, anchor and provenance |
 | `summary <file>... [-e ID] [--compare] [-f text\|json\|html] [--seed N]` | Experiment summary from a spec, a lock, or a live experiment |

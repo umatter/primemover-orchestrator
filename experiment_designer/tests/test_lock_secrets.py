@@ -94,3 +94,25 @@ def test_non_string_leaf_in_store_is_an_error(tmp_path: Path):
     p.chmod(0o600)
     with pytest.raises(MissingSecret, match="a.b"):
         SecretStore.load(p).get("a.b")
+
+
+def test_empty_string_value_is_missing(tmp_path: Path):
+    """`secrets init` writes `key = ""` skeletons; an unfilled one must report MISSING,
+    not a blank credential that silently reaches the runner."""
+    p = tmp_path / "s.toml"
+    p.write_text('[a]\nb = ""\n')
+    p.chmod(0o600)
+    with pytest.raises(MissingSecret, match="a.b is empty"):
+        SecretStore.load(p).get("a.b")
+
+
+def test_missing_treats_empty_string_as_missing(tmp_path: Path):
+    p = tmp_path / "s.toml"
+    p.write_text('[a]\nb = ""\n')
+    p.chmod(0o600)
+    assert SecretStore.load(p).missing(["a.b"]) == ["a.b"]
+
+
+def test_data_property_exposes_the_raw_table(store_file: Path):
+    store = SecretStore.load(store_file)
+    assert store.data == {"oxylabs": {"us_nc": {"username": "cust-nc", "password": "testpass"}}}

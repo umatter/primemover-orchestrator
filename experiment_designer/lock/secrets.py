@@ -83,6 +83,12 @@ class SecretStore:
         with open(resolved, "rb") as f:
             return cls(tomllib.load(f), str(resolved))
 
+    @property
+    def data(self) -> dict[str, Any]:
+        """The raw parsed table, for callers that need to merge into it (e.g.
+        ``pmspec secrets init --force``). Never resolved against placeholders."""
+        return self._data
+
     def get(self, key: str) -> str:
         node: Any = self._data
         for part in key.split("."):
@@ -91,6 +97,8 @@ class SecretStore:
             node = node[part]
         if not isinstance(node, str):
             raise MissingSecret(f"{key} is not a string in {self.source}")
+        if node == "":
+            raise MissingSecret(f"{key} is empty in {self.source}")
         return node
 
     def missing(self, keys: Iterable[str]) -> list[str]:

@@ -16,6 +16,7 @@ Commands:
     pmspec audit <exp_id> <lock>      Did finished jobs apply the treatment the lock says they should
     pmspec diff <lock_a> <lock_b>     Diff two locks: provenance, anchor, crawler-level differences
     pmspec secrets check <lock>       List a lock's secret placeholders and which are missing
+    pmspec secrets init <lock>        Write (or --force merge) a TOML skeleton for its secrets
     pmspec schema jobs                List all job types
     pmspec schema job <type>          Show job type details
 """
@@ -48,7 +49,13 @@ from .lock.diff import diff_locks
 from .lock.io import LockError, dump_lock, is_lock_document, load_lock
 from .lock.model import Lock
 from .lock.resolve import resolve_for_upload
-from .lock.secrets import InsecureSecretsFile, MissingSecret, SecretStore, find_placeholders
+from .lock.secrets import (
+    DEFAULT_SECRETS_FILE,
+    InsecureSecretsFile,
+    MissingSecret,
+    SecretStore,
+    find_placeholders,
+)
 from .lock.status import experiment_status
 from .lock.upload import MODES, UploadOptions, UploadRefused, upload_lock
 from .lock.verify import verify_lock
@@ -391,6 +398,76 @@ def _secrets_report(lock_text: str, store: SecretStore | None) -> list[str]:
     return missing
 
 
+_MISSING_LEAF = object()
+
+
+def _get_leaf(data: dict[str, Any], key: str) -> Any:
+    """The value at a dotted path in a parsed TOML table, or `_MISSING_LEAF`."""
+    node: Any = data
+    for part in key.split("."):
+        if not isinstance(node, dict) or part not in node:
+            return _MISSING_LEAF
+        node = node[part]
+    return node
+
+
+def _set_leaf(data: dict[str, Any], key: str, value: str) -> None:
+    """Set a dotted path in a parsed TOML table, creating intermediate tables."""
+    parts = key.split(".")
+    node = data
+    for part in parts[:-1]:
+        child = node.get(part)
+        if not isinstance(child, dict):
+            child = {}
+            node[part] = child
+        node = child
+    node[parts[-1]] = value
+
+
+def _toml_escape(value: str) -> str:
+    return value.replace("\\", "\\\\").replace('"', '\\"')
+
+
+def _dump_secrets_toml(data: dict[str, Any]) -> str:
+    """Serialize a nested dict of string leaves as TOML: top-level scalars first
+    (no header), then one `[a.b.c]` table per nesting level. No writer dependency --
+    the only shapes `secrets init` ever produces or merges are string leaves and
+    tables, so this is the entire grammar it needs."""
+    lines: list[str] = []
+
+    def emit(node: dict[str, Any], path: tuple[str, ...]) -> None:
+        leaves = {k: v for k, v in node.items() if not isinstance(v, dict)}
+        tables = {k: v for k, v in node.items() if isinstance(v, dict)}
+        if path:
+            if lines:
+                lines.append("")
+            lines.append(f"[{'.'.join(path)}]")
+        for key in sorted(leaves):
+            lines.append(f'{key} = "{_toml_escape(str(leaves[key]))}"')
+        for key in sorted(tables):
+            emit(tables[key], path + (key,))
+
+    emit(data, ())
+    return "\n".join(lines) + "\n" if lines else ""
+
+
+def _write_secrets_file(path: Path, text: str, *, exists: bool) -> None:
+    """Write TOML at mode 600. A fresh file is created O_EXCL so nothing can race
+    between the exists() check and the write; an existing file (only reached via
+    --force, after SecretStore.load already accepted its mode) is rewritten in place
+    and re-chmod'd, since its mode is already known-good."""
+    import os
+
+    path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    if exists:
+        path.write_text(text)
+        path.chmod(0o600)
+    else:
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        with os.fdopen(fd, "w") as f:
+            f.write(text)
+
+
 @cli.command()
 @click.argument("file", type=click.Path(exists=True))
 @click.option(
@@ -714,6 +791,70 @@ def secrets_check(lock: str, secrets_path: str | None) -> None:
     """List the secrets a lock references and which are missing from the store."""
     missing = _secrets_report(Path(lock).read_text(), _load_store(secrets_path))
     sys.exit(1 if missing else 0)
+
+
+@secrets.command("init")
+@click.argument("lock", type=click.Path(exists=True))
+@click.option("--secrets", "secrets_path", type=click.Path())
+@click.option("--force", is_flag=True, help="Merge missing keys into an existing secrets file")
+def secrets_init(lock: str, secrets_path: str | None, force: bool) -> None:
+    """Write a TOML skeleton with one key per secret placeholder LOCK references.
+
+    Each new leaf is written as `key = ""`; `secrets check` reports it MISSING until
+    filled in by hand. Refuses to touch an existing file unless --force, which merges:
+    every existing value (filled or not, and any table the lock does not reference) is
+    kept, and only the missing leaves are added. Never prints a value.
+    """
+    import os
+
+    needed = sorted(find_placeholders(_load_lock_or_exit(Path(lock).read_text()).crawlers))
+    if not needed:
+        click.echo("Secrets: none referenced")
+        return
+
+    target = (
+        Path(secrets_path)
+        if secrets_path
+        else Path(os.environ.get("PMSPEC_SECRETS_FILE") or DEFAULT_SECRETS_FILE)
+    )
+    file_exists = target.exists()
+
+    data: dict[str, Any] = {}
+    if file_exists:
+        if not force:
+            click.secho(
+                f"{target} already exists; rerun with --force to add missing keys", fg="red"
+            )
+            sys.exit(1)
+        try:
+            data = SecretStore.load(target).data
+        except InsecureSecretsFile as e:
+            click.secho(f"Refusing secrets file: {e}", fg="red")
+            sys.exit(1)
+
+    added: list[str] = []
+    present: list[str] = []
+    for key in needed:
+        if _get_leaf(data, key) is _MISSING_LEAF:
+            _set_leaf(data, key, "")
+            added.append(key)
+        else:
+            present.append(key)
+
+    if not added:
+        click.echo(f"{target}: all {len(present)} referenced key(s) already present")
+        return
+
+    _write_secrets_file(target, _dump_secrets_toml(data), exists=file_exists)
+
+    click.secho(f"Wrote {target} (mode 600)", fg="green")
+    click.echo("Added (fill in before uploading):")
+    for key in added:
+        click.echo(f"  {key}")
+    if present:
+        click.echo("Already present:")
+        for key in present:
+            click.echo(f"  {key}")
 
 
 @cli.command()
