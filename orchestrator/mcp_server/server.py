@@ -27,6 +27,7 @@ from experiment_designer.lock.upload import MODES, UploadOptions, UploadRefused,
 from experiment_designer.lock.verify import redact_differences, verify_lock
 from orchestrator import status
 from orchestrator.config import get_settings
+from orchestrator.tracing import TraceBuilder
 
 
 def _get_mcp_config():
@@ -624,6 +625,29 @@ def _require_local_write_target() -> str | None:
     return None
 
 
+_SECRET_KEYS = frozenset({"password"})
+
+
+def _scrub_secrets(obj: Any) -> Any:
+    """Redact credential values anywhere in an API payload before it leaves the MCP.
+
+    The API serialises proxies verbatim -- password included -- on experiment,
+    crawler and library reads and inside every trace's ``entity_data``. The MCP
+    is where that JSON reaches an LLM and, over HTTP, other people, so every
+    read tool that hands API rows back passes them through here. Usernames are
+    kept: Oxylabs/Decodo put geo and session targeting in them, and they are
+    what a debugger needs to see. Returns a new structure; the input is untouched.
+    """
+    if isinstance(obj, dict):
+        return {
+            k: ("<redacted>" if k in _SECRET_KEYS and v not in (None, "") else _scrub_secrets(v))
+            for k, v in obj.items()
+        }
+    if isinstance(obj, list):
+        return [_scrub_secrets(v) for v in obj]
+    return obj
+
+
 def _unwrap(result: dict[str, Any]) -> Any:
     """API resources come back as {'data': {...}}; return the inner object when present."""
     return result.get("data", result) if isinstance(result, dict) else result
@@ -789,7 +813,7 @@ def list_library() -> str:
             out[key] = [{k: r.get(k) for k in fields if k in r} for r in rows]
         except Exception as e:
             out[key] = {"error": str(e)}
-    return json.dumps(out)
+    return json.dumps(_scrub_secrets(out))
 
 
 @mcp.tool()
@@ -1184,7 +1208,7 @@ def list_experiments(page: int = 1, per_page: int = 15) -> str:
     """
     try:
         result = _api_request("GET", "experiments", params={"page": page, "per_page": per_page})
-        return json.dumps(result)
+        return json.dumps(_scrub_secrets(result))
     except Exception as e:
         return json.dumps({"error": str(e)})
 
@@ -1199,7 +1223,7 @@ def list_all_experiments() -> str:
     """
     try:
         result = _api_request("GET", "experiments/experiments-list")
-        return json.dumps(result)
+        return json.dumps(_scrub_secrets(result))
     except Exception as e:
         return json.dumps({"error": str(e)})
 
@@ -1234,7 +1258,7 @@ def list_crawlers(status: str = "") -> str:
             endpoint = f"crawlers-{status}"
 
         result = _api_request("GET", endpoint)
-        return json.dumps(result)
+        return json.dumps(_scrub_secrets(result))
     except Exception as e:
         return json.dumps({"error": str(e)})
 
@@ -1262,7 +1286,7 @@ def list_queues(status: str = "") -> str:
             endpoint = f"queues-{status}"
 
         result = _api_request("GET", endpoint)
-        return json.dumps(result)
+        return json.dumps(_scrub_secrets(result))
     except Exception as e:
         return json.dumps({"error": str(e)})
 
@@ -1283,7 +1307,7 @@ def get_experiment(experiment_id: int) -> str:
         if valid_experiment_id is None:
             return json.dumps({"error": "experiment_id is required"})
         result = _api_request("GET", f"experiments/{valid_experiment_id}")
-        return json.dumps(result)
+        return json.dumps(_scrub_secrets(result))
     except ValueError as e:
         return json.dumps({"error": f"Validation error: {e}"})
     except Exception as e:
@@ -1306,7 +1330,7 @@ def get_crawler(crawler_id: int) -> str:
         if valid_crawler_id is None:
             return json.dumps({"error": "crawler_id is required"})
         result = _api_request("GET", f"crawlers/{valid_crawler_id}")
-        return json.dumps(result)
+        return json.dumps(_scrub_secrets(result))
     except ValueError as e:
         return json.dumps({"error": f"Validation error: {e}"})
     except Exception as e:
@@ -1329,7 +1353,7 @@ def get_queue(queue_id: int) -> str:
         if valid_queue_id is None:
             return json.dumps({"error": "queue_id is required"})
         result = _api_request("GET", f"queues/{valid_queue_id}")
-        return json.dumps(result)
+        return json.dumps(_scrub_secrets(result))
     except ValueError as e:
         return json.dumps({"error": f"Validation error: {e}"})
     except Exception as e:
@@ -1352,7 +1376,7 @@ def get_job(job_id: int) -> str:
         if valid_job_id is None:
             return json.dumps({"error": "job_id is required"})
         result = _api_request("GET", f"jobs/{valid_job_id}")
-        return json.dumps(result)
+        return json.dumps(_scrub_secrets(result))
     except ValueError as e:
         return json.dumps({"error": f"Validation error: {e}"})
     except Exception as e:
@@ -1511,8 +1535,6 @@ def trace_experiment(
         return json.dumps({"error": f"Validation error: {e}"})
 
     try:
-        from orchestrator.tracing import TraceBuilder
-
         builder = TraceBuilder()
 
         try:
@@ -1522,7 +1544,7 @@ def trace_experiment(
                 include_jobs=include_jobs,
                 time_range=time_range,
             )
-            return trace.to_json()
+            return json.dumps(_scrub_secrets(trace.to_dict()))
         finally:
             builder.close()
 
@@ -1559,8 +1581,6 @@ def trace_crawler(
         return json.dumps({"error": f"Validation error: {e}"})
 
     try:
-        from orchestrator.tracing import TraceBuilder
-
         builder = TraceBuilder()
 
         try:
@@ -1569,7 +1589,7 @@ def trace_crawler(
                 include_jobs=include_jobs,
                 time_range=time_range,
             )
-            return trace.to_json()
+            return json.dumps(_scrub_secrets(trace.to_dict()))
         finally:
             builder.close()
 
@@ -1601,13 +1621,11 @@ def trace_job(job_id: int, time_range: str = "7d") -> str:
         return json.dumps({"error": f"Validation error: {e}"})
 
     try:
-        from orchestrator.tracing import TraceBuilder
-
         builder = TraceBuilder()
 
         try:
             trace = builder.trace_job(valid_job_id, time_range=time_range)
-            return trace.to_json()
+            return json.dumps(_scrub_secrets(trace.to_dict()))
         finally:
             builder.close()
 
