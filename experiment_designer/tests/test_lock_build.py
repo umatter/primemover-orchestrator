@@ -1,5 +1,6 @@
 """compile: spec + seed -> lock. Deterministic, refuses what cannot be committed."""
 
+import hashlib
 import subprocess
 from pathlib import Path
 
@@ -312,3 +313,30 @@ crawlers:
     dumped = dump_lock(result.lock)
     assert "%%pmspec-draw" not in dumped
     assert "alpha" in dumped or "beta" in dumped
+
+
+def test_provenance_records_pool_sha256(spec_dir: Path):
+    lock = _compile(spec_dir).lock
+    assert lock is not None
+    expected = hashlib.sha256((spec_dir / "outlets.csv").read_bytes()).hexdigest()
+    assert lock.provenance.pools == {"outlets": expected}
+
+
+def test_changing_one_pool_csv_changes_only_that_entry_and_the_lock_bytes(spec_dir: Path):
+    (spec_dir / "terms.csv").write_text("term\nalpha\n")
+    text = SPEC.replace(
+        "data_pools:\n  outlets:\n    type: csv\n    source: outlets.csv\n",
+        "data_pools:\n  outlets:\n    type: csv\n    source: outlets.csv\n"
+        "  terms:\n    type: csv\n    source: terms.csv\n",
+    )
+    before = _compile(spec_dir, text).lock
+    assert before is not None
+    terms_sha_before = before.provenance.pools["terms"]
+
+    (spec_dir / "outlets.csv").write_text("domain,lean\nnyt.com,L\nfox.com,R\nwsj.com,C\n")
+    after = _compile(spec_dir, text).lock
+    assert after is not None
+
+    assert after.provenance.pools["terms"] == terms_sha_before
+    assert after.provenance.pools["outlets"] != before.provenance.pools["outlets"]
+    assert dump_lock(before) != dump_lock(after)

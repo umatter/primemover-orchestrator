@@ -62,3 +62,27 @@ def test_provenance_side_by_side_in_render():
     assert "a2024c9" in text and "deadbee" in text
     # The provenance lines above differ; the verdict line must say what is identical.
     assert "structure identical" in text
+
+
+def test_pool_sha_change_is_named_and_is_not_structural():
+    a = make_lock()
+    a.provenance.pools = {"outlets": "a" * 64}
+    b = make_lock()
+    b.provenance.pools = {"outlets": "b" * 64}
+    d = diff_locks(dump_lock(a), dump_lock(b))
+    assert d.pools_changed == ["outlets"]
+    assert d.identical  # provenance is not structure
+    text = d.render()
+    assert "pools: outlets" in text
+    assert ("a" * 12) in text and ("b" * 12) in text
+
+
+def test_pool_only_on_one_side_is_named():
+    a = make_lock()
+    a.provenance.pools = {}
+    b = make_lock()
+    b.provenance.pools = {"new_pool": "c" * 64}
+    d = diff_locks(dump_lock(a), dump_lock(b))
+    assert d.pools_changed == ["new_pool"]
+    assert "pools: new_pool" in d.render()
+    assert "only in b" in d.render()

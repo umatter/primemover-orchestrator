@@ -17,7 +17,11 @@
         "git_commit": {"type": ["string", "null"]},
         "pmspec_version": {"type": "string"},
         "seed": {"type": "integer"},
-        "lax": {"type": "boolean"}
+        "lax": {"type": "boolean"},
+        "pools": {
+          "type": "object",
+          "additionalProperties": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+        }
       }
     },
     "experiment": {

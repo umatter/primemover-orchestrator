@@ -28,6 +28,24 @@ def _provenance_lines(a: dict[str, Any], b: dict[str, Any]) -> list[str]:
     return lines
 
 
+def _pools_changed(pools_a: dict[str, str], pools_b: dict[str, str]) -> list[str]:
+    names = set(pools_a) | set(pools_b)
+    return sorted(name for name in names if pools_a.get(name) != pools_b.get(name))
+
+
+def _pool_lines(names: list[str], pools_a: dict[str, str], pools_b: dict[str, str]) -> list[str]:
+    lines = []
+    for name in names:
+        va, vb = pools_a.get(name), pools_b.get(name)
+        if va is None:
+            lines.append(f"pools: {name} only in b")
+        elif vb is None:
+            lines.append(f"pools: {name} only in a")
+        else:
+            lines.append(f"pools: {name} {va[:12]} -> {vb[:12]}")
+    return lines
+
+
 @dataclass
 class LockDiff:
     provenance_a: dict[str, Any]
@@ -37,9 +55,13 @@ class LockDiff:
     differences: list[Difference] = field(default_factory=list)
     only_in_a: list[str] = field(default_factory=list)
     only_in_b: list[str] = field(default_factory=list)
+    pools_changed: list[str] = field(default_factory=list)
 
     @property
     def identical(self) -> bool:
+        # Pool provenance is not structure -- a pool changing under an
+        # otherwise-unchanged lock is reported (render() names it) but does
+        # not itself make two locks "different" any more than git_commit does.
         return (
             not self.differences
             and not self.only_in_a
@@ -49,6 +71,13 @@ class LockDiff:
 
     def render(self) -> str:
         lines = _provenance_lines(self.provenance_a, self.provenance_b)
+        lines.extend(
+            _pool_lines(
+                self.pools_changed,
+                self.provenance_a.get("pools") or {},
+                self.provenance_b.get("pools") or {},
+            )
+        )
         if self.identical:
             # Provenance may still differ line by line above; say what is identical.
             lines.append("structure identical")
@@ -94,4 +123,5 @@ def diff_locks(text_a: str, text_b: str, *, deep: bool = True) -> LockDiff:
         differences=differences,
         only_in_a=sorted(names_a - names_b),
         only_in_b=sorted(names_b - names_a),
+        pools_changed=_pools_changed(lock_a.provenance.pools, lock_b.provenance.pools),
     )

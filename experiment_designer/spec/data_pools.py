@@ -111,6 +111,7 @@ class DataPoolManager:
 
         self.pools: dict[str, list[dict[str, Any]]] = {}
         self.pool_definitions: dict[str, PoolDefinition] = {}
+        self.sources: dict[str, Path] = {}
         self.errors: list[str] = []
         self.warnings: list[str] = []
 
@@ -164,6 +165,7 @@ class DataPoolManager:
 
         if data:
             self.pools[name] = data
+            self.sources[name] = self.file_loader._resolve_path(source)
             return True
         return False
 
