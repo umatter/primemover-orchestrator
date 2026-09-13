@@ -1004,8 +1004,8 @@ class SpecValidator:
                 if key != used:
                     self.drops.report(
                         f"{prefix}.{key}",
-                        "key not read by a job definition",
-                        "a full job has only type, name, description, active and behaviors",
+                        f"ignored: only the first job shorthand ('{used}') is used",
+                        "one job per workflow item; move it to its own item",
                     )
 
         # An item that is neither a template/repeat block (returned above) nor a
