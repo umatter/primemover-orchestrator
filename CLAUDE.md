@@ -11,7 +11,7 @@ PrimeMover Orchestrator is a unified monitoring, debugging, and experiment manag
 
 This repo contains two Python packages sharing a monorepo:
 - **`orchestrator`** - CLI for lifecycle management, log aggregation, tracing, debugging, and MCP server
-- **`experiment_designer`** - YAML DSL for defining experiments with factorial designs
+- **`pmspec`** - the experiment designer: YAML DSL, factorial expansion, locks, upload/verify/audit (package, CLI and env-var prefix all share the name; older docs called it the "Experiment Designer")
 
 Both are installed as CLI entry points: `orchestrator` and `pmspec` (defined in `pyproject.toml`).
 
@@ -26,18 +26,18 @@ pytest
 
 # Run a single test file or specific test
 pytest orchestrator/tests/test_correlation.py -v
-pytest experiment_designer/tests/test_spec.py::TestSpecParser::test_parse -v
+pytest pmspec/tests/test_spec.py::TestSpecParser::test_parse -v
 
 # Run e2e tests (requires live infrastructure)
 pytest --e2e
 
 # Coverage
-pytest --cov=orchestrator --cov=experiment_designer
+pytest --cov=orchestrator --cov=pmspec
 
 # Lint and format (line length: 100)
-black orchestrator/ experiment_designer/
-ruff check orchestrator/ experiment_designer/ --fix
-mypy orchestrator/ experiment_designer/ --ignore-missing-imports
+black orchestrator/ pmspec/
+ruff check orchestrator/ pmspec/ --fix
+mypy orchestrator/ pmspec/ --ignore-missing-imports
 
 # All checks at once
 make check
@@ -157,7 +157,7 @@ applies.
 
 **`orchestrator/`** handles ops: starting/stopping Docker services, querying logs from Loki/CloudWatch/files, building execution traces from API data, debugging jobs via HAR files, and exposing everything through both CLI (Click) and MCP server (FastMCP).
 
-**`experiment_designer/`** handles experiment design: parsing YAML specs, expanding factorial designs into crawler configurations, validating against job type schemas, and converting to API-compatible JSON for upload.
+**`pmspec/`** handles experiment design: parsing YAML specs, expanding factorial designs into crawler configurations, validating against job type schemas, and converting to API-compatible JSON for upload.
 
 ### Key Source Locations
 
@@ -173,10 +173,10 @@ applies.
 - `orchestrator/tracing/trace_builder.py` - Reconstructs execution traces as hierarchical `TraceSpan` trees
 - `orchestrator/debug/job_debugger.py` - Multi-source job diagnostics
 - `orchestrator/mcp_server/server.py` - FastMCP server with all tools (stdio + HTTP transport)
-- `experiment_designer/cli.py` - `pmspec` Click CLI entry point
-- `experiment_designer/spec/converter.py` - YAML-to-JSON conversion pipeline
-- `experiment_designer/spec/design_expander.py` - Factorial design expansion
-- `experiment_designer/spec/job_registry.py` - Job type definitions and validation
+- `pmspec/cli.py` - `pmspec` Click CLI entry point
+- `pmspec/spec/converter.py` - YAML-to-JSON conversion pipeline
+- `pmspec/spec/design_expander.py` - Factorial design expansion
+- `pmspec/spec/job_registry.py` - Job type definitions and validation
 - `scripts/har-drain.sh` - job-data archiver (MinIO → Nextcloud); copies, never deletes
 - `scripts/mlx-proxy-gen.py` - generate N Multilogin sticky-session proxy records (one exit IP per bot)
 - `scripts/monitor-memory.sh` - per-component **PSS** memory + browser-instance count + disk; `--json` for a sampler. Uses PSS (shared pages counted once), not summed RSS, which over-counted the browser total ~5x at 19 concurrent browsers. `system.used_mb`/`available_mb` from `free` are the box-level ground truth.
@@ -845,20 +845,20 @@ digits and discarding the zone — before, `2030-07-15T03:00:00Z` was stored as
 
 Generate times from the API's zone, never the host's: `datetime.now().astimezone()`
 is right only because every machine here happens to be CET/CEST, and would
-schedule an hour early from London. `experiment_designer.spec.time_utils.API_TIMEZONE`
+schedule an hour early from London. `pmspec.spec.time_utils.API_TIMEZONE`
 is the one declaration, shared by the DSL, the e2e and the canary. Reference
 implementation: `orchestrator/e2e/runner.py:_upload_experiment()`.
 
-## Experiment Designer
+## pmspec — the experiment designer
 
 The experiment designer uses YAML to define experiments with factorial designs: factorial
 expansion, reusable templates, parameter distributions, data pools with scoring, and relative
 timestamps (`now`, `+5m`). A `with:` value on a `template:`/`repeat:` item can also be a per-bot
 pool draw (`{from_pool, field, select: random|first}`), taken without replacement within each
-crawler and seeded so the lock stays deterministic (`docs/experiment-designer.md` § Per-bot
+crawler and seeded so the lock stays deterministic (`docs/pmspec.md` § Per-bot
 template draws).
 
-The reproducibility artifact is the *lock* (`docs/experiment-designer.md` § Locks): committed,
+The reproducibility artifact is the *lock* (`docs/pmspec.md` § Locks): committed,
 hashed, bound to the experiment via `pmspec.*` preferences, checked by `pmspec verify`.
 `upload_experiment` takes a lock and a required `mode`. Format 2 (`pmspec_lock: 2`, the default
 `compile` writes) factors each distinct queue/agent body once under `parts`, keyed by its own
@@ -883,7 +883,7 @@ never deletes by name — a candidate must have a name starting `test-` **and** 
 `diff_locks`, `audit_experiment`, `pm_cleanup_test_experiments`.
 
 `pmspec compile` (and MCP `compile_experiment_spec`) is **strict by default**
-(`docs/experiment-designer.md` § The strict contract): a construct the pipeline would silently
+(`docs/pmspec.md` § The strict contract): a construct the pipeline would silently
 drop, ignore, or leave unresolved is a compile error, not a warning, so a spec that "compiles with
 some warnings" is a spec with drops nobody fixed. `additional_sessions` (extra queues on one bot)
 and `proxy.from_pool` (one CSV row, hence one exit IP, per bot) both now compile and are checked
@@ -921,7 +921,7 @@ crawlers:
         - wait: 5s
 ```
 
-See `docs/experiment-designer.md` for full documentation.
+See `docs/pmspec.md` for full documentation.
 
 > **`cookie_pref` is a treatment, and the runner acts on it.** Since
 > `primemover_runner` PR #61 (2026-08-26) the runner answers cookie/GDPR
@@ -940,13 +940,13 @@ See `docs/experiment-designer.md` for full documentation.
 
 ## Testing
 
-- Tests live in `orchestrator/tests/` and `experiment_designer/tests/`
+- Tests live in `orchestrator/tests/` and `pmspec/tests/`
 - E2E tests (files matching `test_e2e*`) are **skipped by default**; pass `--e2e` to pytest to run them
 - E2E tests require live infrastructure (API, monitoring stack running)
 - Custom markers: `@pytest.mark.e2e`, `@pytest.mark.multilogin`
 - Mock external services (API, Loki, CloudWatch) in unit tests
 - Shared fixtures in `orchestrator/tests/conftest.py`: `cli_runner`, `mock_settings`, `mock_httpx_client`, `sample_log_entries`
-- `experiment_designer/tests/` has no conftest.py; its tests are self-contained
+- `pmspec/tests/` has no conftest.py; its tests are self-contained
 - CI runs tests + lint + type-check on Python 3.10, 3.11, 3.12 (`.github/workflows/ci.yml`)
 
 **A green `--youtube` e2e says nothing about whether any treatment works.** That
@@ -1028,7 +1028,7 @@ Non-obvious constraints, each of which cost a red build to find:
   Removed rather than tokenised: the number is one `pytest --cov` away, and the
   history/PR-comment features it sells assume a team large enough for coverage
   to drift unnoticed. Read it from the job log, or run
-  `pytest --cov=orchestrator --cov=experiment_designer` locally.
+  `pytest --cov=orchestrator --cov=pmspec` locally.
   Worth knowing what it says — **measured 2026-09-10, and the previous figures
   here were badly stale**: **70% overall**, `mcp_server/server.py` at **76%**
   (the `pm_` write tools have 49 tests in `test_mcp_write_tools.py` and 20 more
@@ -1039,7 +1039,7 @@ Non-obvious constraints, each of which cost a red build to find:
   Where it is genuinely thin is `components/*` — `manager.py` 37%, `runner.py`
   41%, `api.py` 24%, `lambda_server.py` 33% — which drive Docker and
   subprocesses and are awkward to unit test, and
-  `experiment_designer/summary/visualizer.py` at 9%. Re-measure before acting on
+  `pmspec/summary/visualizer.py` at 9%. Re-measure before acting on
   any of these numbers: they drift, and a stale coverage note costs somebody an
   afternoon writing tests for code that already had them.
 

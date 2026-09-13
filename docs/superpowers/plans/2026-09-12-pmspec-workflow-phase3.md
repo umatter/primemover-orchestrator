@@ -4,7 +4,7 @@
 
 **Goal:** The day-to-day commands on top of a trustworthy lock: `pmspec status` (specification + execution on one screen), `pmspec diff` (two locks), `pmspec cleanup` (test experiments only), `preview`/`summary` reading locks, and the two MCP `upload_experiment` gaps (`allow_dirty`/`allow_past`; dry-run consults the secrets store).
 
-**Architecture:** Three small modules in `experiment_designer/lock/` — `status.py`, `diff.py`, `cleanup.py` — each a pure function over a session-shaped object (`get`/`get_bytes`/`delete`) returning a dataclass with `render()`, so the CLI and the MCP are thin and share one implementation, exactly like `verify`. `summary`/`preview` gain a lock path via `SummaryGenerator.from_lock`. Nothing new touches the API.
+**Architecture:** Three small modules in `pmspec/lock/` — `status.py`, `diff.py`, `cleanup.py` — each a pure function over a session-shaped object (`get`/`get_bytes`/`delete`) returning a dataclass with `render()`, so the CLI and the MCP are thin and share one implementation, exactly like `verify`. `summary`/`preview` gain a lock path via `SummaryGenerator.from_lock`. Nothing new touches the API.
 
 **Tech Stack:** Python 3.10+, existing `requests`/`httpx` sessions, pytest with in-memory fake sessions.
 
@@ -22,27 +22,27 @@
 
 | path | responsibility |
 |---|---|
-| `experiment_designer/lock/status.py` (new) | `ExperimentStatus`, `experiment_status(session, experiment_id, hours, lock_text=None)`, `render()` |
-| `experiment_designer/lock/diff.py` (new) | `LockDiff`, `diff_locks(text_a, text_b)`, `render()` |
-| `experiment_designer/lock/cleanup.py` (new) | `CleanupCandidate`, `find_test_experiments(session, older_than=None)`, `delete_experiments(session, ids)` |
-| `experiment_designer/lock/api.py` (modify) | `ApiSession.delete(path)` |
-| `experiment_designer/summary/generator.py` (modify) | `from_lock(lock) -> ExperimentSummary`, `from_lock_text(text)` |
-| `experiment_designer/cli.py` (modify) | `status`, `diff`, `cleanup`; `preview`/`summary` accept locks |
+| `pmspec/lock/status.py` (new) | `ExperimentStatus`, `experiment_status(session, experiment_id, hours, lock_text=None)`, `render()` |
+| `pmspec/lock/diff.py` (new) | `LockDiff`, `diff_locks(text_a, text_b)`, `render()` |
+| `pmspec/lock/cleanup.py` (new) | `CleanupCandidate`, `find_test_experiments(session, older_than=None)`, `delete_experiments(session, ids)` |
+| `pmspec/lock/api.py` (modify) | `ApiSession.delete(path)` |
+| `pmspec/summary/generator.py` (modify) | `from_lock(lock) -> ExperimentSummary`, `from_lock_text(text)` |
+| `pmspec/cli.py` (modify) | `status`, `diff`, `cleanup`; `preview`/`summary` accept locks |
 | `orchestrator/mcp_server/server.py` (modify) | `experiment_status`, `diff_locks`, `pm_cleanup_test_experiments`; `_McpSession.delete`; `upload_experiment(allow_dirty=, allow_past=)` + dry-run secrets check |
-| `docs/experiment-designer.md`, `CLAUDE.md`, `.claude/skills/primemover-compose/SKILL.md`, `.claude/skills/primemover-debug/SKILL.md` (modify) | the commands |
-| tests: `experiment_designer/tests/test_lock_status.py`, `test_lock_diff.py`, `test_lock_cleanup.py`, `test_lock_summary_roundtrip.py`, `test_lock_cli_workflow.py`; `orchestrator/tests/test_mcp_workflow_tools.py` | |
+| `docs/pmspec.md`, `CLAUDE.md`, `.claude/skills/primemover-compose/SKILL.md`, `.claude/skills/primemover-debug/SKILL.md` (modify) | the commands |
+| tests: `pmspec/tests/test_lock_status.py`, `test_lock_diff.py`, `test_lock_cleanup.py`, `test_lock_summary_roundtrip.py`, `test_lock_cli_workflow.py`; `orchestrator/tests/test_mcp_workflow_tools.py` | |
 
 ---
 
 ### Task 1: `pmspec status`
 
 **Files:**
-- Create: `experiment_designer/lock/status.py`
-- Modify: `experiment_designer/cli.py` (new command), `orchestrator/mcp_server/server.py` (new read tool `experiment_status`)
-- Test: `experiment_designer/tests/test_lock_status.py`, `orchestrator/tests/test_mcp_workflow_tools.py` (start it)
+- Create: `pmspec/lock/status.py`
+- Modify: `pmspec/cli.py` (new command), `orchestrator/mcp_server/server.py` (new read tool `experiment_status`)
+- Test: `pmspec/tests/test_lock_status.py`, `orchestrator/tests/test_mcp_workflow_tools.py` (start it)
 
 **Interfaces:**
-- Consumes: `experiment_designer.lock.verify.verify_lock` (when a lock is given), session `.get(path, params)`.
+- Consumes: `pmspec.lock.verify.verify_lock` (when a lock is given), session `.get(path, params)`.
 - Produces:
   ```python
   @dataclass class ProvenanceUpload: label: str; values: dict[str, str]        # one per "upload N" label, values keyed by pmspec.* name
@@ -61,10 +61,10 @@
 - [ ] **Step 1: Write the failing tests**
 
 ```python
-# experiment_designer/tests/test_lock_status.py
+# pmspec/tests/test_lock_status.py
 """status: what was uploaded (provenance), and how it is running (health), on one screen."""
 
-from experiment_designer.lock.status import experiment_status
+from pmspec.lock.status import experiment_status
 
 
 class FakeSession:
@@ -133,7 +133,7 @@ def test_treatment_lost_makes_status_not_ok():
 
 
 def test_with_a_lock_runs_verify(monkeypatch):
-    from experiment_designer.lock import status as status_mod
+    from pmspec.lock import status as status_mod
 
     class V:
         ok = False
@@ -164,7 +164,7 @@ def local_api(monkeypatch, mock_settings):
 
 
 def test_experiment_status_tool(monkeypatch):
-    from experiment_designer.lock.status import ExperimentStatus, ProvenanceUpload
+    from pmspec.lock.status import ExperimentStatus, ProvenanceUpload
 
     st = ExperimentStatus(experiment_id=181, name="Study", runner_user_id=None,
                           uploads=[ProvenanceUpload("upload 1", {"mode": "test", "lock_sha256": "a" * 64})],
@@ -175,12 +175,12 @@ def test_experiment_status_tool(monkeypatch):
 ```
 (The MCP tool is registered under the name `experiment_status` via `@mcp.tool(name="experiment_status")` on a function called `experiment_status_tool`, so the module-level import `experiment_status` from `lock.status` can be patched — mirror how `verify_experiment` wraps `verify_lock`.)
 
-- [ ] **Step 2: Run to verify they fail** — `venv/bin/pytest experiment_designer/tests/test_lock_status.py orchestrator/tests/test_mcp_workflow_tools.py -v` → `ModuleNotFoundError`.
+- [ ] **Step 2: Run to verify they fail** — `venv/bin/pytest pmspec/tests/test_lock_status.py orchestrator/tests/test_mcp_workflow_tools.py -v` → `ModuleNotFoundError`.
 
 - [ ] **Step 3: Implement**
 
 ```python
-# experiment_designer/lock/status.py
+# pmspec/lock/status.py
 """One screen: what pmspec uploaded (provenance), how it is running (health), and --
 given a lock -- whether the two still agree (verify)."""
 
@@ -282,7 +282,7 @@ def experiment_status(
 ```
 (`_uploads` sorts "upload 2" after "upload 10" correctly by length-then-name.) `health` comes back through the session's `_unwrap`; if the API wraps it in `data`, the session already unwraps.
 
-CLI in `experiment_designer/cli.py`:
+CLI in `pmspec/cli.py`:
 ```python
 @cli.command()
 @click.argument("experiment_id", type=int)
@@ -305,7 +305,7 @@ def status(experiment_id: int, lock: str | None, hours: int, deep: bool) -> None
 ```
 MCP: `experiment_status_tool` registered as `experiment_status`, using `_McpSession()`; response `{experiment_id, name, runner_user_id, uploads: [{label, values}], health, ok, bound_to_any_lock, verify: {...}|None, render}`; verify serialised like `verify_experiment` (with `_redact_differences`).
 
-- [ ] **Step 4: Run tests, then `make check`.** Add a CLI test in `experiment_designer/tests/test_lock_cli_workflow.py` (`status 181` with `_session_from_env` and `experiment_status` monkeypatched → prints render, exit code follows `ok`).
+- [ ] **Step 4: Run tests, then `make check`.** Add a CLI test in `pmspec/tests/test_lock_cli_workflow.py` (`status 181` with `_session_from_env` and `experiment_status` monkeypatched → prints render, exit code follows `ok`).
 
 - [ ] **Step 5: Commit** — `git commit -m "pmspec: status -- provenance, health and optional verify on one screen"`
 
@@ -314,9 +314,9 @@ MCP: `experiment_status_tool` registered as `experiment_status`, using `_McpSess
 ### Task 2: `pmspec diff`
 
 **Files:**
-- Create: `experiment_designer/lock/diff.py`
-- Modify: `experiment_designer/cli.py`, `orchestrator/mcp_server/server.py` (`diff_locks` tool)
-- Test: `experiment_designer/tests/test_lock_diff.py`
+- Create: `pmspec/lock/diff.py`
+- Modify: `pmspec/cli.py`, `orchestrator/mcp_server/server.py` (`diff_locks` tool)
+- Test: `pmspec/tests/test_lock_diff.py`
 
 **Interfaces:**
 - Consumes: `lock.verify.lock_shape`, `compare_shapes`, `Difference`; `lock.io.load_lock`; `lock.anchor.resolve_anchor`.
@@ -333,9 +333,9 @@ MCP: `experiment_status_tool` registered as `experiment_status`, using `_McpSess
 - [ ] **Step 1: Tests**
 
 ```python
-# experiment_designer/tests/test_lock_diff.py
-from experiment_designer.lock.diff import diff_locks
-from experiment_designer.lock.io import dump_lock
+# pmspec/tests/test_lock_diff.py
+from pmspec.lock.diff import diff_locks
+from pmspec.lock.io import dump_lock
 
 from .test_lock_io import make_lock
 
@@ -397,9 +397,9 @@ def test_provenance_side_by_side_in_render():
 ### Task 3: `pmspec cleanup` (test experiments only)
 
 **Files:**
-- Create: `experiment_designer/lock/cleanup.py`
-- Modify: `experiment_designer/lock/api.py` (`delete`), `experiment_designer/cli.py`, `orchestrator/mcp_server/server.py` (`_McpSession.delete`; tool `pm_cleanup_test_experiments`), `orchestrator/tests/test_mcp_write_guard.py` (expected write-tool set)
-- Test: `experiment_designer/tests/test_lock_cleanup.py`, `orchestrator/tests/test_mcp_workflow_tools.py`
+- Create: `pmspec/lock/cleanup.py`
+- Modify: `pmspec/lock/api.py` (`delete`), `pmspec/cli.py`, `orchestrator/mcp_server/server.py` (`_McpSession.delete`; tool `pm_cleanup_test_experiments`), `orchestrator/tests/test_mcp_write_guard.py` (expected write-tool set)
+- Test: `pmspec/tests/test_lock_cleanup.py`, `orchestrator/tests/test_mcp_workflow_tools.py`
 
 **Interfaces:**
 - Produces:
@@ -418,14 +418,14 @@ def test_provenance_side_by_side_in_render():
 - [ ] **Step 1: Tests**
 
 ```python
-# experiment_designer/tests/test_lock_cleanup.py
+# pmspec/tests/test_lock_cleanup.py
 from datetime import datetime, timedelta
 
 import pytest
 
-from experiment_designer.lock.api import ApiError
-from experiment_designer.lock.cleanup import CleanupError, delete_experiments, find_test_experiments, parse_age
-from experiment_designer.spec.time_utils import API_TIMEZONE
+from pmspec.lock.api import ApiError
+from pmspec.lock.cleanup import CleanupError, delete_experiments, find_test_experiments, parse_age
+from pmspec.spec.time_utils import API_TIMEZONE
 
 NOW = datetime(2026, 9, 12, 12, 0, tzinfo=API_TIMEZONE)
 
@@ -512,8 +512,8 @@ MCP tests (append to `test_mcp_workflow_tools.py`): dry-run makes no DELETE (pat
 ### Task 4: `preview` and `summary` read locks; the round-trip test
 
 **Files:**
-- Modify: `experiment_designer/summary/generator.py` (`from_lock`, `from_lock_text`), `experiment_designer/cli.py` (`preview`, `summary`), `orchestrator/mcp_server/server.py` (`summarize_yaml_spec` accepts a lock)
-- Test: `experiment_designer/tests/test_lock_summary_roundtrip.py`
+- Modify: `pmspec/summary/generator.py` (`from_lock`, `from_lock_text`), `pmspec/cli.py` (`preview`, `summary`), `orchestrator/mcp_server/server.py` (`summarize_yaml_spec` accepts a lock)
+- Test: `pmspec/tests/test_lock_summary_roundtrip.py`
 
 **Interfaces:**
 - Produces: `SummaryGenerator.from_lock(lock: Lock) -> ExperimentSummary` — `source=DataSource.LOCK` (add to the enum), name/description from `lock.experiment`, crawlers via `_extract_crawler_summary_from_json` over `lock.crawlers` (queues carry `start_offset`, which the extractor does not read), `design_seed = lock.provenance.seed`, `has_design = False` (a lock is post-expansion; say so in `to_text()` as `source: lock (seed N, commit X)`); `from_lock_text(text)` = `load_lock` + `from_lock`. `preview LOCK` prints crawler count, queue and job totals, anchor, seed, provenance — no design formula (there is none). `summary LOCK` works wherever a spec does (text/json/html, `--compare` between any mix of spec and lock).
@@ -521,15 +521,15 @@ MCP tests (append to `test_mcp_workflow_tools.py`): dry-run makes no DELETE (pat
 - [ ] **Step 1: Tests**
 
 ```python
-# experiment_designer/tests/test_lock_summary_roundtrip.py
+# pmspec/tests/test_lock_summary_roundtrip.py
 """§6: spec -> lock -> summary equals spec -> summary, for every example spec that compiles."""
 
 from pathlib import Path
 
 import pytest
 
-from experiment_designer.lock.build import compile_spec
-from experiment_designer.summary.generator import SummaryGenerator
+from pmspec.lock.build import compile_spec
+from pmspec.summary.generator import SummaryGenerator
 
 EXAMPLES = Path(__file__).resolve().parents[1] / "examples"
 COMPILABLE = ["simple-distribution-study.yaml", "websearch-study.yaml"]   # the two that pass strict validation
@@ -560,8 +560,8 @@ def test_lock_summary_text_names_its_source():
 def test_cli_preview_and_summary_accept_a_lock(tmp_path):
     from click.testing import CliRunner
 
-    from experiment_designer.cli import cli
-    from experiment_designer.lock.io import dump_lock
+    from pmspec.cli import cli
+    from pmspec.lock.io import dump_lock
 
     path = EXAMPLES / COMPILABLE[0]
     result = compile_spec(path.read_text(), base_dir=path.parent, spec_path="x", seed=7)
@@ -594,7 +594,7 @@ If `from_spec` and `from_lock` disagree on `params` because the spec path stores
 
 ### Task 6: Docs and skills
 
-**Files:** `docs/experiment-designer.md` (workflow: add `status`, `diff`, `cleanup` after "Step 5: Verify"; the CLI table; the MCP tool list in "Locks… for generators"), `CLAUDE.md` (Experiment Designer paragraph: the three commands, `cleanup` deletes only `pmspec.mode=test`), `.claude/skills/primemover-compose/SKILL.md` (after upload: `experiment_status`; test runs: `pm_cleanup_test_experiments`), `.claude/skills/primemover-debug/SKILL.md` (first step for a pmspec experiment: `experiment_status(id, lock_content=…)`).
+**Files:** `docs/pmspec.md` (workflow: add `status`, `diff`, `cleanup` after "Step 5: Verify"; the CLI table; the MCP tool list in "Locks… for generators"), `CLAUDE.md` (Experiment Designer paragraph: the three commands, `cleanup` deletes only `pmspec.mode=test`), `.claude/skills/primemover-compose/SKILL.md` (after upload: `experiment_status`; test runs: `pm_cleanup_test_experiments`), `.claude/skills/primemover-debug/SKILL.md` (first step for a pmspec experiment: `experiment_status(id, lock_content=…)`).
 
 - [ ] Verify every command/flag/tool against `--help` and the code; `make check`; commit `docs: status, diff, cleanup`.
 

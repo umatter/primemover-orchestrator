@@ -27,15 +27,15 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 COPY pyproject.toml README.md ./
 
 # Create minimal package structure for pip install
-RUN mkdir -p orchestrator experiment_designer && \
-    touch orchestrator/__init__.py experiment_designer/__init__.py
+RUN mkdir -p orchestrator pmspec && \
+    touch orchestrator/__init__.py pmspec/__init__.py
 
 # Install Python dependencies
 RUN pip install --no-cache-dir -e .
 
 # Copy application code
 COPY orchestrator/ ./orchestrator/
-COPY experiment_designer/ ./experiment_designer/
+COPY pmspec/ ./pmspec/
 
 # Copy additional files needed for runtime
 COPY .env.example .env

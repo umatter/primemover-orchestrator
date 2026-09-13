@@ -1,15 +1,15 @@
-"""orchestrator experiment upload is a thin wrapper over experiment_designer.lock."""
+"""orchestrator experiment upload is a thin wrapper over pmspec.lock."""
 
 from pathlib import Path
 
 import pytest
 
-from experiment_designer.lock.api import ApiError
-from experiment_designer.lock.io import dump_lock
-from experiment_designer.lock.model import LOCK_FORMAT_VERSION
-from experiment_designer.lock.upload import UploadResult
-from experiment_designer.tests.test_lock_io import make_lock
 from orchestrator.cli import cli
+from pmspec.lock.api import ApiError
+from pmspec.lock.io import dump_lock
+from pmspec.lock.model import LOCK_FORMAT_VERSION
+from pmspec.lock.upload import UploadResult
+from pmspec.tests.test_lock_io import make_lock
 
 
 @pytest.fixture
@@ -41,7 +41,7 @@ def patched_upload(monkeypatch, mock_settings):
     """Patch settings, the secrets store, and a successful `upload_lock`.
 
     `upload_lock`/`verify_lock` are imported lazily inside `experiment_upload`
-    (module-level imports of experiment_designer.lock.upload cost ~150ms and
+    (module-level imports of pmspec.lock.upload cost ~150ms and
     would slow every `orchestrator` invocation), so they are patched at their
     source module rather than on orchestrator.cli.
     """
@@ -52,10 +52,10 @@ def patched_upload(monkeypatch, mock_settings):
         seen["mode"] = options.mode
         return UploadResult(9, "n", 1, 1, "f" * 64, "a", options.mode, None, "rec")
 
-    monkeypatch.setattr("experiment_designer.lock.upload.upload_lock", fake_upload_lock)
+    monkeypatch.setattr("pmspec.lock.upload.upload_lock", fake_upload_lock)
     monkeypatch.setattr("orchestrator.cli.get_settings", lambda: mock_settings)
     monkeypatch.setattr(
-        "experiment_designer.lock.secrets.SecretStore.load",
+        "pmspec.lock.secrets.SecretStore.load",
         classmethod(lambda cls, p=None: _FakeStore()),
     )
     return seen
@@ -70,7 +70,7 @@ def test_upload_delegates_and_uses_settings_credentials(
         def render(self):
             return "BOUND"
 
-    monkeypatch.setattr("experiment_designer.lock.verify.verify_lock", lambda *a, **k: _V())
+    monkeypatch.setattr("pmspec.lock.verify.verify_lock", lambda *a, **k: _V())
     out = cli_runner.invoke(cli, ["experiment", "upload", str(lock_file), "--mode", "test"])
     assert out.exit_code == 0, out.output
     assert patched_upload == {"base_url": "http://localhost:8090/api/v1", "mode": "test"}
@@ -91,7 +91,7 @@ def test_upload_keeps_record_when_verify_raises(
     def raising_verify_lock(*a, **k):
         raise ApiError("GET x: HTTP 500", status=500, detail="boom")
 
-    monkeypatch.setattr("experiment_designer.lock.verify.verify_lock", raising_verify_lock)
+    monkeypatch.setattr("pmspec.lock.verify.verify_lock", raising_verify_lock)
     record_path = tmp_path / "record.txt"
     out = cli_runner.invoke(
         cli,
@@ -117,7 +117,7 @@ def test_upload_exits_1_when_verify_not_ok(cli_runner, lock_file, monkeypatch, p
         def render(self):
             return "UNBOUND"
 
-    monkeypatch.setattr("experiment_designer.lock.verify.verify_lock", lambda *a, **k: _V())
+    monkeypatch.setattr("pmspec.lock.verify.verify_lock", lambda *a, **k: _V())
     out = cli_runner.invoke(cli, ["experiment", "upload", str(lock_file), "--mode", "test"])
     assert out.exit_code == 1
     assert "UNBOUND" in out.output
@@ -138,11 +138,11 @@ def test_upload_reports_an_invalid_lock_instead_of_a_traceback(
 
 
 def test_upload_reports_an_anchor_error(cli_runner, lock_file, monkeypatch, patched_upload):
-    from experiment_designer.lock.anchor import AnchorError
+    from pmspec.lock.anchor import AnchorError
 
     def refusing(lock_text, *, session, store, options):
         raise AnchorError("cannot parse start time 'x'")
 
-    monkeypatch.setattr("experiment_designer.lock.upload.upload_lock", refusing)
+    monkeypatch.setattr("pmspec.lock.upload.upload_lock", refusing)
     out = cli_runner.invoke(cli, ["experiment", "upload", str(lock_file), "--mode", "test"])
     assert out.exit_code == 1 and "cannot parse start time" in out.output

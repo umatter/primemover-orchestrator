@@ -6,10 +6,10 @@ from typing import Any
 
 import pytest
 
-from experiment_designer.lock.io import dump_lock
-from experiment_designer.lock.model import LOCK_FORMAT_VERSION
-from experiment_designer.tests.test_lock_io import make_lock
 from orchestrator.mcp_server import server as s
+from pmspec.lock.io import dump_lock
+from pmspec.lock.model import LOCK_FORMAT_VERSION
+from pmspec.tests.test_lock_io import make_lock
 
 SPEC = """
 version: "1.0"
@@ -111,7 +111,7 @@ def test_compile_records_pool_sha256_matching_a_disk_compile_of_the_same_bytes(t
     expected = hashlib.sha256(FILES["outlets.csv"].encode()).hexdigest()
     assert f"outlets: {expected}" in out["lock"]
 
-    from experiment_designer.lock.build import compile_spec
+    from pmspec.lock.build import compile_spec
 
     (tmp_path / "outlets.csv").write_text(FILES["outlets.csv"])
     result = compile_spec(SPEC, base_dir=tmp_path, spec_path="spec.yaml", seed=5)
@@ -178,7 +178,7 @@ def test_upload_passes_allow_flags_to_upload_lock(monkeypatch: pytest.MonkeyPatc
     seen = {}
 
     def fake_upload_lock(lock_text, *, session, store, options):
-        from experiment_designer.lock.upload import UploadResult
+        from pmspec.lock.upload import UploadResult
 
         seen["options"] = options
         return UploadResult(
@@ -225,7 +225,7 @@ def test_upload_applies_through_upload_lock(monkeypatch: pytest.MonkeyPatch):
     seen = {}
 
     def fake_upload_lock(lock_text, *, session, store, options):
-        from experiment_designer.lock.upload import UploadResult
+        from pmspec.lock.upload import UploadResult
 
         seen["mode"] = options.mode
         seen["session"] = session
@@ -266,7 +266,7 @@ def test_upload_returns_experiment_id_when_verify_raises(monkeypatch: pytest.Mon
     """
 
     def fake_upload_lock(lock_text, *, session, store, options):
-        from experiment_designer.lock.upload import UploadResult
+        from pmspec.lock.upload import UploadResult
 
         return UploadResult(
             181,
@@ -293,7 +293,7 @@ def test_upload_returns_experiment_id_when_verify_raises(monkeypatch: pytest.Mon
 
 
 def test_verify_experiment_tool(monkeypatch: pytest.MonkeyPatch):
-    from experiment_designer.lock.verify import Difference, VerifyResult
+    from pmspec.lock.verify import Difference, VerifyResult
 
     monkeypatch.setattr(
         s,
@@ -316,7 +316,7 @@ def test_verify_experiment_tool(monkeypatch: pytest.MonkeyPatch):
 
 
 def test_verify_experiment_redacts_secret_valued_differences(monkeypatch: pytest.MonkeyPatch):
-    from experiment_designer.lock.verify import Difference, VerifyResult
+    from pmspec.lock.verify import Difference, VerifyResult
 
     monkeypatch.setattr(
         s,

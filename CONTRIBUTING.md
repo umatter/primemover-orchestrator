@@ -28,21 +28,21 @@ We use automated tools to maintain code quality. Pre-commit hooks will run autom
 
 ```bash
 # Format code with Black
-black orchestrator/ experiment_designer/
+black orchestrator/ pmspec/
 ```
 
 ### Linting
 
 ```bash
 # Lint with Ruff (auto-fix)
-ruff check orchestrator/ experiment_designer/ --fix
+ruff check orchestrator/ pmspec/ --fix
 ```
 
 ### Type Checking
 
 ```bash
 # Type check with mypy
-mypy orchestrator/ experiment_designer/ --ignore-missing-imports
+mypy orchestrator/ pmspec/ --ignore-missing-imports
 ```
 
 ## Testing
@@ -55,7 +55,7 @@ pytest
 pytest orchestrator/tests/test_cli.py -v
 
 # Run with coverage
-pytest --cov=orchestrator --cov=experiment_designer
+pytest --cov=orchestrator --cov=pmspec
 
 # Run tests matching a pattern
 pytest -k "test_status" -v
@@ -63,7 +63,7 @@ pytest -k "test_status" -v
 
 ### Writing Tests
 
-- Place tests in `orchestrator/tests/` or `experiment_designer/tests/`
+- Place tests in `orchestrator/tests/` or `pmspec/tests/`
 - Use pytest fixtures from `conftest.py` for common setup
 - Mock external services (API, Loki, CloudWatch) in tests
 - Aim for clear, focused test cases
@@ -79,7 +79,7 @@ orchestrator/           # Main CLI and monitoring tools
 ├── tracing/           # Correlation ID and tracing
 └── tests/             # Tests
 
-experiment_designer/   # YAML experiment DSL
+pmspec/   # YAML experiment DSL
 ├── cli.py            # pmspec CLI
 ├── spec/             # Spec parsing and conversion
 └── tests/            # Tests

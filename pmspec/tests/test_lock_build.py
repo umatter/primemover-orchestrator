@@ -1,0 +1,342 @@
+"""compile: spec + seed -> lock. Deterministic, refuses what cannot be committed."""
+
+import hashlib
+import subprocess
+from pathlib import Path
+
+import pytest
+
+from pmspec.lock.build import compile_spec
+from pmspec.lock.io import dump_lock
+from pmspec.lock.provenance import git_commit, git_toplevel
+
+SPEC = """
+version: "1.0"
+experiment:
+  name: Compiled
+  generator: build_spec.R
+design:
+  factors:
+    arm:
+      levels: [control, treated]
+      maps_to:
+        params.pi: {control: 0, treated: 1}
+  parameters:
+    alpha:
+      distribution: uniform
+      min: 0
+      max: 1
+  replications: 2
+data_pools:
+  outlets:
+    type: csv
+    source: outlets.csv
+crawlers:
+  - from_design: true
+    name: "bot_{arm}_{replica:02d}"
+    proxy:
+      type: http
+      hostname: pr.oxylabs.io
+      port: 7777
+      username: "${secret:oxylabs.u}"
+      password: "${secret:oxylabs.p}"
+    session:
+      start: "+5m"
+      workflow:
+        - visit: https://example.com
+        - wait: 2s
+"""
+
+
+@pytest.fixture
+def spec_dir(tmp_path: Path) -> Path:
+    (tmp_path / "outlets.csv").write_text("domain,lean\nnyt.com,L\nfox.com,R\n")
+    (tmp_path / "spec.yaml").write_text(SPEC)
+    return tmp_path
+
+
+def _compile(spec_dir: Path, text: str = SPEC, **kw):
+    kw.setdefault("seed", 42)
+    return compile_spec(text, base_dir=spec_dir, spec_path="spec.yaml", **kw)
+
+
+def test_compile_is_byte_deterministic(spec_dir: Path):
+    a = _compile(spec_dir)
+    b = _compile(spec_dir)
+    assert not a.errors and a.lock is not None
+    assert dump_lock(a.lock) == dump_lock(b.lock)
+
+
+def test_lock_has_no_timestamp(spec_dir: Path):
+    text = dump_lock(_compile(spec_dir).lock)
+    assert "compiled_at" not in text
+
+
+def test_different_seed_changes_draws_not_structure(spec_dir: Path):
+    a = _compile(spec_dir, seed=1).lock
+    b = _compile(spec_dir, seed=2).lock
+    names = lambda lk: [c["name"] for c in lk.crawlers]  # noqa: E731
+    draws = lambda lk: [c["configuration"]["params"]["alpha"] for c in lk.crawlers]  # noqa: E731
+    assert names(a) == names(b) and len(names(a)) == 4
+    assert draws(a) != draws(b)
+
+
+def test_unseeded_compile_is_refused(spec_dir: Path):
+    result = _compile(spec_dir, seed=None)
+    assert result.lock is None
+    assert any("seed" in e for e in result.errors)
+
+
+def test_design_seed_is_used_when_no_flag(spec_dir: Path):
+    text = SPEC.replace("design:\n", "design:\n  seed: 7\n")
+    result = _compile(spec_dir, text, seed=None)
+    assert result.lock is not None and result.lock.provenance.seed == 7
+
+
+def test_literal_credential_is_refused(spec_dir: Path):
+    text = SPEC.replace('password: "${secret:oxylabs.p}"', 'password: "hunter2"')
+    result = _compile(spec_dir, text)
+    assert result.lock is None
+    assert any("crawlers[0].proxy.password" in e for e in result.errors)
+
+
+def test_relative_starts_become_offsets_from_upload(spec_dir: Path):
+    lock = _compile(spec_dir).lock
+    assert lock.schedule == {"anchor": "upload"}
+    assert {q["start_offset"] for c in lock.crawlers for q in c["queues"]} == {"+5m"}
+    assert all("start_at" not in q for c in lock.crawlers for q in c["queues"])
+
+
+def test_mixed_starts_are_a_compile_error(spec_dir: Path):
+    text = SPEC + """
+  - name: fixed_bot
+    session:
+      start: "2026-10-01T10:00:00"
+      workflow:
+        - wait: 1s
+"""
+    result = _compile(spec_dir, text)
+    assert result.lock is None and any("mixed" in e for e in result.errors)
+
+
+def test_provenance_header(spec_dir: Path):
+    lock = _compile(spec_dir).lock
+    p = lock.provenance
+    assert p.spec_path == "spec.yaml"
+    assert len(p.spec_sha256) == 64
+    assert p.generator == "build_spec.R"
+    assert p.seed == 42 and p.lax is False
+    assert p.git_commit is None  # tmp_path is not a repo
+
+
+def test_generator_flag_overrides_spec(spec_dir: Path):
+    lock = _compile(spec_dir, generator="hand").lock
+    assert lock.provenance.generator == "hand"
+
+
+def test_git_commit_reports_dirty(tmp_path: Path):
+    subprocess.run(["git", "init", "-q", str(tmp_path)], check=True)
+    subprocess.run(
+        [
+            "git",
+            "-C",
+            str(tmp_path),
+            "-c",
+            "user.email=t@t",
+            "-c",
+            "user.name=t",
+            "commit",
+            "-q",
+            "--allow-empty",
+            "-m",
+            "init",
+        ],
+        check=True,
+    )
+    assert git_commit(tmp_path) is not None and not git_commit(tmp_path).endswith(  # type: ignore[union-attr]
+        "-dirty"
+    )
+    (tmp_path / "x").write_text("x")
+    assert git_commit(tmp_path).endswith("-dirty")  # type: ignore[union-attr]
+
+
+def test_git_commit_none_outside_a_repo(tmp_path: Path):
+    assert git_commit(tmp_path) is None
+
+
+def _git_repo(path: Path) -> None:
+    subprocess.run(["git", "init", "-q", str(path)], check=True)
+    subprocess.run(
+        ["git", "-C", str(path), "-c", "user.email=t@t", "-c", "user.name=t", "add", "-A"],
+        check=True,
+    )
+    subprocess.run(
+        [
+            "git",
+            "-C",
+            str(path),
+            "-c",
+            "user.email=t@t",
+            "-c",
+            "user.name=t",
+            "commit",
+            "-q",
+            "--allow-empty",
+            "-m",
+            "s",
+        ],
+        check=True,
+    )
+
+
+def test_git_toplevel(tmp_path: Path):
+    assert git_toplevel(tmp_path) is None
+    _git_repo(tmp_path)
+    (tmp_path / "design").mkdir()
+    assert git_toplevel(tmp_path / "design") == tmp_path.resolve()
+
+
+def test_spec_path_is_relative_to_the_repo_toplevel(tmp_path: Path, monkeypatch):
+    design = tmp_path / "design"
+    design.mkdir()
+    (design / "outlets.csv").write_text("domain,lean\nnyt.com,L\nfox.com,R\n")
+    spec = design / "spec.yaml"
+    spec.write_text(SPEC)
+    _git_repo(tmp_path)
+
+    monkeypatch.chdir(design)
+    a = compile_spec(SPEC, base_dir=design, spec_path=str(spec.resolve()), seed=42)
+    assert a.lock is not None and a.lock.provenance.spec_path == "design/spec.yaml"
+    assert a.lock.provenance.git_commit and not a.lock.provenance.git_commit.endswith("-dirty")
+
+    monkeypatch.chdir(tmp_path.parent)
+    b = compile_spec(SPEC, base_dir=design, spec_path=str(spec.resolve()), seed=42)
+    assert b.lock is not None
+    assert dump_lock(a.lock) == dump_lock(b.lock)
+
+
+def test_experiment_block_and_runner(spec_dir: Path):
+    text = SPEC.replace("  name: Compiled\n", "  name: Compiled\n  runner_user_id: 3\n")
+    lock = _compile(spec_dir, text).lock
+    assert lock.experiment == {
+        "name": "Compiled",
+        "description": "",
+        "runner_user_id": 3,
+        "contact": None,
+    }
+
+
+def test_experiment_contact_is_carried(spec_dir: Path):
+    """`contact` is an API field the MCP even requires; the spec key used to be
+    silently ignored and the uploader wrote its own."""
+    text = SPEC.replace("  name: Compiled\n", "  name: Compiled\n  contact: ada@example.org\n")
+    lock = _compile(spec_dir, text).lock
+    assert lock.experiment["contact"] == "ada@example.org"
+
+
+_POOL_REF = (
+    "    configuration:\n"
+    "      params:\n"
+    "        media_outlet_urls:\n"
+    "          from_pool: {pool}\n"
+    "          select: all\n"
+)
+
+
+def _with_pool_ref(pool_name: str = "outlets") -> str:
+    return SPEC.replace("    proxy:\n", _POOL_REF.format(pool=pool_name) + "    proxy:\n")
+
+
+def test_pool_reference_is_inlined(spec_dir: Path):
+    lock = _compile(spec_dir, _with_pool_ref()).lock
+    assert lock is not None
+    urls = lock.crawlers[0]["configuration"]["params"]["media_outlet_urls"]
+    assert isinstance(urls, list) and len(urls) == 2
+    assert "from_pool" not in dump_lock(lock)
+
+
+def test_unknown_pool_is_a_compile_error(spec_dir: Path):
+    result = _compile(spec_dir, _with_pool_ref("nope"))
+    assert result.lock is None
+    assert any("nope" in e for e in result.errors)
+
+
+def test_boolean_from_pool_without_pool_is_an_error(spec_dir: Path):
+    """`proxy: {from_pool: true}` with no `pool:` cannot be resolved to a row,
+    and `_convert_proxy` would otherwise quietly turn it into a 127.0.0.1:8080
+    proxy; a lock must not be built from it."""
+    text = SPEC + """
+  - name: geo_bot
+    proxy:
+      from_pool: true
+      match_field: location
+    session:
+      start: "+5m"
+      workflow:
+        - wait: 1s
+"""
+    result = _compile(spec_dir, text)
+    assert result.lock is None
+    assert any("crawlers[4].proxy" in e and "needs `pool:`" in e for e in result.errors)
+
+
+def test_compile_resolves_per_bot_draws(tmp_path: Path):
+    """A `with:` pool draw resolves to a real value in the lock -- never the
+    deferred token -- and two bots get different values from the same pool."""
+    (tmp_path / "queries.csv").write_text("term\nalpha\nbeta\n")
+    text = """
+version: "1.0"
+experiment: {name: Draws}
+data_pools:
+  queries:
+    type: csv
+    source: queries.csv
+templates:
+  search:
+    - type: {text: "${query}", selector: "//x"}
+design:
+  factors:
+    arm:
+      levels: [a, b]
+  replications: 1
+crawlers:
+  - from_design: true
+    name: "bot_{arm}"
+    session:
+      start: "+1m"
+      workflow:
+        - template: search
+          with: {query: {from_pool: queries, field: term}}
+"""
+    result = compile_spec(text, base_dir=tmp_path, spec_path="spec.yaml", seed=3)
+    assert result.lock is not None, result.errors
+    dumped = dump_lock(result.lock)
+    assert "%%pmspec-draw" not in dumped
+    assert "alpha" in dumped or "beta" in dumped
+
+
+def test_provenance_records_pool_sha256(spec_dir: Path):
+    lock = _compile(spec_dir).lock
+    assert lock is not None
+    expected = hashlib.sha256((spec_dir / "outlets.csv").read_bytes()).hexdigest()
+    assert lock.provenance.pools == {"outlets": expected}
+
+
+def test_changing_one_pool_csv_changes_only_that_entry_and_the_lock_bytes(spec_dir: Path):
+    (spec_dir / "terms.csv").write_text("term\nalpha\n")
+    text = SPEC.replace(
+        "data_pools:\n  outlets:\n    type: csv\n    source: outlets.csv\n",
+        "data_pools:\n  outlets:\n    type: csv\n    source: outlets.csv\n"
+        "  terms:\n    type: csv\n    source: terms.csv\n",
+    )
+    before = _compile(spec_dir, text).lock
+    assert before is not None
+    terms_sha_before = before.provenance.pools["terms"]
+
+    (spec_dir / "outlets.csv").write_text("domain,lean\nnyt.com,L\nfox.com,R\nwsj.com,C\n")
+    after = _compile(spec_dir, text).lock
+    assert after is not None
+
+    assert after.provenance.pools["terms"] == terms_sha_before
+    assert after.provenance.pools["outlets"] != before.provenance.pools["outlets"]
+    assert dump_lock(before) != dump_lock(after)

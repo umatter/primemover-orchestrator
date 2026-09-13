@@ -18,7 +18,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any
 
-from experiment_designer.spec.time_utils import API_TIMEZONE
+from pmspec.spec.time_utils import API_TIMEZONE
 
 #: A crawler whose name starts with this is a canary. Set by
 #: scripts/treatment-canary.py as ``treatment-canary-<YYYY-MM-DD>``.

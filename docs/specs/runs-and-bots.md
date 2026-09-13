@@ -152,7 +152,7 @@ always returns up the hierarchy.
 - **G** I leave a required field empty **T** submit for that Job is blocked with a message.
 
 **Type→fields map (a job's parameters ARE its Behaviours).** Ported to
-`src/app/enum/job-type-schema.ts` from the orchestrator `experiment_designer` job registry
+`src/app/enum/job-type-schema.ts` from the orchestrator `pmspec` job registry
 (the authoritative schema, also behind MCP `get_job_type_schema`). Each field is a Behaviour
 (`{name, value}`); required/optional + defaults per type. Summary:
 - `visitjob`: **url**; captchaMode(never)
@@ -185,7 +185,7 @@ edits these same Behaviours afterward.
   no dead informational-only step. (Choose during Slice E; keep the wizard guided.)
 
 ## 6. Out of scope (follow-ups)
-- Factorial/templated run generation (that is `experiment_designer`/`pmspec`'s job; a
+- Factorial/templated run generation (that is `pmspec`/`pmspec`'s job; a
   future "generate runs from template" action may call into it).
 - Bulk run operations, run cloning, drag-drop reorder polish (keyboard/up-down first).
 - Deleting the legacy admin routes.

@@ -42,7 +42,7 @@ jobs:
       # green only because fail_ci_if_error was false. A step that always fails
       # while reporting success is worse than no step.
       - name: Run tests
-        run: pytest --cov=orchestrator --cov=experiment_designer --cov-report=term -v
+        run: pytest --cov=orchestrator --cov=pmspec --cov-report=term -v
 
   lint:
     runs-on: ubuntu-latest
@@ -61,10 +61,10 @@ jobs:
           pip install ruff black
 
       - name: Check formatting with black
-        run: black --check orchestrator/ experiment_designer/ scripts/
+        run: black --check orchestrator/ pmspec/ scripts/
 
       - name: Lint with ruff
-        run: ruff check orchestrator/ experiment_designer/ scripts/
+        run: ruff check orchestrator/ pmspec/ scripts/
 
       # The shell under scripts/ is load-bearing: it boots the stack, drains
       # HAR data and runs the boot health check. It was unchecked entirely
@@ -93,4 +93,4 @@ jobs:
           pip install -e ".[dev]"
 
       - name: Type check with mypy
-        run: mypy orchestrator/ experiment_designer/ scripts/ --ignore-missing-imports
+        run: mypy orchestrator/ pmspec/ scripts/ --ignore-missing-imports

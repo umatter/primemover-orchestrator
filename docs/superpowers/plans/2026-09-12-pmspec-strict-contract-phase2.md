@@ -24,24 +24,24 @@
 
 | path | responsibility |
 |---|---|
-| `experiment_designer/spec/drops.py` (new) | `Drops` collector: `report(path, what, fix)`; `errors`/`warnings` views by mode; `count` |
-| `experiment_designer/spec/validator.py` (modify) | `SpecValidator(lax=)`; unknown-key check; drop sites; strategy schema registry |
-| `experiment_designer/spec/parser.py` (modify) | `SpecParser(lax=)`; `additional_sessions`; datetime normalisation |
-| `experiment_designer/spec/converter.py` (modify) | `SpecConverter(lax=)`; unresolved-variable scan; proxy pools |
-| `experiment_designer/lock/build.py` (modify) | runs the validator; threads `lax`; drop count in warnings |
-| `experiment_designer/cli.py`, `orchestrator/mcp_server/server.py` (modify) | `--lax`/`lax=` on validate; drop count surfaced |
-| `experiment_designer/tests/test_strict_contract.py` (new) | table-driven: one row per §4 rule, strict vs lax |
-| `experiment_designer/tests/test_proxy_pools.py`, `test_additional_sessions.py`, `test_strategy_schemas.py` (new) | the three features |
-| `docs/experiment-designer.md`, `CLAUDE.md` (modify) | the contract, `--lax`, proxy pools, `strategy_schemas`, `additional_sessions` |
+| `pmspec/spec/drops.py` (new) | `Drops` collector: `report(path, what, fix)`; `errors`/`warnings` views by mode; `count` |
+| `pmspec/spec/validator.py` (modify) | `SpecValidator(lax=)`; unknown-key check; drop sites; strategy schema registry |
+| `pmspec/spec/parser.py` (modify) | `SpecParser(lax=)`; `additional_sessions`; datetime normalisation |
+| `pmspec/spec/converter.py` (modify) | `SpecConverter(lax=)`; unresolved-variable scan; proxy pools |
+| `pmspec/lock/build.py` (modify) | runs the validator; threads `lax`; drop count in warnings |
+| `pmspec/cli.py`, `orchestrator/mcp_server/server.py` (modify) | `--lax`/`lax=` on validate; drop count surfaced |
+| `pmspec/tests/test_strict_contract.py` (new) | table-driven: one row per §4 rule, strict vs lax |
+| `pmspec/tests/test_proxy_pools.py`, `test_additional_sessions.py`, `test_strategy_schemas.py` (new) | the three features |
+| `docs/pmspec.md`, `CLAUDE.md` (modify) | the contract, `--lax`, proxy pools, `strategy_schemas`, `additional_sessions` |
 
 ---
 
 ### Task 1: The `Drops` collector and `lax` on the three components
 
 **Files:**
-- Create: `experiment_designer/spec/drops.py`
-- Modify: `experiment_designer/spec/validator.py` (`ValidationResult`, `SpecValidator.__init__`, `validate`), `experiment_designer/spec/parser.py` (`ParsedSpec`, `SpecParser.__init__`), `experiment_designer/spec/converter.py` (`ConversionResult`, `SpecConverter.__init__`)
-- Test: `experiment_designer/tests/test_strict_contract.py` (the collector part)
+- Create: `pmspec/spec/drops.py`
+- Modify: `pmspec/spec/validator.py` (`ValidationResult`, `SpecValidator.__init__`, `validate`), `pmspec/spec/parser.py` (`ParsedSpec`, `SpecParser.__init__`), `pmspec/spec/converter.py` (`ConversionResult`, `SpecConverter.__init__`)
+- Test: `pmspec/tests/test_strict_contract.py` (the collector part)
 
 **Interfaces:**
 - Produces:
@@ -60,7 +60,7 @@
 - [ ] **Step 1: Write the failing tests**
 
 ```python
-# experiment_designer/tests/test_strict_contract.py
+# pmspec/tests/test_strict_contract.py
 """§4 of the lock design: whatever would be dropped, ignored or left unresolved is
 an error; --lax turns it into a warning and a count. One row per rule."""
 
@@ -68,10 +68,10 @@ from __future__ import annotations
 
 import pytest
 
-from experiment_designer.spec.converter import SpecConverter
-from experiment_designer.spec.drops import Drops
-from experiment_designer.spec.parser import SpecParser
-from experiment_designer.spec.validator import SpecValidator
+from pmspec.spec.converter import SpecConverter
+from pmspec.spec.drops import Drops
+from pmspec.spec.parser import SpecParser
+from pmspec.spec.validator import SpecValidator
 
 
 class TestDrops:
@@ -114,8 +114,8 @@ class TestComponentsCarryLax:
 
 - [ ] **Step 2: Run to verify they fail**
 
-Run: `venv/bin/pytest experiment_designer/tests/test_strict_contract.py -v`
-Expected: `ModuleNotFoundError: experiment_designer.spec.drops`.
+Run: `venv/bin/pytest pmspec/tests/test_strict_contract.py -v`
+Expected: `ModuleNotFoundError: pmspec.spec.drops`.
 
 - [ ] **Step 3: Write drops.py**
 
@@ -167,13 +167,13 @@ class Drops:
 
 - [ ] **Step 5: Run tests**
 
-Run: `venv/bin/pytest experiment_designer/tests/ -q`
+Run: `venv/bin/pytest pmspec/tests/ -q`
 Expected: PASS (no behaviour changed yet).
 
 - [ ] **Step 6: Commit**
 
 ```bash
-git add experiment_designer/spec/drops.py experiment_designer/spec/validator.py experiment_designer/spec/parser.py experiment_designer/spec/converter.py experiment_designer/tests/test_strict_contract.py
+git add pmspec/spec/drops.py pmspec/spec/validator.py pmspec/spec/parser.py pmspec/spec/converter.py pmspec/tests/test_strict_contract.py
 git commit -m "designer: Drops collector and lax flag on validator, parser, converter"
 ```
 
@@ -182,8 +182,8 @@ git commit -m "designer: Drops collector and lax flag on validator, parser, conv
 ### Task 2: Validator drop sites — unknown params, treatment without strategy, unknown job type, missing start, unknown keys
 
 **Files:**
-- Modify: `experiment_designer/spec/validator.py` (`_validate_treatment_params` ~L195-245, `_validate_session` ~L385-405, `_validate_job_shorthand` ~L557-563, `_validate_lambda_select_treatment` ~L514-530, `_validate_variable_references` ~L636-665; new `_validate_unknown_keys`)
-- Test: `experiment_designer/tests/test_strict_contract.py` (extend)
+- Modify: `pmspec/spec/validator.py` (`_validate_treatment_params` ~L195-245, `_validate_session` ~L385-405, `_validate_job_shorthand` ~L557-563, `_validate_lambda_select_treatment` ~L514-530, `_validate_variable_references` ~L636-665; new `_validate_unknown_keys`)
+- Test: `pmspec/tests/test_strict_contract.py` (extend)
 
 **Interfaces:**
 - Consumes: Task 1 `self.drops`.
@@ -295,9 +295,9 @@ class TestValidatorKeepsWarnings:
 
         import yaml
 
-        from experiment_designer.spec.file_loader import create_file_tag_loader
+        from pmspec.spec.file_loader import create_file_tag_loader
 
-        paths = glob.glob("experiment_designer/examples/*.yaml") + [
+        paths = glob.glob("pmspec/examples/*.yaml") + [
             p for p in [
                 "/home/umatter/projects/autocompleted_misinformation/design/experiment_spec.yaml",
             ] if Path(p).exists()
@@ -314,7 +314,7 @@ The last test reads a file outside the repo when present; that is deliberate —
 
 - [ ] **Step 2: Run to verify they fail**
 
-Run: `venv/bin/pytest experiment_designer/tests/test_strict_contract.py -v -k "DropRules or KeepsWarnings"`
+Run: `venv/bin/pytest pmspec/tests/test_strict_contract.py -v -k "DropRules or KeepsWarnings"`
 Expected: the strict rows fail (`r.valid` is True today); the key-set test fails with `AttributeError`/no "unknown key" handling — either way RED.
 
 - [ ] **Step 3: Implement the drop sites**
@@ -392,13 +392,13 @@ The proxy-without-hostname warnings at ~L374-377 get a comment: `# A warning, no
 
 - [ ] **Step 4: Run tests**
 
-Run: `venv/bin/pytest experiment_designer/tests/ -q`
+Run: `venv/bin/pytest pmspec/tests/ -q`
 Expected: the new rows pass. Existing tests that asserted a *warning* for these cases (`test_strategy_treatment.py::test_treatment_without_strategy_warns`, and any in `test_spec.py` asserting `valid` with an unknown param or a missing start) now see errors: update them to assert the error in strict mode and the warning under `SpecValidator(lax=True)`, and list each one you changed in the report.
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add experiment_designer/spec/validator.py experiment_designer/tests/
+git add pmspec/spec/validator.py pmspec/tests/
 git commit -m "designer: validator reports drops -- unknown params/keys, treatment without strategy, unknown job type, missing start"
 ```
 
@@ -407,8 +407,8 @@ git commit -m "designer: validator reports drops -- unknown params/keys, treatme
 ### Task 3: Converter — post-expansion unresolved-variable scan; parser — datetime scalars
 
 **Files:**
-- Modify: `experiment_designer/spec/converter.py` (`convert`, new `_scan_unresolved`), `experiment_designer/spec/parser.py` (`_expand_session` ~L331)
-- Test: `experiment_designer/tests/test_strict_contract.py` (extend)
+- Modify: `pmspec/spec/converter.py` (`convert`, new `_scan_unresolved`), `pmspec/spec/parser.py` (`_expand_session` ~L331)
+- Test: `pmspec/tests/test_strict_contract.py` (extend)
 
 **Interfaces:**
 - Produces: `SpecConverter._scan_unresolved(api_crawlers) -> None` reporting into `self.drops` for every string matching `_UNRESOLVED_RE = re.compile(r"\$\{(?!secret:)[^}]*\}|\{[A-Za-z_][A-Za-z0-9_]*(?::[^}]*)?\}")`; path like `crawlers[3].queues[0].jobs[2].behaviors.text`. Skips `agent.multilogin_profile` entirely (it is a JSON document with `%%PLACEHOLDER%%` tokens, not DSL variables). Parser: a `datetime`/`date` value for `start`/`start_at` becomes `value.isoformat()` (a `date` gets `T00:00:00` appended).
@@ -470,7 +470,7 @@ class TestTimestampScalars:
 
 - [ ] **Step 2: Run to verify they fail**
 
-Run: `venv/bin/pytest experiment_designer/tests/test_strict_contract.py -v -k "Unresolved or Timestamp"`
+Run: `venv/bin/pytest pmspec/tests/test_strict_contract.py -v -k "Unresolved or Timestamp"`
 Expected: unresolved rows pass through with no error today (fail); timestamp rows raise `AttributeError: 'datetime.datetime' object has no attribute 'strip'`.
 
 - [ ] **Step 3: Implement**
@@ -531,13 +531,13 @@ with `from datetime import date, datetime` (check `datetime` is tested before `d
 
 - [ ] **Step 4: Run tests**
 
-Run: `venv/bin/pytest experiment_designer/tests/ -q`
+Run: `venv/bin/pytest pmspec/tests/ -q`
 Expected: PASS. If an existing example spec now reports an unresolved variable, that is a real finding — report it, do not weaken the scan.
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add experiment_designer/spec/converter.py experiment_designer/spec/parser.py experiment_designer/spec/validator.py experiment_designer/tests/test_strict_contract.py
+git add pmspec/spec/converter.py pmspec/spec/parser.py pmspec/spec/validator.py pmspec/tests/test_strict_contract.py
 git commit -m "designer: unresolved variables are drops; unquoted timestamps no longer crash"
 ```
 
@@ -546,8 +546,8 @@ git commit -m "designer: unresolved variables are drops; unquoted timestamps no 
 ### Task 4: `additional_sessions`
 
 **Files:**
-- Modify: `experiment_designer/spec/parser.py` (`_expand_crawler` ~L295-306)
-- Test: `experiment_designer/tests/test_additional_sessions.py`
+- Modify: `pmspec/spec/parser.py` (`_expand_crawler` ~L295-306)
+- Test: `pmspec/tests/test_additional_sessions.py`
 
 **Interfaces:**
 - Produces: a crawler with `session:` and `additional_sessions: [ … ]` expands to `queues = [session] + additional_sessions`, each through `_expand_session`; `additional_sessions` without `session` is a parser error (`crawler[i]: additional_sessions needs a session`); `queues:` together with either is an error.
@@ -555,12 +555,12 @@ git commit -m "designer: unresolved variables are drops; unquoted timestamps no 
 - [ ] **Step 1: Write the failing tests**
 
 ```python
-# experiment_designer/tests/test_additional_sessions.py
+# pmspec/tests/test_additional_sessions.py
 """`additional_sessions` was in the shipped example and in a real study's spec, and
 the parser ignored it -- the study's measurement sessions were silently dropped."""
 
-from experiment_designer.spec.converter import SpecConverter
-from experiment_designer.spec.parser import SpecParser
+from pmspec.spec.converter import SpecConverter
+from pmspec.spec.parser import SpecParser
 
 SPEC = """
 version: "1.0"
@@ -606,7 +606,7 @@ def test_queues_and_session_together_is_an_error():
 
 - [ ] **Step 2: Run to verify they fail**
 
-Run: `venv/bin/pytest experiment_designer/tests/test_additional_sessions.py -v`
+Run: `venv/bin/pytest pmspec/tests/test_additional_sessions.py -v`
 Expected: first test fails (`["Diet"]` only); the others fail (no error raised).
 
 - [ ] **Step 3: Implement** in `_expand_crawler`:
@@ -631,13 +631,13 @@ Expected: first test fails (`["Diet"]` only); the others fail (no error raised).
 
 - [ ] **Step 4: Run tests**
 
-Run: `venv/bin/pytest experiment_designer/tests/ -q`
+Run: `venv/bin/pytest pmspec/tests/ -q`
 Expected: PASS. `examples/websearch-polarization-study.yaml` now yields more queues; if a test pins its queue/job count, update the number and say so.
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add experiment_designer/spec/parser.py experiment_designer/tests/test_additional_sessions.py
+git add pmspec/spec/parser.py pmspec/tests/test_additional_sessions.py
 git commit -m "designer: additional_sessions expands to extra queues instead of being ignored"
 ```
 
@@ -646,8 +646,8 @@ git commit -m "designer: additional_sessions expands to extra queues instead of 
 ### Task 5: Proxy pools — `proxy.from_pool`
 
 **Files:**
-- Modify: `experiment_designer/spec/converter.py` (`convert` — replace the refusal at ~L200-208), `experiment_designer/spec/data_pools.py` (helper to fetch rows by pool name)
-- Test: `experiment_designer/tests/test_proxy_pools.py`
+- Modify: `pmspec/spec/converter.py` (`convert` — replace the refusal at ~L200-208), `pmspec/spec/data_pools.py` (helper to fetch rows by pool name)
+- Test: `pmspec/tests/test_proxy_pools.py`
 
 **Interfaces:**
 - Produces: for `proxy: {from_pool: true, pool: <name>, match_field: <column>}` — `pool` names a `data_pools` entry whose rows carry `hostname` (or `host`), `port`, `username`, `password`, `type` and the `match_field` column; rows where `row[match_field] == agent.location` are candidates; each row is assigned to **at most one crawler** (first unused candidate in row order — deterministic given the seeded pool load); the crawler's `proxy` becomes `{name: f"{pool}:{hostname}:{port}", description: f"from pool {pool} for {location}", hostname, port:int, username, password, type (default "http"), active: True}`. Errors (not drops — nothing would be silently dropped, the compile cannot proceed): unknown pool; no `match_field` or `pool`; agent without `location`; no candidate row for the location; candidates exhausted (`pool X has N rows for location L but M crawlers need one`). `DataPoolManager.rows(name) -> list[dict] | None`.
@@ -655,15 +655,15 @@ git commit -m "designer: additional_sessions expands to extra queues instead of 
 - [ ] **Step 1: Write the failing tests**
 
 ```python
-# experiment_designer/tests/test_proxy_pools.py
+# pmspec/tests/test_proxy_pools.py
 """proxy.from_pool: one row of a proxy CSV per bot, matched on the agent's location."""
 
 from pathlib import Path
 
 import pytest
 
-from experiment_designer.spec.converter import SpecConverter
-from experiment_designer.spec.parser import SpecParser
+from pmspec.spec.converter import SpecConverter
+from pmspec.spec.parser import SpecParser
 
 SPEC = """
 version: "1.0"
@@ -743,8 +743,8 @@ def test_missing_location_is_an_error(spec_dir):
 
 
 def test_compile_inlines_the_proxy_and_keeps_placeholders(spec_dir):
-    from experiment_designer.lock.build import compile_spec
-    from experiment_designer.lock.io import dump_lock
+    from pmspec.lock.build import compile_spec
+    from pmspec.lock.io import dump_lock
 
     (spec_dir / "spec.yaml").write_text(SPEC)
     result = compile_spec(SPEC, base_dir=spec_dir, spec_path="spec.yaml", seed=1)
@@ -755,7 +755,7 @@ def test_compile_inlines_the_proxy_and_keeps_placeholders(spec_dir):
 
 - [ ] **Step 2: Run to verify they fail**
 
-Run: `venv/bin/pytest experiment_designer/tests/test_proxy_pools.py -v`
+Run: `venv/bin/pytest pmspec/tests/test_proxy_pools.py -v`
 Expected: every test hits the phase-2 refusal error.
 
 - [ ] **Step 3: Implement**
@@ -824,13 +824,13 @@ Expected: every test hits the phase-2 refusal error.
 
 - [ ] **Step 4: Run tests**
 
-Run: `venv/bin/pytest experiment_designer/tests/ -q`
+Run: `venv/bin/pytest pmspec/tests/ -q`
 Expected: PASS; `test_lock_build.py::test_boolean_from_pool_is_refused` (phase 1) must be rewritten to expect the new behaviour: with no `pool:` it errors with "needs `pool:`" — rename it `test_boolean_from_pool_without_pool_is_an_error`.
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add experiment_designer/spec/converter.py experiment_designer/spec/data_pools.py experiment_designer/tests/
+git add pmspec/spec/converter.py pmspec/spec/data_pools.py pmspec/tests/
 git commit -m "designer: proxy.from_pool assigns one pool row per bot by location"
 ```
 
@@ -839,8 +839,8 @@ git commit -m "designer: proxy.from_pool assigns one pool row per bot by locatio
 ### Task 6: Strategy schema registration; missing schema is a drop
 
 **Files:**
-- Modify: `experiment_designer/spec/validator.py` (`_strategy_schema` ~L481-509, `_validate_lambda_select_treatment`, `validate` to capture `spec.get("strategy_schemas")`)
-- Test: `experiment_designer/tests/test_strategy_schemas.py`
+- Modify: `pmspec/spec/validator.py` (`_strategy_schema` ~L481-509, `_validate_lambda_select_treatment`, `validate` to capture `spec.get("strategy_schemas")`)
+- Test: `pmspec/tests/test_strategy_schemas.py`
 
 **Interfaces:**
 - Produces: resolution order for `strategy_schemas` — (1) `spec["strategy_schemas"][name]`: an inline dict is the schema; a string is a path relative to the validator's `base_dir` (new `SpecValidator(..., base_dir: Path | None = None)`; the CLI passes the spec's directory, `compile_spec` passes its `base_dir`, the MCP passes the temp dir so `files=` can carry a schema); (2) each directory in `PMSPEC_STRATEGY_SCHEMA_DIRS` (os.pathsep-separated) as `<dir>/<name>.schema.json`; (3) the two existing sibling candidates. Not found → `self.drops.report(f"{prefix}.lambda_select", f"no schema for strategy '{name}', so its treatment cannot be validated", "add strategy_schemas: {<name>: <path or inline schema>} or set PMSPEC_STRATEGY_SCHEMA_DIRS")`.
@@ -848,13 +848,13 @@ git commit -m "designer: proxy.from_pool assigns one pool row per bot by locatio
 - [ ] **Step 1: Write the failing tests**
 
 ```python
-# experiment_designer/tests/test_strategy_schemas.py
+# pmspec/tests/test_strategy_schemas.py
 import json
 from pathlib import Path
 
 import yaml
 
-from experiment_designer.spec.validator import SpecValidator
+from pmspec.spec.validator import SpecValidator
 
 SCHEMA = {
     "type": "object",
@@ -925,7 +925,7 @@ def test_compile_with_files_carrying_the_schema_via_mcp():
 
 - [ ] **Step 2: Run to verify they fail**
 
-Run: `venv/bin/pytest experiment_designer/tests/test_strategy_schemas.py -v`
+Run: `venv/bin/pytest pmspec/tests/test_strategy_schemas.py -v`
 Expected: `TypeError` on `base_dir`; missing-schema test sees a warning, not an error.
 
 - [ ] **Step 3: Implement**
@@ -947,13 +947,13 @@ then the existing loop. In `_validate_lambda_select_treatment`, the "schema was 
 
 - [ ] **Step 4: Run tests**
 
-Run: `venv/bin/pytest experiment_designer/tests/ orchestrator/tests/test_mcp_lock_tools.py -q`
+Run: `venv/bin/pytest pmspec/tests/ orchestrator/tests/test_mcp_lock_tools.py -q`
 Expected: PASS. The MCP test passes only once Task 7 makes `compile_spec` run the validator; if you are executing tasks in order it will fail here — mark it `xfail(strict=True, reason="validator wired into compile in Task 7")` and remove the marker in Task 7.
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add experiment_designer/spec/validator.py experiment_designer/cli.py orchestrator/mcp_server/server.py experiment_designer/tests/test_strategy_schemas.py
+git add pmspec/spec/validator.py pmspec/cli.py orchestrator/mcp_server/server.py pmspec/tests/test_strategy_schemas.py
 git commit -m "designer: strategy schemas registrable per spec or via PMSPEC_STRATEGY_SCHEMA_DIRS; missing schema is a drop"
 ```
 
@@ -962,8 +962,8 @@ git commit -m "designer: strategy schemas registrable per spec or via PMSPEC_STR
 ### Task 7: `compile_spec` runs the validator; `lax` flows end to end; docs
 
 **Files:**
-- Modify: `experiment_designer/lock/build.py` (`compile_spec`), `experiment_designer/cli.py` (`compile` output), `orchestrator/mcp_server/server.py` (`compile_experiment_spec` response), `docs/experiment-designer.md`, `CLAUDE.md`
-- Test: `experiment_designer/tests/test_strict_contract.py` (extend), `experiment_designer/tests/test_lock_build.py` (extend)
+- Modify: `pmspec/lock/build.py` (`compile_spec`), `pmspec/cli.py` (`compile` output), `orchestrator/mcp_server/server.py` (`compile_experiment_spec` response), `docs/pmspec.md`, `CLAUDE.md`
+- Test: `pmspec/tests/test_strict_contract.py` (extend), `pmspec/tests/test_lock_build.py` (extend)
 
 **Interfaces:**
 - Produces: `compile_spec` loads the raw YAML with the file-tag loader (`create_file_tag_loader(base_dir)` + `resolve_file_references`), runs `SpecValidator(base_dir=base_dir, lax=lax).validate(raw)`, and merges its errors/warnings (deduplicated, order kept) with the parser's and converter's; `SpecParser(..., lax=lax)`, `SpecConverter(..., lax=lax)`; `CompileResult.dropped: int` = sum of the three; a lax lock has `provenance.lax = True` (already) and its warnings end with `N construct(s) would have been dropped (lax mode)`; `pmspec compile` prints the drop count line in yellow; MCP `compile_experiment_spec` returns `"dropped": N`.
@@ -976,13 +976,13 @@ class TestCompileIsStrict:
     SPEC = BASE.replace("  - name: bot\n", "  - name: bot\n    configuration:\n      params: {reliability: high}\n")
 
     def test_compile_refuses_a_drop(self, tmp_path):
-        from experiment_designer.lock.build import compile_spec
+        from pmspec.lock.build import compile_spec
 
         r = compile_spec(self.SPEC, base_dir=tmp_path, spec_path="s.yaml", seed=1)
         assert r.lock is None and any("params.reliability" in e for e in r.errors)
 
     def test_lax_compile_records_it(self, tmp_path):
-        from experiment_designer.lock.build import compile_spec
+        from pmspec.lock.build import compile_spec
 
         r = compile_spec(self.SPEC, base_dir=tmp_path, spec_path="s.yaml", seed=1, lax=True)
         assert r.lock is not None and r.lock.provenance.lax is True and r.dropped == 1
@@ -991,7 +991,7 @@ class TestCompileIsStrict:
     def test_cli_compile_lax_prints_the_count(self, tmp_path):
         from click.testing import CliRunner
 
-        from experiment_designer.cli import cli
+        from pmspec.cli import cli
 
         (tmp_path / "s.yaml").write_text(self.SPEC)
         strict = CliRunner().invoke(cli, ["compile", str(tmp_path / "s.yaml"), "--seed", "1"])
@@ -1012,7 +1012,7 @@ class TestCompileIsStrict:
 
 - [ ] **Step 2: Run to verify they fail**
 
-Run: `venv/bin/pytest experiment_designer/tests/test_strict_contract.py -v -k CompileIsStrict`
+Run: `venv/bin/pytest pmspec/tests/test_strict_contract.py -v -k CompileIsStrict`
 Expected: `compile_spec` returns a lock in strict mode (fails); `dropped` missing.
 
 - [ ] **Step 3: Implement** in `compile_spec`, before the parser:
@@ -1032,7 +1032,7 @@ then `SpecParser(..., lax=lax)`, `SpecConverter(..., lax=lax)`, and a small `_me
 
 - [ ] **Step 4: Docs**
 
-`docs/experiment-designer.md`: a new section "## The strict contract" after "Locks, provenance and verify": the rule (dropped/ignored/unresolved → error), the table of what is checked (unknown keys at root/experiment/defaults/design/crawler/configuration/proxy/agent/session; unknown params and `maps_to` params; `treatment` without `strategy`; unknown job type; missing session start; unresolved `${var}`/`{var}` after expansion; missing strategy schema), `--lax` and what it records (`provenance.lax`, `pmspec.lax`), and the two things that stay warnings. Then three short subsections: **Proxy pools** (`proxy: {from_pool: true, pool: <data pool>, match_field: <column>}`, the CSV columns, one row per bot, exhaustion is an error, placeholders in the CSV are fine); **Strategy schemas** (`strategy_schemas:` inline or path, `PMSPEC_STRATEGY_SCHEMA_DIRS`, sibling fallback); **Additional sessions** (`session` + `additional_sessions` → queues). Update the workflow-shorthand/CLI tables where `--lax` appears.
+`docs/pmspec.md`: a new section "## The strict contract" after "Locks, provenance and verify": the rule (dropped/ignored/unresolved → error), the table of what is checked (unknown keys at root/experiment/defaults/design/crawler/configuration/proxy/agent/session; unknown params and `maps_to` params; `treatment` without `strategy`; unknown job type; missing session start; unresolved `${var}`/`{var}` after expansion; missing strategy schema), `--lax` and what it records (`provenance.lax`, `pmspec.lax`), and the two things that stay warnings. Then three short subsections: **Proxy pools** (`proxy: {from_pool: true, pool: <data pool>, match_field: <column>}`, the CSV columns, one row per bot, exhaustion is an error, placeholders in the CSV are fine); **Strategy schemas** (`strategy_schemas:` inline or path, `PMSPEC_STRATEGY_SCHEMA_DIRS`, sibling fallback); **Additional sessions** (`session` + `additional_sessions` → queues). Update the workflow-shorthand/CLI tables where `--lax` appears.
 
 `CLAUDE.md` "Experiment Designer" section: one paragraph — the contract is strict by default; `additional_sessions` and `proxy.from_pool` now work; a spec that "expects remaining warnings" is a spec with drops; use `--lax` only to see a lock, never to upload a real study.
 
@@ -1040,7 +1040,7 @@ then `SpecParser(..., lax=lax)`, `SpecConverter(..., lax=lax)`, and a small `_me
 
 ```bash
 make check
-git add experiment_designer/lock/build.py experiment_designer/cli.py orchestrator/mcp_server/server.py experiment_designer/tests/ docs/experiment-designer.md CLAUDE.md
+git add pmspec/lock/build.py pmspec/cli.py orchestrator/mcp_server/server.py pmspec/tests/ docs/pmspec.md CLAUDE.md
 git commit -m "pmspec: compile runs the validator; strict by default, --lax recorded; docs for the contract"
 ```
 

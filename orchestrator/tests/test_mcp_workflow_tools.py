@@ -12,7 +12,7 @@ def local_api(monkeypatch, mock_settings):
 
 
 def test_experiment_status_tool(monkeypatch):
-    from experiment_designer.lock.status import ExperimentStatus, ProvenanceUpload
+    from pmspec.lock.status import ExperimentStatus, ProvenanceUpload
 
     st = ExperimentStatus(
         experiment_id=181,
@@ -28,14 +28,14 @@ def test_experiment_status_tool(monkeypatch):
 
 
 def _lock_text() -> str:
-    from experiment_designer.lock.io import dump_lock
-    from experiment_designer.tests.test_lock_io import make_lock
+    from pmspec.lock.io import dump_lock
+    from pmspec.tests.test_lock_io import make_lock
 
     return dump_lock(make_lock())
 
 
 def test_audit_experiment_tool(monkeypatch):
-    from experiment_designer.lock.audit import AuditResult, JobFinding
+    from pmspec.lock.audit import AuditResult, JobFinding
 
     result = AuditResult(
         experiment_id=181,
@@ -81,7 +81,7 @@ def test_audit_experiment_tool(monkeypatch):
 
 
 def test_audit_experiment_tool_reports_a_vacuous_audit_as_audited_zero(monkeypatch):
-    from experiment_designer.lock.audit import AuditResult
+    from pmspec.lock.audit import AuditResult
 
     result = AuditResult(experiment_id=1, hours=24, sampled=1, total=1, findings=[])
     monkeypatch.setattr(s, "audit_experiment", lambda *a, **k: result)
@@ -90,7 +90,7 @@ def test_audit_experiment_tool_reports_a_vacuous_audit_as_audited_zero(monkeypat
 
 
 def test_audit_experiment_tool_caps_findings_at_50(monkeypatch):
-    from experiment_designer.lock.audit import AuditResult, JobFinding
+    from pmspec.lock.audit import AuditResult, JobFinding
 
     findings = [JobFinding("bot", "s1", i, i, "arm", "ok", "") for i in range(60)]
     result = AuditResult(experiment_id=1, hours=24, sampled=1, total=1, findings=findings)
@@ -122,7 +122,7 @@ def test_audit_experiment_tool_invalid_lock_never_calls_audit_experiment(monkeyp
 
 
 def test_diff_locks_tool(monkeypatch):
-    from experiment_designer.lock.diff import LockDiff
+    from pmspec.lock.diff import LockDiff
 
     d = LockDiff(
         provenance_a={"spec_path": "a.yaml", "git_commit": "a2024c9"},
@@ -138,7 +138,7 @@ def test_diff_locks_tool(monkeypatch):
 
 
 def test_diff_locks_tool_invalid_lock(monkeypatch):
-    from experiment_designer.lock.io import LockError
+    from pmspec.lock.io import LockError
 
     def _raise(a, b):
         raise LockError(["pmspec_lock: expected 1, got 99"])
@@ -251,10 +251,10 @@ def test_cleanup_experiment_ids_confirm_deletes_only_those_ids(monkeypatch):
 def test_experiment_status_tool_cannot_leak_a_secret_valued_difference(monkeypatch):
     """The lock side of a verify difference is a placeholder; the live side is the
     resolved credential. The JSON the tool returns must never carry it."""
-    from experiment_designer.lock.io import dump_lock
-    from experiment_designer.lock.status import experiment_status
-    from experiment_designer.tests.test_lock_io import make_lock
-    from experiment_designer.tests.test_lock_verify import FakeSession
+    from pmspec.lock.io import dump_lock
+    from pmspec.lock.status import experiment_status
+    from pmspec.tests.test_lock_io import make_lock
+    from pmspec.tests.test_lock_verify import FakeSession
 
     lock = make_lock()
     lock.crawlers[0]["configuration"]["preferences"].append(

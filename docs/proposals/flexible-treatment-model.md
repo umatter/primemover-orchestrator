@@ -115,7 +115,7 @@ expects and validates them. `youtube_v1` reads the existing switch behaviours.
   if the sibling/schema is absent, **warn, do not hard-fail** (keep the
   orchestrator's dependency on the sibling soft).
 - `get_spec_template("<strategy>")` per-strategy templates; update
-  `docs/experiment-designer.md` and the `doc://treatment-params` resource to
+  `docs/pmspec.md` and the `doc://treatment-params` resource to
   describe the strategy mechanism.
 - Tests for registration, schema validation, and templates.
 

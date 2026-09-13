@@ -203,21 +203,21 @@ test:
 	$(VENV_BIN)/pytest
 
 test-cov:
-	$(VENV_BIN)/pytest --cov=orchestrator --cov=experiment_designer --cov-report=term-missing
+	$(VENV_BIN)/pytest --cov=orchestrator --cov=pmspec --cov-report=term-missing
 
-# Regenerate experiment_designer/schema/experiment-spec.schema.json from
+# Regenerate pmspec/schema/experiment-spec.schema.json from
 # SpecValidator's key sets and the job registry (see spec/schema_gen.py).
 # Run after changing any _KEYS_*/_OPTION_KEYS table in spec/validator.py;
 # test_schema_gen.py fails CI if the checked-in file drifts from this.
 schema:
-	$(VENV_PYTHON) -m experiment_designer.spec.schema_gen
+	$(VENV_PYTHON) -m pmspec.spec.schema_gen
 
 lint:
-	$(VENV_BIN)/ruff check orchestrator/ experiment_designer/ scripts/
+	$(VENV_BIN)/ruff check orchestrator/ pmspec/ scripts/
 
 format:
-	$(VENV_BIN)/black orchestrator/ experiment_designer/ scripts/
-	$(VENV_BIN)/ruff check orchestrator/ experiment_designer/ scripts/ --fix
+	$(VENV_BIN)/black orchestrator/ pmspec/ scripts/
+	$(VENV_BIN)/ruff check orchestrator/ pmspec/ scripts/ --fix
 
 lint-sh:
 	@# shellcheck is not a python dep, so use whatever is available: a local
@@ -232,7 +232,7 @@ lint-sh:
 	fi
 
 typecheck:
-	$(VENV_BIN)/mypy orchestrator/ experiment_designer/ scripts/ --ignore-missing-imports
+	$(VENV_BIN)/mypy orchestrator/ pmspec/ scripts/ --ignore-missing-imports
 
 # Run all checks (useful before committing)
 check: format lint lint-sh typecheck test

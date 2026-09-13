@@ -326,7 +326,7 @@ def _mutating_tools() -> dict[str, bool]:
                         mutates = True
 
             # upload_lock(...): the lock-upload path (upload_experiment) mutates
-            # entirely inside experiment_designer.lock.upload.upload_lock via a
+            # entirely inside pmspec.lock.upload.upload_lock via a
             # session object -- no write-verb attribute call, _api_request call,
             # or _write() call appears in this module's own source for it, so
             # without this line it is invisible to every check above and the tool
@@ -336,7 +336,7 @@ def _mutating_tools() -> dict[str, bool]:
                 mutates = True
 
             # delete_experiments(...): pm_cleanup_test_experiments's own deletion loop
-            # lives in experiment_designer.lock.cleanup, not in this module's source, so
+            # lives in pmspec.lock.cleanup, not in this module's source, so
             # without this line it is exactly as invisible to the scan as upload_lock was.
             if isinstance(sub.func, ast.Name) and sub.func.id == "delete_experiments":
                 mutates = True
@@ -439,8 +439,8 @@ class TestUploadExperimentIsGuarded:
     """
 
     def _lock(self) -> str:
-        from experiment_designer.lock.io import dump_lock
-        from experiment_designer.tests.test_lock_io import make_lock
+        from pmspec.lock.io import dump_lock
+        from pmspec.tests.test_lock_io import make_lock
 
         return dump_lock(make_lock())
 

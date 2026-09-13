@@ -473,7 +473,7 @@ class TestUnwrap:
 
 class TestValidJobApiTypes:
     def test_returns_registry_api_types(self) -> None:
-        from experiment_designer.spec.job_registry import JobRegistry
+        from pmspec.spec.job_registry import JobRegistry
 
         result = s._valid_job_api_types()
         expected = [j.api_type for j in JobRegistry.list_all()]
@@ -488,7 +488,7 @@ class TestValidJobApiTypes:
     def test_returns_api_types_not_yaml_names(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """The API enum values (``visitjob``) are returned, not the YAML DSL
         names (``visit``)."""
-        from experiment_designer.spec.job_registry import JobRegistry
+        from pmspec.spec.job_registry import JobRegistry
 
         fake = [
             types.SimpleNamespace(yaml_name="visit", api_type="visitjob"),
@@ -504,11 +504,11 @@ class TestValidJobApiTypes:
     def test_returns_empty_list_when_import_fails(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Blocking the module in sys.modules makes the inner import raise
         ImportError, which the helper swallows."""
-        monkeypatch.setitem(sys.modules, "experiment_designer.spec.job_registry", None)
+        monkeypatch.setitem(sys.modules, "pmspec.spec.job_registry", None)
         assert s._valid_job_api_types() == []
 
     def test_returns_empty_list_when_registry_raises(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        from experiment_designer.spec.job_registry import JobRegistry
+        from pmspec.spec.job_registry import JobRegistry
 
         def boom(cls):
             raise RuntimeError("registry exploded")

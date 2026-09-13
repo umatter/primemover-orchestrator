@@ -80,7 +80,7 @@ def loki_client(settings):
 @pytest.fixture(scope="session")
 def spec_parser():
     """Initialize experiment spec parser."""
-    from experiment_designer.spec.parser import SpecParser
+    from pmspec.spec.parser import SpecParser
 
     return SpecParser()
 
@@ -264,7 +264,7 @@ crawlers:
 
     def test_spec_parser_factorial_design(self, spec_parser):
         """Verify spec parser handles factorial design."""
-        from experiment_designer.spec.design_expander import DesignExpander
+        from pmspec.spec.design_expander import DesignExpander
 
         yaml_content = """
 version: "1.0"
@@ -535,9 +535,9 @@ class TestModuleImports:
         assert HARParser is not None
         assert JobDebugger is not None
 
-    def test_import_experiment_designer(self):
+    def test_import_pmspec(self):
         """Verify experiment designer modules import."""
-        from experiment_designer.spec.parser import SpecParser
+        from pmspec.spec.parser import SpecParser
 
         assert SpecParser is not None
 

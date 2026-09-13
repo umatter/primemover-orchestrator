@@ -17,7 +17,6 @@ from typing import Any, TypedDict
 
 import httpx
 
-from experiment_designer.spec.time_utils import API_TIMEZONE
 from orchestrator import status as status_contract
 from orchestrator.clients.api import APIClient
 from orchestrator.config import get_settings
@@ -29,6 +28,7 @@ from orchestrator.e2e.job_status import (
     job_status_message,
     job_succeeded,
 )
+from pmspec.spec.time_utils import API_TIMEZONE
 
 from .proxy import substitute_proxy
 from .reporter import E2EReporter

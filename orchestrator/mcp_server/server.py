@@ -16,18 +16,18 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from experiment_designer.lock.audit import audit_experiment, lock_strategies
-from experiment_designer.lock.build import compile_spec
-from experiment_designer.lock.cleanup import delete_experiments, find_test_experiments, parse_age
-from experiment_designer.lock.diff import diff_locks
-from experiment_designer.lock.io import LockError, dump_lock, is_lock_document, load_lock
-from experiment_designer.lock.secrets import InsecureSecretsFile, SecretStore, find_placeholders
-from experiment_designer.lock.status import experiment_status
-from experiment_designer.lock.upload import MODES, UploadOptions, UploadRefused, upload_lock
-from experiment_designer.lock.verify import redact_differences, verify_lock
 from orchestrator import status
 from orchestrator.config import get_settings
 from orchestrator.tracing import TraceBuilder
+from pmspec.lock.audit import audit_experiment, lock_strategies
+from pmspec.lock.build import compile_spec
+from pmspec.lock.cleanup import delete_experiments, find_test_experiments, parse_age
+from pmspec.lock.diff import diff_locks
+from pmspec.lock.io import LockError, dump_lock, is_lock_document, load_lock
+from pmspec.lock.secrets import InsecureSecretsFile, SecretStore, find_placeholders
+from pmspec.lock.status import experiment_status
+from pmspec.lock.upload import MODES, UploadOptions, UploadRefused, upload_lock
+from pmspec.lock.verify import redact_differences, verify_lock
 
 
 def _get_mcp_config():
@@ -773,7 +773,7 @@ def _write(
 
 def _valid_job_api_types() -> list[str]:
     try:
-        from experiment_designer.spec.job_registry import JobRegistry
+        from pmspec.spec.job_registry import JobRegistry
 
         return [j.api_type for j in JobRegistry.list_all()]
     except Exception:
@@ -2322,14 +2322,14 @@ def validate_experiment_spec(
     try:
         import yaml as yaml_lib
 
-        from experiment_designer.lock.build import merge_reports
-        from experiment_designer.spec import SpecConverter, SpecParser, SpecValidator
-        from experiment_designer.spec.file_loader import (
+        from pmspec.lock.build import merge_reports
+        from pmspec.spec import SpecConverter, SpecParser, SpecValidator
+        from pmspec.spec.file_loader import (
             create_file_tag_loader,
             resolve_file_references,
         )
     except ImportError as e:
-        return json.dumps({"error": f"experiment_designer not available: {e}"})
+        return json.dumps({"error": f"pmspec not available: {e}"})
 
     with _materialise_files(files) as tmp:
         base_dir = Path(tmp)
@@ -2419,10 +2419,10 @@ def preview_factorial_design(yaml_content: str) -> str:
         JSON with design preview including factor combinations
     """
     try:
-        from experiment_designer.spec import SpecParser
-        from experiment_designer.spec.design_expander import DesignExpander
+        from pmspec.spec import SpecParser
+        from pmspec.spec.design_expander import DesignExpander
     except ImportError as e:
-        return json.dumps({"error": f"experiment_designer not available: {e}"})
+        return json.dumps({"error": f"pmspec not available: {e}"})
 
     parser = SpecParser()
     parsed = parser.parse(yaml_content)
@@ -2473,9 +2473,9 @@ def convert_spec_to_json(yaml_content: str) -> str:
         JSON string ready for API upload, or error details
     """
     try:
-        from experiment_designer.spec import SpecConverter, SpecParser
+        from pmspec.spec import SpecConverter, SpecParser
     except ImportError as e:
-        return json.dumps({"error": f"experiment_designer not available: {e}"})
+        return json.dumps({"error": f"pmspec not available: {e}"})
 
     parser = SpecParser()
     parsed = parser.parse(yaml_content)
@@ -2779,7 +2779,7 @@ def audit_experiment_tool(
         0 is a vacuous audit, failed under strict), "counts": [{"arm", "outcome", "n"}],
         "findings": [first 50 as dicts], "render"}.
     """
-    from experiment_designer.spec.validator import SpecValidator
+    from pmspec.spec.validator import SpecValidator
 
     # hours=0 audits nothing and sample=0 audits nobody; either would pass
     # vacuously. Same bound as the CLI's click.IntRange(min=1).
@@ -2886,9 +2886,9 @@ def list_job_types() -> str:
         JSON with all job types and their required/optional behaviors
     """
     try:
-        from experiment_designer.spec.job_registry import JobRegistry
+        from pmspec.spec.job_registry import JobRegistry
     except ImportError as e:
-        return json.dumps({"error": f"experiment_designer not available: {e}"})
+        return json.dumps({"error": f"pmspec not available: {e}"})
 
     job_types = []
     for job in JobRegistry.list_all():
@@ -2923,9 +2923,9 @@ def get_job_type_schema(job_type: str) -> str:
         JSON with detailed job schema including behavior descriptions
     """
     try:
-        from experiment_designer.spec.job_registry import JobRegistry
+        from pmspec.spec.job_registry import JobRegistry
     except ImportError as e:
-        return json.dumps({"error": f"experiment_designer not available: {e}"})
+        return json.dumps({"error": f"pmspec not available: {e}"})
 
     schema = JobRegistry.get_schema(job_type)
     if not schema:
@@ -3155,10 +3155,10 @@ def summarize_yaml_spec(yaml_content: str) -> str:
         - statistics: parameter distributions, location/browser breakdown
     """
     try:
-        from experiment_designer.lock.io import is_lock_document
-        from experiment_designer.summary import SummaryGenerator
+        from pmspec.lock.io import is_lock_document
+        from pmspec.summary import SummaryGenerator
     except ImportError as e:
-        return json.dumps({"error": f"experiment_designer.summary not available: {e}"})
+        return json.dumps({"error": f"pmspec.summary not available: {e}"})
 
     try:
         generator = SummaryGenerator()
@@ -3204,9 +3204,9 @@ def summarize_experiment(experiment_id: int) -> str:
         - status: processed/unprocessed queues, completion rate
     """
     try:
-        from experiment_designer.summary import SummaryGenerator
+        from pmspec.summary import SummaryGenerator
     except ImportError as e:
-        return json.dumps({"error": f"experiment_designer.summary not available: {e}"})
+        return json.dumps({"error": f"pmspec.summary not available: {e}"})
 
     import httpx
 
@@ -3295,9 +3295,9 @@ def compare_experiments(
         - experiment1, experiment2: full summaries of each
     """
     try:
-        from experiment_designer.summary import SummaryGenerator, compare_summaries
+        from pmspec.summary import SummaryGenerator, compare_summaries
     except ImportError as e:
-        return json.dumps({"error": f"experiment_designer.summary not available: {e}"})
+        return json.dumps({"error": f"pmspec.summary not available: {e}"})
 
     import httpx
 
@@ -3426,11 +3426,18 @@ def _read_repo_doc(*relative_parts: str) -> str:
         return f"(could not read {'/'.join(relative_parts)}: {e})"
 
 
+@mcp.resource("doc://pmspec")
+def doc_pmspec() -> str:
+    """pmspec, the experiment designer: the YAML DSL reference (factors, maps_to,
+    distributions, data pools, templates, job types, relative timestamps), locks,
+    the strict contract, secrets, audit."""
+    return _read_repo_doc("docs", "pmspec.md")
+
+
 @mcp.resource("doc://experiment-designer")
 def doc_experiment_designer() -> str:
-    """The experiment-designer YAML DSL reference (factors, maps_to, distributions,
-    data pools, templates, job types, relative timestamps)."""
-    return _read_repo_doc("docs", "experiment-designer.md")
+    """Alias of doc://pmspec, kept for sessions that learned the old name."""
+    return _read_repo_doc("docs", "pmspec.md")
 
 
 @mcp.resource("doc://integration-contract")

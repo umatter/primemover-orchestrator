@@ -1643,7 +1643,7 @@ class TestGetSpecTemplate:
         three identical control arms. Both are fixed; this now guards against
         regressing either.
         """
-        from experiment_designer.spec.validator import SpecValidator
+        from pmspec.spec.validator import SpecValidator
 
         template = json.loads(s.get_spec_template("youtube"))["template"]
         spec = yaml.safe_load(template)  # must not raise
@@ -1692,7 +1692,7 @@ class TestDocResources:
         assert "CET" in cap and "start_at" in cap
 
     def test_file_backed_resources_return_the_docs(self, no_network):
-        assert "experiment" in s.doc_experiment_designer().lower()
+        assert "experiment" in s.doc_pmspec().lower()
         # §7.3 degradation contract lives in the integration contract
         assert "treatment_lost" in s.doc_integration_contract()
 

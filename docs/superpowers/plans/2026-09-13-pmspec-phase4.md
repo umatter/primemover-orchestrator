@@ -4,7 +4,7 @@
 
 **Goal:** Lock format 2 (content-addressed queues/agents, ~40× smaller for the real study), per-bot template draws (`with: {from_pool, field}`), and `pmspec audit` (does the decision function report the treatment the lock says each job asked for).
 
-**Architecture:** Format 2 is a serialisation concern only: `Lock` stays the phase-1 in-memory shape; `dump_lock` factors, `load_lock` materialises, everything downstream is untouched. Draws are a parser→converter handshake through a printable token, resolved per crawler in the converter where pools and the crawler index already are. The audit is one more pure function over a session (`experiment_designer/lock/audit.py`) with a `render()`, like `status`, reading the job rows' `decision_*` columns through `orchestrator.status` so the verdict rules stay in one place.
+**Architecture:** Format 2 is a serialisation concern only: `Lock` stays the phase-1 in-memory shape; `dump_lock` factors, `load_lock` materialises, everything downstream is untouched. Draws are a parser→converter handshake through a printable token, resolved per crawler in the converter where pools and the crawler index already are. The audit is one more pure function over a session (`pmspec/lock/audit.py`) with a `render()`, like `status`, reading the job rows' `decision_*` columns through `orchestrator.status` so the verdict rules stay in one place.
 
 **Tech Stack:** Python 3.10+, PyYAML, jsonschema, existing sessions; pytest.
 
@@ -23,27 +23,27 @@
 
 | path | responsibility |
 |---|---|
-| `experiment_designer/lock/model.py` (modify) | `LOCK_FORMAT_VERSION = 2`; `Lock.to_dict()` factors parts; `Lock.from_dict()` materialises (formats 1 and 2) |
-| `experiment_designer/lock/parts.py` (new) | `part_key(obj, prefix)`, `factor_crawlers(crawlers) -> (parts, refs)`, `materialise(parts, refs) -> crawlers`, `PartCollision` |
-| `experiment_designer/schema/lock-2.schema.json` (new) | format 2 schema |
-| `experiment_designer/lock/io.py` (modify) | `validate_lock_dict` dispatches on `pmspec_lock` ∈ {1, 2} |
-| `experiment_designer/spec/parser.py` (modify) | `with:` dict → draw token in `_apply_variables`/`_expand_template_ref`/`_expand_repeat` |
-| `experiment_designer/spec/draws.py` (new) | `DRAW_TOKEN_RE`, `make_token`, `parse_token`, `resolve_draws(crawlers, pool_manager, seed) -> list[str]` |
-| `experiment_designer/spec/converter.py` (modify) | calls `resolve_draws` after pool references, before proxies; `_scan_unresolved` reports tokens |
-| `experiment_designer/spec/validator.py` (modify) | dict-valued `with:` entries must be `{from_pool: str, field: str, select?: random|first}` |
-| `experiment_designer/lock/audit.py` (new) | `AuditResult`, `audit_experiment(session, experiment_id, lock_text, *, hours, sample, strict)`, expected-filter mapping |
-| `experiment_designer/cli.py`, `orchestrator/mcp_server/server.py` (modify) | `audit` command / `audit_experiment` tool |
-| `docs/experiment-designer.md`, `CLAUDE.md`, `.claude/skills/primemover-debug/SKILL.md` (modify) | format 2, draws, audit |
-| tests | `experiment_designer/tests/test_lock_parts.py`, `test_draws.py`, `test_lock_audit.py`, `test_lock_cli_workflow.py` (+audit), `orchestrator/tests/test_mcp_workflow_tools.py` (+audit) |
+| `pmspec/lock/model.py` (modify) | `LOCK_FORMAT_VERSION = 2`; `Lock.to_dict()` factors parts; `Lock.from_dict()` materialises (formats 1 and 2) |
+| `pmspec/lock/parts.py` (new) | `part_key(obj, prefix)`, `factor_crawlers(crawlers) -> (parts, refs)`, `materialise(parts, refs) -> crawlers`, `PartCollision` |
+| `pmspec/schema/lock-2.schema.json` (new) | format 2 schema |
+| `pmspec/lock/io.py` (modify) | `validate_lock_dict` dispatches on `pmspec_lock` ∈ {1, 2} |
+| `pmspec/spec/parser.py` (modify) | `with:` dict → draw token in `_apply_variables`/`_expand_template_ref`/`_expand_repeat` |
+| `pmspec/spec/draws.py` (new) | `DRAW_TOKEN_RE`, `make_token`, `parse_token`, `resolve_draws(crawlers, pool_manager, seed) -> list[str]` |
+| `pmspec/spec/converter.py` (modify) | calls `resolve_draws` after pool references, before proxies; `_scan_unresolved` reports tokens |
+| `pmspec/spec/validator.py` (modify) | dict-valued `with:` entries must be `{from_pool: str, field: str, select?: random|first}` |
+| `pmspec/lock/audit.py` (new) | `AuditResult`, `audit_experiment(session, experiment_id, lock_text, *, hours, sample, strict)`, expected-filter mapping |
+| `pmspec/cli.py`, `orchestrator/mcp_server/server.py` (modify) | `audit` command / `audit_experiment` tool |
+| `docs/pmspec.md`, `CLAUDE.md`, `.claude/skills/primemover-debug/SKILL.md` (modify) | format 2, draws, audit |
+| tests | `pmspec/tests/test_lock_parts.py`, `test_draws.py`, `test_lock_audit.py`, `test_lock_cli_workflow.py` (+audit), `orchestrator/tests/test_mcp_workflow_tools.py` (+audit) |
 
 ---
 
 ### Task 1: Content-addressed parts — `parts.py`, format 2 model, schema, IO
 
 **Files:**
-- Create: `experiment_designer/lock/parts.py`, `experiment_designer/schema/lock-2.schema.json`
-- Modify: `experiment_designer/lock/model.py`, `experiment_designer/lock/io.py`
-- Test: `experiment_designer/tests/test_lock_parts.py`; adjust `test_lock_io.py` where it pins `pmspec_lock: 1` or key order
+- Create: `pmspec/lock/parts.py`, `pmspec/schema/lock-2.schema.json`
+- Modify: `pmspec/lock/model.py`, `pmspec/lock/io.py`
+- Test: `pmspec/tests/test_lock_parts.py`; adjust `test_lock_io.py` where it pins `pmspec_lock: 1` or key order
 
 **Interfaces:**
 - Produces:
@@ -64,16 +64,16 @@
 - [ ] **Step 1: Write the failing tests**
 
 ```python
-# experiment_designer/tests/test_lock_parts.py
+# pmspec/tests/test_lock_parts.py
 """Format 2: every distinct queue and agent body once, crawlers by reference."""
 
 import copy
 
 import pytest
 
-from experiment_designer.lock.io import dump_lock, load_lock, sha256_text, validate_lock_dict
-from experiment_designer.lock.model import LOCK_FORMAT_VERSION, Lock
-from experiment_designer.lock.parts import PartCollision, factor_crawlers, materialise, part_key
+from pmspec.lock.io import dump_lock, load_lock, sha256_text, validate_lock_dict
+from pmspec.lock.model import LOCK_FORMAT_VERSION, Lock
+from pmspec.lock.parts import PartCollision, factor_crawlers, materialise, part_key
 
 from .test_lock_io import make_lock
 
@@ -151,7 +151,7 @@ def test_dangling_ref_is_an_error():
 
 
 def test_collision_is_an_error(monkeypatch):
-    from experiment_designer.lock import parts as parts_mod
+    from pmspec.lock import parts as parts_mod
 
     monkeypatch.setattr(parts_mod, "part_key", lambda obj, prefix: f"{prefix}:same")
     lock = _fleet(2)
@@ -161,7 +161,7 @@ def test_collision_is_an_error(monkeypatch):
 ```
 Note the fleet helper comment: params differ per crawler but live in `configuration`, so queues stay identical — one queue part. Keep that comment in the file.
 
-- [ ] **Step 2: RED** — `venv/bin/pytest experiment_designer/tests/test_lock_parts.py -v` → `ModuleNotFoundError`.
+- [ ] **Step 2: RED** — `venv/bin/pytest pmspec/tests/test_lock_parts.py -v` → `ModuleNotFoundError`.
 
 - [ ] **Step 3: Implement** `parts.py` per the interface; `model.py` (`to_dict` → factor; `from_dict` → materialise when `pmspec_lock == 2`); `lock-2.schema.json` (copy of `lock-1` with `pmspec_lock: {const: 2}`, a `parts` object `{queues: object, agents: object}` with `additionalProperties` bodies as objects, and crawler `agent`/`queues[]` items requiring `ref`; `start_offset` pattern kept on the ref; `jobs` forbidden on a ref); `io.validate_lock_dict` dispatch. Adjust `test_lock_io.py` assertions that pin `pmspec_lock: 1` / top-level key order (`pmspec_lock, provenance, experiment, schedule, parts, crawlers`) and the `test_schema_rejects_start_at_in_a_lock` (now `start_at` on a queue *ref*).
 
@@ -174,9 +174,9 @@ Note the fleet helper comment: params differ per crawler but live in `configurat
 ### Task 2: Per-bot draws — token, parser, validator
 
 **Files:**
-- Create: `experiment_designer/spec/draws.py`
-- Modify: `experiment_designer/spec/parser.py` (`_apply_variables`/`_substitute_in_structure`, `_expand_template_ref`, `_expand_repeat`), `experiment_designer/spec/validator.py` (`_validate_workflow_item` template/repeat branch)
-- Test: `experiment_designer/tests/test_draws.py` (parser + validator half)
+- Create: `pmspec/spec/draws.py`
+- Modify: `pmspec/spec/parser.py` (`_apply_variables`/`_substitute_in_structure`, `_expand_template_ref`, `_expand_repeat`), `pmspec/spec/validator.py` (`_validate_workflow_item` template/repeat branch)
+- Test: `pmspec/tests/test_draws.py` (parser + validator half)
 
 **Interfaces:**
 - Produces:
@@ -192,17 +192,17 @@ Note the fleet helper comment: params differ per crawler but live in `configurat
 - [ ] **Step 1: Failing tests**
 
 ```python
-# experiment_designer/tests/test_draws.py
+# pmspec/tests/test_draws.py
 """with: {from_pool, field}: one draw per bot per key, without replacement within a bot."""
 
 from pathlib import Path
 
 import pytest
 
-from experiment_designer.spec.converter import SpecConverter
-from experiment_designer.spec.draws import DRAW_TOKEN_RE, make_token, parse_token
-from experiment_designer.spec.parser import SpecParser
-from experiment_designer.spec.validator import SpecValidator
+from pmspec.spec.converter import SpecConverter
+from pmspec.spec.draws import DRAW_TOKEN_RE, make_token, parse_token
+from pmspec.spec.parser import SpecParser
+from pmspec.spec.validator import SpecValidator
 
 SPEC = """
 version: "1.0"
@@ -286,8 +286,8 @@ def test_validator_accepts_a_draw_and_rejects_other_dicts():
 ### Task 3: Per-bot draws — converter resolution, strict scan, compile
 
 **Files:**
-- Modify: `experiment_designer/spec/draws.py` (`resolve_draws`), `experiment_designer/spec/converter.py` (call site + `_scan_unresolved`), `experiment_designer/spec/data_pools.py` (`rows(name)` already exists)
-- Test: `experiment_designer/tests/test_draws.py` (converter half), `test_lock_build.py` (one compile test)
+- Modify: `pmspec/spec/draws.py` (`resolve_draws`), `pmspec/spec/converter.py` (call site + `_scan_unresolved`), `pmspec/spec/data_pools.py` (`rows(name)` already exists)
+- Test: `pmspec/tests/test_draws.py` (converter half), `test_lock_build.py` (one compile test)
 
 **Interfaces:**
 - Produces:
@@ -345,8 +345,8 @@ def test_first_select_is_stable(spec_dir):
 
 
 def test_compile_never_writes_a_token(spec_dir):
-    from experiment_designer.lock.build import compile_spec
-    from experiment_designer.lock.io import dump_lock
+    from pmspec.lock.build import compile_spec
+    from pmspec.lock.io import dump_lock
 
     result = compile_spec(SPEC, base_dir=spec_dir, spec_path="s.yaml", seed=7)
     assert result.lock is not None, result.errors
@@ -360,8 +360,8 @@ def test_compile_never_writes_a_token(spec_dir):
 ### Task 4: `pmspec audit` — core
 
 **Files:**
-- Create: `experiment_designer/lock/audit.py`
-- Test: `experiment_designer/tests/test_lock_audit.py`
+- Create: `pmspec/lock/audit.py`
+- Test: `pmspec/tests/test_lock_audit.py`
 
 **Interfaces:**
 - Consumes: `orchestrator.status.{job_decision_reported, job_decision_verdict, is_terminal, normalize}`; session `.get`; `lock.io.load_lock`; `lock.verify._paginate` (reuse for the queue lists).
@@ -390,8 +390,8 @@ def test_compile_never_writes_a_token(spec_dir):
 ### Task 5: `pmspec audit` — CLI and MCP
 
 **Files:**
-- Modify: `experiment_designer/cli.py`, `orchestrator/mcp_server/server.py`
-- Test: `experiment_designer/tests/test_lock_cli_workflow.py`, `orchestrator/tests/test_mcp_workflow_tools.py`
+- Modify: `pmspec/cli.py`, `orchestrator/mcp_server/server.py`
+- Test: `pmspec/tests/test_lock_cli_workflow.py`, `orchestrator/tests/test_mcp_workflow_tools.py`
 
 **Interfaces:** `pmspec audit EXPERIMENT_ID LOCK [--hours 24] [--sample K] [--strict]` → `render()`, exit `0 if result.ok(strict) else 1`; `ApiError`/`LockError`/`AnchorError` handled like `status`. The strategy schemas for `x-requested` come from the lock? No — the lock carries no schemas; the CLI loads them the way the validator does (`SpecValidator(base_dir=lock dir)._strategy_schema`), so a `strategy_schemas` path or `PMSPEC_STRATEGY_SCHEMA_DIRS` next to the lock works; document that. MCP `audit_experiment(experiment_id, lock_content, hours=24, sample=None, strict=False)` → `{experiment_id, ok, sampled, total, counts: [{arm, outcome, n}], findings: [first 50], render}`, read-only.
 
@@ -401,7 +401,7 @@ def test_compile_never_writes_a_token(spec_dir):
 
 ### Task 6: Docs
 
-- `docs/experiment-designer.md`: lock format 2 (what `parts` is, that `pmspec validate` accepts both, size), the `with:` draw syntax (in "writing a spec" next to `with:`; the without-replacement rule; `select: first|random`), `pmspec audit` in "Step 6: Day to day" with the outcome table and the strategy mapping; CLI table rows. `CLAUDE.md` Experiment Designer paragraph: one sentence each. `.claude/skills/primemover-debug/SKILL.md`: after `experiment_status`, `audit_experiment` for "did the treated bots actually get the treatment". Verify every name against `--help`/`@mcp.tool`. `make check`; commit — `docs: lock format 2, per-bot draws, audit`.
+- `docs/pmspec.md`: lock format 2 (what `parts` is, that `pmspec validate` accepts both, size), the `with:` draw syntax (in "writing a spec" next to `with:`; the without-replacement rule; `select: first|random`), `pmspec audit` in "Step 6: Day to day" with the outcome table and the strategy mapping; CLI table rows. `CLAUDE.md` Experiment Designer paragraph: one sentence each. `.claude/skills/primemover-debug/SKILL.md`: after `experiment_status`, `audit_experiment` for "did the treated bots actually get the treatment". Verify every name against `--help`/`@mcp.tool`. `make check`; commit — `docs: lock format 2, per-bot draws, audit`.
 
 ## Not in this plan
 Regenerating the autocompleted generator to use per-bot draws (that repo; one-line change in `build_spec.R`: `with = list(query = list(from_pool = "queries", field = "term"), ...)` plus a `queries` data pool from the pilot bank) — do after this merges.

@@ -24,7 +24,7 @@ tree and has been for some time. Inventory:
 | Session injection | `%%SESSIONID%%` placeholder substituted per session | `primemover/capture/SessionDecorator.java:71` |
 | Credential override | Spring props `oxylabs.overwrite.user` / `oxylabs.overwrite.password` | `SessionDecorator.java:27-30` |
 | Location source | `crawler.getAgent().getLocation()` — the Agent's `location` column | `primemover_api` `Agent.php` (fillable) |
-| Spec default | `location: US-IL-CHICAGO` | `experiment_designer/spec/parser.py:44`, `converter.py:297,366` |
+| Spec default | `location: US-IL-CHICAGO` | `pmspec/spec/parser.py:44`, `converter.py:297,366` |
 
 The username the runner currently builds:
 
@@ -339,12 +339,12 @@ Both canonical lists are downloadable, not opaque assets:
 - **Cities** — `City_list.csv`, 10,437 rows, `Country;City` format, 2,120 of them US
   (`content.gitbook.com/content/BQ7Zf9paoN3FTeGcyfY1/blobs/sWaiK5UGhLNaDBE9NDTt/City_list.csv`)
 
-Vendor these into `experiment_designer` as validation tables. `US;colorado_springs`
+Vendor these into `pmspec` as validation tables. `US;colorado_springs`
 and `US;boston` are both present, so our existing geographies do map.
 
 ### Where the translation belongs
 
-**In the `experiment_designer` / Laravel layer, not in Java.** Reasons:
+**In the `pmspec` / Laravel layer, not in Java.** Reasons:
 
 - Validation belongs where specs are authored — `pmspec validate` can reject an
   unmappable location before an experiment is ever uploaded, which is far better
@@ -501,7 +501,7 @@ them. The new one is wired in under `assertproxyjob` / `assertproxybyoxylabsjob`
 so the assertion can finally be used. `IpInfo` is gone; `OxylabsIpCheck` in
 `primemover.model.ipcheck` models the real nested shape.
 
-Remaining: expose the job type in the `experiment_designer` DSL so specs can
+Remaining: expose the job type in the `pmspec` DSL so specs can
 request it.
 
 ---
@@ -701,7 +701,7 @@ Ordered by dependency.
 4. `cc-` vs `st-` mapping form (§5).
 5. Repurpose `agents.location` vs add a provider-agnostic geo field (§5).
 
-**`experiment_designer`**
+**`pmspec`**
 6. Location token mapper + validator: `US-CO-COLORADO_SPRINGS` →
    `cc-US-city-colorado_springs`. Enforce: city requires `cc`; `_` for multi-word;
    `st`/`postalcode` US-only; never emit `cc`+`st` together.

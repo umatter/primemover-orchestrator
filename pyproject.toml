@@ -57,7 +57,7 @@ dev = [
 
 [project.scripts]
 orchestrator = "orchestrator.cli:cli"
-pmspec = "experiment_designer.cli:main"
+pmspec = "pmspec.cli:main"
 
 [project.urls]
 Homepage = "https://github.com/umatter/primemover-orchestrator"
@@ -65,10 +65,10 @@ Repository = "https://github.com/umatter/primemover-orchestrator"
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["orchestrator*", "experiment_designer*"]
+include = ["orchestrator*", "pmspec*"]
 
 [tool.setuptools.package-data]
-experiment_designer = ["schema/*.json"]
+pmspec = ["schema/*.json"]
 
 [tool.black]
 line-length = 100
@@ -87,10 +87,10 @@ ignore = ["E501"]
 # correct rather than a naming violation. Kept here instead of per-line noqa
 # comments, which black relocates when it wraps the call.
 # MissingSecret / InsecureSecretsFile are the fixed interface names later lock
-# tasks import verbatim (experiment_designer.lock.secrets); an *Error suffix
+# tasks import verbatim (pmspec.lock.secrets); an *Error suffix
 # would be a breaking rename, not a style fix. UploadRefused
-# (experiment_designer.lock.upload) is the same situation. PartCollision
-# (experiment_designer.lock.parts) is the same situation again -- the pmspec
+# (pmspec.lock.upload) is the same situation. PartCollision
+# (pmspec.lock.parts) is the same situation again -- the pmspec
 # phase-4 design and task briefs name it verbatim.
 extend-ignore-names = [
     "FileTagLoader",
@@ -115,7 +115,7 @@ follow_imports = "skip"
 follow_imports_for_stubs = true
 
 [tool.pytest.ini_options]
-testpaths = ["orchestrator/tests", "experiment_designer/tests"]
+testpaths = ["orchestrator/tests", "pmspec/tests"]
 python_files = ["test_*.py"]
 python_classes = ["Test*"]
 python_functions = ["test_*"]

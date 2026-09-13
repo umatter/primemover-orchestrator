@@ -52,9 +52,9 @@ from typing import Any
 REPO = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO))
 
-from experiment_designer.spec.time_utils import API_TIMEZONE  # noqa: E402
 from orchestrator.config.settings import get_settings  # noqa: E402
 from orchestrator.e2e.proxy import substitute_proxy  # noqa: E402
+from pmspec.spec.time_utils import API_TIMEZONE  # noqa: E402
 
 SCENARIO = REPO / "orchestrator" / "e2e" / "test_experiment_youtube_treatment.json"
 

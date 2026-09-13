@@ -56,9 +56,9 @@ apipint() { docker run --rm -v "$PWD":/app -w /app php:8.3-cli vendor/bin/pint "
 
 **`primemover-orchestrator`**
 - Modify `orchestrator/mcp_server/server.py` — `pm_create_experiment(runner_user_id=...)`, `upload_experiment` create payload.
-- Modify `experiment_designer/spec/converter.py` — `ConversionResult.experiment_runner_user_id`.
-- Modify `experiment_designer/cli.py` — create payload in `upload`.
-- Modify `orchestrator/tests/test_mcp_write_tools.py`, `experiment_designer/tests/test_spec.py` — tests.
+- Modify `pmspec/spec/converter.py` — `ConversionResult.experiment_runner_user_id`.
+- Modify `pmspec/cli.py` — create payload in `upload`.
+- Modify `orchestrator/tests/test_mcp_write_tools.py`, `pmspec/tests/test_spec.py` — tests.
 - Modify `docs/integration-contract.md`, `docs/new-server-setup.md`, `docs/runner-vm-migration-handoff.md` — contract + rollout docs.
 
 ---
@@ -923,9 +923,9 @@ git commit -m "mcp: pm_create_experiment and upload_experiment take runner_user_
 ### Task 7: Experiment designer — `experiment.runner_user_id` in the YAML spec
 
 **Files:**
-- Modify: `experiment_designer/spec/converter.py` — `ConversionResult` (line ~21) and both `ConversionResult(...)` constructions in `convert()` (lines ~119 and ~161)
-- Modify: `experiment_designer/cli.py` — create payload in `upload` (line ~336)
-- Test: `experiment_designer/tests/test_spec.py` (class `TestSpecConverter`)
+- Modify: `pmspec/spec/converter.py` — `ConversionResult` (line ~21) and both `ConversionResult(...)` constructions in `convert()` (lines ~119 and ~161)
+- Modify: `pmspec/cli.py` — create payload in `upload` (line ~336)
+- Test: `pmspec/tests/test_spec.py` (class `TestSpecConverter`)
 
 **Interfaces:**
 - Produces: `ConversionResult.experiment_runner_user_id: int | None` (from `parsed.experiment.get("runner_user_id")`); a non-integer value is a conversion error `"experiment.runner_user_id must be an integer runner account id (1 = ex63, 3 = VM)"`.
@@ -933,7 +933,7 @@ git commit -m "mcp: pm_create_experiment and upload_experiment take runner_user_
 
 - [ ] **Step 1: Write the failing tests**
 
-Append to `class TestSpecConverter` in `experiment_designer/tests/test_spec.py`:
+Append to `class TestSpecConverter` in `pmspec/tests/test_spec.py`:
 
 ```python
     def test_convert_carries_runner_assignment(self):
@@ -993,7 +993,7 @@ crawlers:
 
 - [ ] **Step 2: Run to verify they fail**
 
-Run: `venv/bin/pytest experiment_designer/tests/test_spec.py -k runner_assignment -v`
+Run: `venv/bin/pytest pmspec/tests/test_spec.py -k runner_assignment -v`
 Expected: `AttributeError: 'ConversionResult' object has no attribute 'experiment_runner_user_id'`.
 
 - [ ] **Step 3: Implement**
@@ -1031,7 +1031,7 @@ Add a helper method to `SpecConverter` (next to `__init__`):
 
 In `convert()`, compute `runner_user_id = self._runner_user_id(parsed.experiment)` right after `self.warnings = list(parsed.warnings)`, and pass `experiment_runner_user_id=runner_user_id` in **both** `ConversionResult(...)` constructions. The early-return branch checks `parsed.errors` before your helper runs, so call the helper first and change that condition to `if self.errors:` so a bad runner id also short-circuits.
 
-In `experiment_designer/cli.py` `upload`, change the create call to build the payload the same way as Task 6:
+In `pmspec/cli.py` `upload`, change the create call to build the payload the same way as Task 6:
 
 ```python
             create_payload = {
@@ -1054,14 +1054,14 @@ and print it: after `click.echo(f"Experiment: {result.experiment_name}")` (line 
 
 - [ ] **Step 4: Run the tests**
 
-Run: `venv/bin/pytest experiment_designer/tests -v`
+Run: `venv/bin/pytest pmspec/tests -v`
 Expected: all pass, including the three new ones.
 
 - [ ] **Step 5: Lint + commit**
 
 ```bash
 make check
-git add experiment_designer/spec/converter.py experiment_designer/cli.py experiment_designer/tests/test_spec.py
+git add pmspec/spec/converter.py pmspec/cli.py pmspec/tests/test_spec.py
 git commit -m "designer: experiment.runner_user_id chooses the runner for a spec"
 ```
 
@@ -1073,7 +1073,7 @@ git commit -m "designer: experiment.runner_user_id chooses the runner for a spec
 - Modify: `docs/integration-contract.md` — new section "Runner assignment" (after the section that documents `crawlers-unprocessed`; find it with `grep -n "crawlers-unprocessed" docs/integration-contract.md`)
 - Modify: `docs/new-server-setup.md` — the "The hard requirement: partition the work" subsection
 - Modify: `docs/runner-vm-migration-handoff.md` — append to the status section
-- Modify: `docs/experiment-designer.md` — the experiment-section field list (find with `grep -n "experiment:" docs/experiment-designer.md | head -3`)
+- Modify: `docs/pmspec.md` — the experiment-section field list (find with `grep -n "experiment:" docs/pmspec.md | head -3`)
 
 - [ ] **Step 1: integration-contract.md**
 
@@ -1128,7 +1128,7 @@ and 143 returned to users 5 and 6. Assign an experiment to the VM with
 `runner_user_id=3`; everything else runs on ex63.
 ```
 
-In `docs/experiment-designer.md`, in the list of `experiment:` fields, add:
+In `docs/pmspec.md`, in the list of `experiment:` fields, add:
 
 ```markdown
 - `runner_user_id` (optional, integer): which runner executes the study. `1` = ex63
@@ -1138,7 +1138,7 @@ In `docs/experiment-designer.md`, in the list of `experiment:` fields, add:
 - [ ] **Step 4: Commit, push, PR**
 
 ```bash
-git add docs/integration-contract.md docs/new-server-setup.md docs/runner-vm-migration-handoff.md docs/experiment-designer.md
+git add docs/integration-contract.md docs/new-server-setup.md docs/runner-vm-migration-handoff.md docs/pmspec.md
 git commit -m "docs: runner assignment replaces owner-based partitioning"
 git push -u origin feat/runner-assignment
 gh pr create --base master --title "Runner assignment: MCP + designer support, docs" --body "$(cat <<'EOF'

@@ -889,7 +889,7 @@ class TestComposeRun:
 # to (lock_content, mode, experiment_id=None, dry_run=True, deep_verify=False)
 # and runner assignment is now decided entirely by the lock's
 # experiment.runner_user_id plus mode ('test' always forces the VM runner --
-# see experiment_designer.lock.upload.effective_experiment). Coverage for the
+# see pmspec.lock.upload.effective_experiment). Coverage for the
 # new tool lives in test_mcp_lock_tools.py and
 # test_mcp_write_guard.py::TestUploadExperimentIsGuarded.
 # =============================================================================

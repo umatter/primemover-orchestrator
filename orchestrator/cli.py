@@ -3259,14 +3259,14 @@ def experiment_validate(
     try:
         import yaml as yaml_lib
 
-        from experiment_designer.spec import SpecConverter, SpecParser, SpecValidator
-        from experiment_designer.spec.design_expander import DesignExpander
-        from experiment_designer.spec.file_loader import (
+        from pmspec.spec import SpecConverter, SpecParser, SpecValidator
+        from pmspec.spec.design_expander import DesignExpander
+        from pmspec.spec.file_loader import (
             create_file_tag_loader,
             resolve_file_references,
         )
     except ImportError as e:
-        console.print(f"[red]Error importing experiment_designer: {e}[/red]")
+        console.print(f"[red]Error importing pmspec: {e}[/red]")
         console.print("[dim]Install with: pip install -e .[/dim]")
         return
 
@@ -3353,7 +3353,7 @@ def experiment_validate(
 @click.argument("file", type=click.Path(exists=True))
 @click.option(
     "--mode",
-    # Hardcoded rather than importing experiment_designer.lock.upload.MODES at
+    # Hardcoded rather than importing pmspec.lock.upload.MODES at
     # module load time: that import alone costs ~150ms and would slow every
     # `orchestrator` invocation, not just this command. Keep in sync with
     # MODES there.
@@ -3386,18 +3386,18 @@ def experiment_upload(
     """Upload a lock (compiling a spec first) and verify the result, same as `pmspec upload`."""
     from pathlib import Path
 
-    from experiment_designer.lock.anchor import AnchorError
-    from experiment_designer.lock.api import ApiError, ApiSession
-    from experiment_designer.lock.build import compile_spec
-    from experiment_designer.lock.io import LockError, dump_lock, is_lock_document, load_lock
-    from experiment_designer.lock.secrets import (
+    from pmspec.lock.anchor import AnchorError
+    from pmspec.lock.api import ApiError, ApiSession
+    from pmspec.lock.build import compile_spec
+    from pmspec.lock.io import LockError, dump_lock, is_lock_document, load_lock
+    from pmspec.lock.secrets import (
         InsecureSecretsFile,
         MissingSecret,
         SecretStore,
         find_placeholders,
     )
-    from experiment_designer.lock.upload import UploadOptions, UploadRefused, upload_lock
-    from experiment_designer.lock.verify import verify_lock
+    from pmspec.lock.upload import UploadOptions, UploadRefused, upload_lock
+    from pmspec.lock.verify import verify_lock
 
     settings = ctx.obj["settings"]
     file_path = Path(file)
@@ -3487,9 +3487,9 @@ def experiment_generate(
     from pathlib import Path
 
     try:
-        from experiment_designer.spec import SpecConverter, SpecParser
+        from pmspec.spec import SpecConverter, SpecParser
     except ImportError as e:
-        console.print(f"[red]Error importing experiment_designer: {e}[/red]")
+        console.print(f"[red]Error importing pmspec: {e}[/red]")
         return
 
     file_path = Path(file)
@@ -3537,10 +3537,10 @@ def experiment_preview(ctx: click.Context, file: str, seed: int | None) -> None:
     from pathlib import Path
 
     try:
-        from experiment_designer.spec import SpecParser
-        from experiment_designer.spec.design_expander import DesignExpander
+        from pmspec.spec import SpecParser
+        from pmspec.spec.design_expander import DesignExpander
     except ImportError as e:
-        console.print(f"[red]Error importing experiment_designer: {e}[/red]")
+        console.print(f"[red]Error importing pmspec: {e}[/red]")
         return
 
     file_path = Path(file)

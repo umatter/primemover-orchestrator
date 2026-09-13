@@ -1,7 +1,7 @@
 # pmspec: a committed lock, provenance on the server, and a contract that cannot drop things
 
 **Date:** 2026-09-11 · **Status:** approved design, not yet implemented
-**Repos touched:** `primemover-orchestrator` only (`experiment_designer/`, the MCP server,
+**Repos touched:** `primemover-orchestrator` only (`pmspec/`, the MCP server,
 docs, the `primemover-compose` skill). No API migration, no GUI work, no runner work. The
 two research repos that generate specs from R need small follow-up edits, listed in §7.
 
@@ -156,7 +156,7 @@ Rules:
   newlines. Compiling the same inputs twice yields identical bytes; this is a test.
 - **Two writers, one reader.** `pmspec compile` produces a lock from a spec; a generator
   may write one directly. Either way `pmspec validate <lock>` checks it against a JSON
-  schema (`experiment_designer/spec/schemas/lock-1.schema.json`, shipped with the
+  schema (`pmspec/spec/schemas/lock-1.schema.json`, shipped with the
   package). Upload, verify, diff, summary and status read locks only.
 
 ## 2. `compile` and the secrets store (phase 1)
@@ -188,7 +188,7 @@ Existing commands are re-based on the lock rather than duplicated:
 - `pmspec validate` accepts a spec or a lock (detected by the `pmspec_lock` key) and
   says which it got. `preview` and `summary` accept both too.
 - `SpecConverter.convert` keeps returning `ConversionResult`; lockify is a new module
-  `experiment_designer/lock/` (`model.py` for the dataclass + schema, `build.py` for
+  `pmspec/lock/` (`model.py` for the dataclass + schema, `build.py` for
   lockify, `resolve.py` for §3 steps 2–3, `io.py` for canonical read/write). Nothing in
   `spec/` learns about locks.
 
@@ -290,7 +290,7 @@ provenance with no API change. The GUI shows nothing until a panel is added; out
    count, and per queue `start_at` and — with `--deep` — the ordered job list (type +
    behaviours). Ignored: server-generated ids, timestamps, status fields, and the
    runner-populated fields. The shape builders and the diff live in
-   `experiment_designer/lock/verify.py`; the existing summary-level comparator is unchanged.
+   `pmspec/lock/verify.py`; the existing summary-level comparator is unchanged.
 
    The live side has no single endpoint for the tree, so the reads are: `GET
    experiments/{id}` (crawlers, agent, proxy, configuration preferences, experiment
@@ -366,7 +366,7 @@ Provenance headers are shown side by side, not diffed.
 
 ### Docs and skills
 
-- `docs/experiment-designer.md` is rewritten around *spec → lock → upload → verify*; the
+- `docs/pmspec.md` is rewritten around *spec → lock → upload → verify*; the
   DSL reference becomes a section under "writing a spec", and a new section documents the
   lock schema for generators that write it directly.
 - The MCP `doc://experiment-designer` resource follows the file.
@@ -376,7 +376,7 @@ Provenance headers are shown side by side, not diffed.
 
 ## 6. Testing
 
-All in `experiment_designer/tests/` unless noted; no live infrastructure.
+All in `pmspec/tests/` unless noted; no live infrastructure.
 
 - **Lock determinism**: compile the same spec twice → identical bytes; compile with a
   different seed → different draws, identical structure.

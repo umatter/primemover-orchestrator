@@ -10,7 +10,7 @@ The orchestrator provides centralized management for:
 - **bot-decision-yt** (Python Lambda) - YouTube video selection
 - **Monitoring Stack** - Grafana, Loki, Prometheus, Tempo
 
-It also includes the **Experiment Designer** (`pmspec`) - a YAML-based DSL for defining experiments with factorial designs, reusable templates, and automated crawler generation.
+It also includes **`pmspec`, the experiment designer** (the `pmspec/` package) - a YAML-based DSL for defining experiments with factorial designs, reusable templates, and automated crawler generation.
 
 ## Quick Start: New VM Deployment
 
@@ -472,7 +472,7 @@ A `--youtube` variant (`orchestrator e2e --youtube`) drives the Lambda-select wo
 
 `--youtube-treatment` runs the same workflow on a **treated** bot (`pi=1`, `kappa=1`) and **fails the run unless the treatment actually applied**. That is a different question from whether the jobs succeeded: the decision function degrades by omission — a filter it cannot apply is dropped, the recommendations stay plausible, the call is still 200 — so a bot configured to be treated can produce control-arm data through a completely green `--youtube` run, which is a control crawler and cannot see any of it. The treated variant found a real defect on its first execution.
 
-## Experiment Designer (YAML DSL)
+## pmspec — the experiment designer (YAML DSL)
 
 The orchestrator includes a YAML-based Domain-Specific Language for defining experiments with factorial designs, parameter distributions, and data pools.
 
@@ -573,7 +573,7 @@ run in different places on purpose:
 `pmspec generate spec.yaml -o out.json` still produces bare API JSON for the GUI's upload form,
 but it records no provenance and is not the path for a study.
 
-See [docs/experiment-designer.md](docs/experiment-designer.md) for full documentation.
+See [docs/pmspec.md](docs/pmspec.md) for full documentation.
 
 ### Dashboard
 
@@ -915,7 +915,7 @@ pre-commit install
 pytest
 
 # Run tests with coverage
-pytest --cov=orchestrator --cov=experiment_designer
+pytest --cov=orchestrator --cov=pmspec
 ```
 
 ## Docker

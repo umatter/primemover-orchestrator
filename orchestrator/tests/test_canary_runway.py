@@ -14,7 +14,6 @@ from datetime import datetime, timedelta
 
 import pytest
 
-from experiment_designer.spec.time_utils import API_TIMEZONE
 from orchestrator.canary import (
     RUNWAY_WARNING_DAYS,
     CanaryRunway,
@@ -22,6 +21,7 @@ from orchestrator.canary import (
     parse_start,
     runway_from_queues,
 )
+from pmspec.spec.time_utils import API_TIMEZONE
 
 NOW = datetime(2026, 9, 10, 12, 0, tzinfo=API_TIMEZONE)
 

@@ -4,7 +4,7 @@
 
 **Goal:** Make a pmspec experiment reproducible: a committed, self-contained lock file compiled from a spec; upload that writes provenance onto the experiment; `verify` that proves a live experiment is bound to, and structurally identical to, a lock.
 
-**Architecture:** A new package `experiment_designer/lock/` owns everything downstream of the existing spec→API-JSON conversion: the lock dataclass and canonical YAML I/O, secret placeholders and the TOML store, the schedule anchor arithmetic, provenance gathering, the single uploader (replacing three copies of the upload code), and the verifier. `experiment_designer/spec/` gains only two constructor options on `SpecConverter`. The `pmspec` CLI, `orchestrator experiment upload` and the MCP server become thin callers of `lock/`.
+**Architecture:** A new package `pmspec/lock/` owns everything downstream of the existing spec→API-JSON conversion: the lock dataclass and canonical YAML I/O, secret placeholders and the TOML store, the schedule anchor arithmetic, provenance gathering, the single uploader (replacing three copies of the upload code), and the verifier. `pmspec/spec/` gains only two constructor options on `SpecConverter`. The `pmspec` CLI, `orchestrator experiment upload` and the MCP server become thin callers of `lock/`.
 
 **Tech Stack:** Python 3.10+, PyYAML, jsonschema, requests (existing); `tomli` (new, only on <3.11). Tests: pytest, `click.testing.CliRunner`, in-memory fakes for HTTP — nothing touches the network.
 
@@ -14,7 +14,7 @@
 
 - Line length 100; `make check` (black, ruff `E,F,W,I,N,UP,B,C4`, mypy `--ignore-missing-imports`, pytest) must pass after every task. Run `make hooks` once if not done.
 - `requires-python = ">=3.10"`: no `tomllib` without a `tomli` fallback, no `match`, no `Self`.
-- Every timestamp the API receives is Europe/Zurich wall clock: use `experiment_designer.spec.time_utils.API_TIMEZONE` / `format_iso8601`; never `datetime.now()` bare.
+- Every timestamp the API receives is Europe/Zurich wall clock: use `pmspec.spec.time_utils.API_TIMEZONE` / `format_iso8601`; never `datetime.now()` bare.
 - The only secret syntax is `${secret:<dotted.key>}`, key charset `[A-Za-z0-9_.-]`. No command ever prints a resolved value.
 - Lock serialization is canonical: fixed key order, `sort_keys=False`, `allow_unicode=True`, `width=10**6`, block style, LF newlines. Same inputs → identical bytes.
 - Detect-secrets runs on commit: use the value `testpass` for fake passwords in fixtures (it is on the exclude list).
@@ -25,24 +25,24 @@
 
 | path | responsibility |
 |---|---|
-| `experiment_designer/spec/converter.py` (modify) | `SpecConverter(seed=…, resolve_times=…)`: explicit seed overrides `design.seed`; `resolve_times=False` leaves each queue's raw `start_at` string untouched |
-| `experiment_designer/lock/__init__.py` (new) | re-exports |
-| `experiment_designer/lock/model.py` (new) | `Provenance`, `Lock` dataclasses; `LOCK_FORMAT_VERSION = 1`; `to_dict()` / `from_dict()` |
-| `experiment_designer/lock/io.py` (new) | `dump_lock(lock) -> str`, `load_lock(text) -> Lock`, `sha256_text(text) -> str`, `is_lock_document(text) -> bool`, `validate_lock_dict(d) -> list[str]` (JSON schema) |
-| `experiment_designer/schema/lock-1.schema.json` (new) | JSON schema for the lock document |
-| `experiment_designer/lock/secrets.py` (new) | placeholder regex, `find_placeholders`, `find_literal_credentials`, `SecretStore`, `resolve_secrets` |
-| `experiment_designer/lock/anchor.py` (new) | `derive_anchor`, `to_offset`, `resolve_start_at`, `parse_offset` |
-| `experiment_designer/lock/provenance.py` (new) | `git_commit(path)`, `pmspec_version()`, `now_iso()` |
-| `experiment_designer/lock/build.py` (new) | `compile_spec(...) -> CompileResult` |
-| `experiment_designer/lock/api.py` (new) | `ApiSession` (requests-based login/GET/POST/PUT/multipart) — the one HTTP seam for CLI paths |
-| `experiment_designer/lock/upload.py` (new) | `UploadOptions`, `provenance_preferences`, `upload_lock(...) -> UploadResult` |
-| `experiment_designer/lock/verify.py` (new) | `Shape` builders for lock and live API, `compare_shapes`, `verify_lock`, `VerifyResult`, `Difference` |
-| `experiment_designer/cli.py` (modify) | `compile`, `verify`, `secrets check`; `upload`/`generate`/`validate` re-based on `lock/` |
+| `pmspec/spec/converter.py` (modify) | `SpecConverter(seed=…, resolve_times=…)`: explicit seed overrides `design.seed`; `resolve_times=False` leaves each queue's raw `start_at` string untouched |
+| `pmspec/lock/__init__.py` (new) | re-exports |
+| `pmspec/lock/model.py` (new) | `Provenance`, `Lock` dataclasses; `LOCK_FORMAT_VERSION = 1`; `to_dict()` / `from_dict()` |
+| `pmspec/lock/io.py` (new) | `dump_lock(lock) -> str`, `load_lock(text) -> Lock`, `sha256_text(text) -> str`, `is_lock_document(text) -> bool`, `validate_lock_dict(d) -> list[str]` (JSON schema) |
+| `pmspec/schema/lock-1.schema.json` (new) | JSON schema for the lock document |
+| `pmspec/lock/secrets.py` (new) | placeholder regex, `find_placeholders`, `find_literal_credentials`, `SecretStore`, `resolve_secrets` |
+| `pmspec/lock/anchor.py` (new) | `derive_anchor`, `to_offset`, `resolve_start_at`, `parse_offset` |
+| `pmspec/lock/provenance.py` (new) | `git_commit(path)`, `pmspec_version()`, `now_iso()` |
+| `pmspec/lock/build.py` (new) | `compile_spec(...) -> CompileResult` |
+| `pmspec/lock/api.py` (new) | `ApiSession` (requests-based login/GET/POST/PUT/multipart) — the one HTTP seam for CLI paths |
+| `pmspec/lock/upload.py` (new) | `UploadOptions`, `provenance_preferences`, `upload_lock(...) -> UploadResult` |
+| `pmspec/lock/verify.py` (new) | `Shape` builders for lock and live API, `compare_shapes`, `verify_lock`, `VerifyResult`, `Difference` |
+| `pmspec/cli.py` (modify) | `compile`, `verify`, `secrets check`; `upload`/`generate`/`validate` re-based on `lock/` |
 | `orchestrator/cli.py` (modify) | `experiment upload` delegates to `lock.upload.upload_lock` |
 | `orchestrator/mcp_server/server.py` (modify) | `compile_experiment_spec`, `verify_experiment`; `validate_experiment_spec` and `upload_experiment` accept locks / `files=` |
-| `pyproject.toml` (modify) | `tomli` dependency; package-data for `experiment_designer/schema/*.json` |
-| `docs/experiment-designer.md` (modify) | new "Locks, provenance and verify" section |
-| `experiment_designer/tests/test_lock_*.py` (new) | one file per module above |
+| `pyproject.toml` (modify) | `tomli` dependency; package-data for `pmspec/schema/*.json` |
+| `docs/pmspec.md` (modify) | new "Locks, provenance and verify" section |
+| `pmspec/tests/test_lock_*.py` (new) | one file per module above |
 | `orchestrator/tests/test_mcp_lock_tools.py` (new) | the four MCP tools |
 
 Interfaces below are exact; later tasks import them by these names.
@@ -52,8 +52,8 @@ Interfaces below are exact; later tasks import them by these names.
 ### Task 1: `SpecConverter` learns an explicit seed and unresolved times
 
 **Files:**
-- Modify: `experiment_designer/spec/converter.py:112-160` (`__init__`, `convert`) and `:407-415` (`_convert_queue`); `experiment_designer/spec/design_expander.py:205` (`_parse_design` seed precedence)
-- Test: `experiment_designer/tests/test_lock_converter_options.py`
+- Modify: `pmspec/spec/converter.py:112-160` (`__init__`, `convert`) and `:407-415` (`_convert_queue`); `pmspec/spec/design_expander.py:205` (`_parse_design` seed precedence)
+- Test: `pmspec/tests/test_lock_converter_options.py`
 
 **Interfaces:**
 - Produces: `SpecConverter(seed: int | None = None, resolve_times: bool = True)`. With `seed` set, `DesignExpander(seed=seed)` is used regardless of `design.seed`. With `resolve_times=False`, each API queue dict's `start_at` is the raw spec string (`"now"`, `"+5m"`, `"2026-10-01T10:00:00"`), and a missing start is emitted as `"now"`.
@@ -61,13 +61,13 @@ Interfaces below are exact; later tasks import them by these names.
 - [ ] **Step 1: Write the failing tests**
 
 ```python
-# experiment_designer/tests/test_lock_converter_options.py
+# pmspec/tests/test_lock_converter_options.py
 """SpecConverter options the lock compiler relies on: an explicit seed that beats
 design.seed, and a way to get the queue start strings back *unresolved* so the
 lock can turn them into offsets from an anchor."""
 
-from experiment_designer.spec.converter import SpecConverter
-from experiment_designer.spec.parser import SpecParser
+from pmspec.spec.converter import SpecConverter
+from pmspec.spec.parser import SpecParser
 
 SPEC = """
 version: "1.0"
@@ -135,7 +135,7 @@ def test_missing_start_is_now_when_unresolved():
 
 - [ ] **Step 2: Run to verify they fail**
 
-Run: `venv/bin/pytest experiment_designer/tests/test_lock_converter_options.py -v`
+Run: `venv/bin/pytest pmspec/tests/test_lock_converter_options.py -v`
 Expected: `TypeError: SpecConverter.__init__() got an unexpected keyword argument 'seed'`.
 
 - [ ] **Step 3: Implement**
@@ -180,13 +180,13 @@ In `_convert_queue`:
 
 - [ ] **Step 4: Run tests**
 
-Run: `venv/bin/pytest experiment_designer/tests/ -q`
+Run: `venv/bin/pytest pmspec/tests/ -q`
 Expected: all pass (existing tests unaffected: defaults unchanged).
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add experiment_designer/spec/converter.py experiment_designer/spec/design_expander.py experiment_designer/tests/test_lock_converter_options.py
+git add pmspec/spec/converter.py pmspec/spec/design_expander.py pmspec/tests/test_lock_converter_options.py
 git commit -m "designer: SpecConverter takes an explicit seed and can leave starts unresolved"
 ```
 
@@ -195,9 +195,9 @@ git commit -m "designer: SpecConverter takes an explicit seed and can leave star
 ### Task 2: Lock model, canonical I/O and JSON schema
 
 **Files:**
-- Create: `experiment_designer/lock/__init__.py`, `experiment_designer/lock/model.py`, `experiment_designer/lock/io.py`, `experiment_designer/schema/lock-1.schema.json`
+- Create: `pmspec/lock/__init__.py`, `pmspec/lock/model.py`, `pmspec/lock/io.py`, `pmspec/schema/lock-1.schema.json`
 - Modify: `pyproject.toml` (package-data)
-- Test: `experiment_designer/tests/test_lock_io.py`
+- Test: `pmspec/tests/test_lock_io.py`
 
 **Interfaces:**
 - Produces:
@@ -219,7 +219,7 @@ git commit -m "designer: SpecConverter takes an explicit seed and can leave star
 - [ ] **Step 1: Write the failing tests**
 
 ```python
-# experiment_designer/tests/test_lock_io.py
+# pmspec/tests/test_lock_io.py
 """The lock is the reproducibility artifact, so two properties matter more than
 anything else here: dumping is byte-deterministic, and a document that is not
 a lock is refused with a message naming what is wrong."""
@@ -228,7 +228,7 @@ import hashlib
 
 import pytest
 
-from experiment_designer.lock.io import (
+from pmspec.lock.io import (
     LockError,
     dump_lock,
     is_lock_document,
@@ -236,7 +236,7 @@ from experiment_designer.lock.io import (
     sha256_text,
     validate_lock_dict,
 )
-from experiment_designer.lock.model import LOCK_FORMAT_VERSION, Lock, Provenance
+from pmspec.lock.model import LOCK_FORMAT_VERSION, Lock, Provenance
 
 
 def make_lock(**overrides) -> Lock:
@@ -355,12 +355,12 @@ def test_sha256_text_matches_hashlib_on_utf8_bytes():
 
 - [ ] **Step 2: Run to verify they fail**
 
-Run: `venv/bin/pytest experiment_designer/tests/test_lock_io.py -v`
-Expected: `ModuleNotFoundError: No module named 'experiment_designer.lock'`
+Run: `venv/bin/pytest pmspec/tests/test_lock_io.py -v`
+Expected: `ModuleNotFoundError: No module named 'pmspec.lock'`
 
 - [ ] **Step 3: Write the schema**
 
-`experiment_designer/schema/lock-1.schema.json`:
+`pmspec/schema/lock-1.schema.json`:
 
 ```json
 {
@@ -594,7 +594,7 @@ def sha256_text(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
 ```
 
-`experiment_designer/lock/__init__.py`:
+`pmspec/lock/__init__.py`:
 
 ```python
 """Lock artifacts: compile, secrets, upload with provenance, verify."""
@@ -620,18 +620,18 @@ In `pyproject.toml`, after `[tool.setuptools.packages.find]`:
 
 ```toml
 [tool.setuptools.package-data]
-experiment_designer = ["schema/*.json"]
+pmspec = ["schema/*.json"]
 ```
 
 - [ ] **Step 7: Run tests**
 
-Run: `venv/bin/pytest experiment_designer/tests/test_lock_io.py -v`
+Run: `venv/bin/pytest pmspec/tests/test_lock_io.py -v`
 Expected: PASS. If `test_schema_rejects_start_at_in_a_lock` fails, check that `"start_at": false` is honoured by `Draft202012Validator` (it is; a `false` subschema rejects the property).
 
 - [ ] **Step 8: Commit**
 
 ```bash
-git add experiment_designer/lock experiment_designer/schema/lock-1.schema.json experiment_designer/tests/test_lock_io.py pyproject.toml
+git add pmspec/lock pmspec/schema/lock-1.schema.json pmspec/tests/test_lock_io.py pyproject.toml
 git commit -m "designer: lock model, canonical YAML I/O and schema"
 ```
 
@@ -640,9 +640,9 @@ git commit -m "designer: lock model, canonical YAML I/O and schema"
 ### Task 3: Secret placeholders and the TOML store
 
 **Files:**
-- Create: `experiment_designer/lock/secrets.py`
+- Create: `pmspec/lock/secrets.py`
 - Modify: `pyproject.toml` (dependency)
-- Test: `experiment_designer/tests/test_lock_secrets.py`
+- Test: `pmspec/tests/test_lock_secrets.py`
 
 **Interfaces:**
 - Produces:
@@ -663,7 +663,7 @@ git commit -m "designer: lock model, canonical YAML I/O and schema"
 - [ ] **Step 1: Write the failing tests**
 
 ```python
-# experiment_designer/tests/test_lock_secrets.py
+# pmspec/tests/test_lock_secrets.py
 """Secrets never live in a lock and never leak out of a resolve."""
 
 import os
@@ -671,7 +671,7 @@ from pathlib import Path
 
 import pytest
 
-from experiment_designer.lock.secrets import (
+from pmspec.lock.secrets import (
     InsecureSecretsFile,
     MissingSecret,
     SecretStore,
@@ -748,7 +748,7 @@ def test_non_string_leaf_in_store_is_an_error(tmp_path: Path):
 
 - [ ] **Step 2: Run to verify they fail**
 
-Run: `venv/bin/pytest experiment_designer/tests/test_lock_secrets.py -v`
+Run: `venv/bin/pytest pmspec/tests/test_lock_secrets.py -v`
 Expected: `ModuleNotFoundError`.
 
 - [ ] **Step 3: Add the dependency**
@@ -888,13 +888,13 @@ def mask_secrets(obj: Any) -> Any:
 
 - [ ] **Step 5: Run tests**
 
-Run: `venv/bin/pytest experiment_designer/tests/test_lock_secrets.py -v`
+Run: `venv/bin/pytest pmspec/tests/test_lock_secrets.py -v`
 Expected: PASS.
 
 - [ ] **Step 6: Commit**
 
 ```bash
-git add experiment_designer/lock/secrets.py experiment_designer/tests/test_lock_secrets.py pyproject.toml
+git add pmspec/lock/secrets.py pmspec/tests/test_lock_secrets.py pyproject.toml
 git commit -m "designer: secret placeholders and the mode-600 TOML store"
 ```
 
@@ -903,8 +903,8 @@ git commit -m "designer: secret placeholders and the mode-600 TOML store"
 ### Task 4: Schedule anchor and offsets
 
 **Files:**
-- Create: `experiment_designer/lock/anchor.py`
-- Test: `experiment_designer/tests/test_lock_anchor.py`
+- Create: `pmspec/lock/anchor.py`
+- Test: `pmspec/tests/test_lock_anchor.py`
 
 **Interfaces:**
 - Produces:
@@ -923,7 +923,7 @@ git commit -m "designer: secret placeholders and the mode-600 TOML store"
 - [ ] **Step 1: Write the failing tests**
 
 ```python
-# experiment_designer/tests/test_lock_anchor.py
+# pmspec/tests/test_lock_anchor.py
 """Queue starts in a lock are offsets from one anchor, so the same lock can be
 uploaded on any day and every session keeps its spacing."""
 
@@ -931,7 +931,7 @@ from datetime import datetime, timedelta
 
 import pytest
 
-from experiment_designer.lock.anchor import (
+from pmspec.lock.anchor import (
     UPLOAD_ANCHOR,
     AnchorError,
     derive_anchor,
@@ -940,7 +940,7 @@ from experiment_designer.lock.anchor import (
     resolve_anchor,
     resolve_start_at,
 )
-from experiment_designer.spec.time_utils import API_TIMEZONE
+from pmspec.spec.time_utils import API_TIMEZONE
 
 
 @pytest.mark.parametrize(
@@ -1016,7 +1016,7 @@ def test_resolve_start_at_across_dst_keeps_wall_clock_arithmetic():
 
 - [ ] **Step 2: Run to verify they fail**
 
-Run: `venv/bin/pytest experiment_designer/tests/test_lock_anchor.py -v`
+Run: `venv/bin/pytest pmspec/tests/test_lock_anchor.py -v`
 Expected: `ModuleNotFoundError`.
 
 - [ ] **Step 3: Implement**
@@ -1029,7 +1029,7 @@ from __future__ import annotations
 import re
 from datetime import datetime, timedelta
 
-from experiment_designer.spec.time_utils import (
+from pmspec.spec.time_utils import (
     API_TIMEZONE,
     _to_api_wall_clock,
     format_iso8601,
@@ -1126,13 +1126,13 @@ def resolve_start_at(anchor_dt: datetime, offset: str) -> str:
 
 - [ ] **Step 4: Run tests**
 
-Run: `venv/bin/pytest experiment_designer/tests/test_lock_anchor.py -v`
+Run: `venv/bin/pytest pmspec/tests/test_lock_anchor.py -v`
 Expected: PASS.
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add experiment_designer/lock/anchor.py experiment_designer/tests/test_lock_anchor.py
+git add pmspec/lock/anchor.py pmspec/tests/test_lock_anchor.py
 git commit -m "designer: schedule anchor and start offsets for locks"
 ```
 
@@ -1141,8 +1141,8 @@ git commit -m "designer: schedule anchor and start offsets for locks"
 ### Task 5: Provenance helpers and the compiler
 
 **Files:**
-- Create: `experiment_designer/lock/provenance.py`, `experiment_designer/lock/build.py`
-- Test: `experiment_designer/tests/test_lock_build.py`
+- Create: `pmspec/lock/provenance.py`, `pmspec/lock/build.py`
+- Test: `pmspec/tests/test_lock_build.py`
 
 **Interfaces:**
 - Consumes: Task 1 `SpecConverter(seed=, resolve_times=False)`; Task 2 `Lock`, `Provenance`, `dump_lock`, `sha256_text`; Task 3 `find_literal_credentials`; Task 4 `derive_anchor`, `AnchorError`.
@@ -1162,7 +1162,7 @@ git commit -m "designer: schedule anchor and start offsets for locks"
 - [ ] **Step 1: Write the failing tests**
 
 ```python
-# experiment_designer/tests/test_lock_build.py
+# pmspec/tests/test_lock_build.py
 """compile: spec + seed -> lock. Deterministic, refuses what cannot be committed."""
 
 import subprocess
@@ -1170,9 +1170,9 @@ from pathlib import Path
 
 import pytest
 
-from experiment_designer.lock.build import compile_spec
-from experiment_designer.lock.io import dump_lock
-from experiment_designer.lock.provenance import git_commit
+from pmspec.lock.build import compile_spec
+from pmspec.lock.io import dump_lock
+from pmspec.lock.provenance import git_commit
 
 SPEC = """
 version: "1.0"
@@ -1315,7 +1315,7 @@ def test_experiment_block_and_runner(spec_dir: Path):
 
 - [ ] **Step 2: Run to verify they fail**
 
-Run: `venv/bin/pytest experiment_designer/tests/test_lock_build.py -v`
+Run: `venv/bin/pytest pmspec/tests/test_lock_build.py -v`
 Expected: `ModuleNotFoundError`.
 
 - [ ] **Step 3: Write provenance.py**
@@ -1330,7 +1330,7 @@ from datetime import datetime
 from importlib import metadata
 from pathlib import Path
 
-from experiment_designer.spec.time_utils import API_TIMEZONE, format_iso8601
+from pmspec.spec.time_utils import API_TIMEZONE, format_iso8601
 
 
 def git_commit(path: Path) -> str | None:
@@ -1370,8 +1370,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from experiment_designer.spec.converter import SpecConverter
-from experiment_designer.spec.parser import SpecParser
+from pmspec.spec.converter import SpecConverter
+from pmspec.spec.parser import SpecParser
 
 from .anchor import AnchorError, derive_anchor
 from .io import sha256_text
@@ -1474,17 +1474,17 @@ def compile_spec(
     return CompileResult(lock, [], warnings)
 ```
 
-Note `experiment.generator` is a new optional spec key. If `SpecValidator`'s JSON schema (`experiment_designer/schema/experiment-spec.schema.json`) has `additionalProperties: false` on `experiment`, add `"generator": {"type": "string"}` there; the parser itself ignores unknown keys.
+Note `experiment.generator` is a new optional spec key. If `SpecValidator`'s JSON schema (`pmspec/schema/experiment-spec.schema.json`) has `additionalProperties: false` on `experiment`, add `"generator": {"type": "string"}` there; the parser itself ignores unknown keys.
 
 - [ ] **Step 5: Run tests**
 
-Run: `venv/bin/pytest experiment_designer/tests/test_lock_build.py -v`
+Run: `venv/bin/pytest pmspec/tests/test_lock_build.py -v`
 Expected: PASS. If `test_different_seed_changes_draws_not_structure` fails because both draws are equal, the expander's `_parse_design` seed precedence from Task 1 was not applied.
 
 - [ ] **Step 6: Commit**
 
 ```bash
-git add experiment_designer/lock/provenance.py experiment_designer/lock/build.py experiment_designer/tests/test_lock_build.py experiment_designer/schema/experiment-spec.schema.json
+git add pmspec/lock/provenance.py pmspec/lock/build.py pmspec/tests/test_lock_build.py pmspec/schema/experiment-spec.schema.json
 git commit -m "designer: compile a spec into a lock with provenance"
 ```
 
@@ -1493,25 +1493,25 @@ git commit -m "designer: compile a spec into a lock with provenance"
 ### Task 6: `pmspec compile`, and `validate`/`generate` understand locks
 
 **Files:**
-- Modify: `experiment_designer/cli.py` (`validate` at `:54-168`, `generate` at `:169-217`, new `compile`)
-- Test: `experiment_designer/tests/test_lock_cli_compile.py`
+- Modify: `pmspec/cli.py` (`validate` at `:54-168`, `generate` at `:169-217`, new `compile`)
+- Test: `pmspec/tests/test_lock_cli_compile.py`
 
 **Interfaces:**
 - Consumes: Task 5 `compile_spec`; Task 2 `dump_lock`, `load_lock`, `is_lock_document`, `LockError`; Task 3 `find_placeholders`, `SecretStore`, `resolve_secrets`; Task 4 `resolve_anchor`, `resolve_start_at`.
 - Produces: `pmspec compile FILE [-o OUT] [--seed N] [--anchor A] [--generator T] [--lax]` (default OUT = `<stem>.lock.yaml` beside FILE; exit 1 on errors). `pmspec validate FILE` accepts a lock (prints `Lock: valid` + counts). `pmspec generate FILE [--resolve-secrets]` works from a spec or a lock.
-- Also produces a helper other tasks reuse: `experiment_designer/lock/resolve.py` with
+- Also produces a helper other tasks reuse: `pmspec/lock/resolve.py` with
   `def resolve_for_upload(lock: Lock, *, store: SecretStore | None, now: datetime | None = None) -> tuple[list[dict], datetime]` — deep-copies crawlers, turns `start_offset` into `start_at` from the resolved anchor, resolves secrets when a store is given (raises `MissingSecret`), and returns `(api_crawlers, anchor_dt)`.
 
 - [ ] **Step 1: Write the failing tests**
 
 ```python
-# experiment_designer/tests/test_lock_cli_compile.py
+# pmspec/tests/test_lock_cli_compile.py
 from pathlib import Path
 
 from click.testing import CliRunner
 
-from experiment_designer.cli import cli
-from experiment_designer.lock.io import is_lock_document, load_lock
+from pmspec.cli import cli
+from pmspec.lock.io import is_lock_document, load_lock
 
 SPEC = """
 version: "1.0"
@@ -1577,13 +1577,13 @@ def test_generate_from_lock_resolves_start_at_and_keeps_placeholders(tmp_path: P
 
 - [ ] **Step 2: Run to verify they fail**
 
-Run: `venv/bin/pytest experiment_designer/tests/test_lock_cli_compile.py -v`
+Run: `venv/bin/pytest pmspec/tests/test_lock_cli_compile.py -v`
 Expected: `compile` unknown command; lock validate fails on YAML shape.
 
 - [ ] **Step 3: Write resolve.py**
 
 ```python
-# experiment_designer/lock/resolve.py
+# pmspec/lock/resolve.py
 """Turn a lock into the API's upload JSON: anchor -> start_at, placeholders -> values."""
 
 from __future__ import annotations
@@ -1722,13 +1722,13 @@ def generate(file: str, output: str | None, pretty: bool, seed: int | None, reso
 
 - [ ] **Step 5: Run tests**
 
-Run: `venv/bin/pytest experiment_designer/tests/ -q`
+Run: `venv/bin/pytest pmspec/tests/ -q`
 Expected: PASS, including the pre-existing CLI tests in `test_spec.py` (generate's output JSON for a spec is unchanged apart from needing `--seed` when the spec has no `design.seed` — if an existing test calls `generate` on a seedless spec, update that test to pass `--seed 1` and say so in the commit message).
 
 - [ ] **Step 6: Commit**
 
 ```bash
-git add experiment_designer/cli.py experiment_designer/lock/resolve.py experiment_designer/tests/test_lock_cli_compile.py
+git add pmspec/cli.py pmspec/lock/resolve.py pmspec/tests/test_lock_cli_compile.py
 git commit -m "pmspec: compile command; validate and generate read locks"
 ```
 
@@ -1737,8 +1737,8 @@ git commit -m "pmspec: compile command; validate and generate read locks"
 ### Task 7: The one uploader — `ApiSession`, provenance preferences, mode
 
 **Files:**
-- Create: `experiment_designer/lock/api.py`, `experiment_designer/lock/upload.py`
-- Test: `experiment_designer/tests/test_lock_upload.py`
+- Create: `pmspec/lock/api.py`, `pmspec/lock/upload.py`
+- Test: `pmspec/tests/test_lock_upload.py`
 
 **Interfaces:**
 - Consumes: Task 2 `Lock`, `sha256_text`; Task 3 `SecretStore`, `find_placeholders`, `MissingSecret`; Task 6 `resolve_for_upload`.
@@ -1766,7 +1766,7 @@ git commit -m "pmspec: compile command; validate and generate read locks"
 - [ ] **Step 1: Write the failing tests**
 
 ```python
-# experiment_designer/tests/test_lock_upload.py
+# pmspec/tests/test_lock_upload.py
 """Upload reads locks only, resolves secrets and the anchor in memory, and writes
 provenance onto the experiment. A fake ApiSession records every call."""
 
@@ -1776,9 +1776,9 @@ from typing import Any
 
 import pytest
 
-from experiment_designer.lock.io import dump_lock, sha256_text
-from experiment_designer.lock.secrets import MissingSecret, SecretStore
-from experiment_designer.lock.upload import (
+from pmspec.lock.io import dump_lock, sha256_text
+from pmspec.lock.secrets import MissingSecret, SecretStore
+from pmspec.lock.upload import (
     TEST_RUNNER_USER_ID,
     UploadOptions,
     UploadRefused,
@@ -1786,7 +1786,7 @@ from experiment_designer.lock.upload import (
     provenance_preferences,
     upload_lock,
 )
-from experiment_designer.spec.time_utils import API_TIMEZONE
+from pmspec.spec.time_utils import API_TIMEZONE
 
 from .test_lock_io import make_lock
 
@@ -1819,7 +1819,7 @@ class FakeSession:
     def post_file(self, path, field, filename, content, content_type):
         self.calls.append(("POST_FILE", path, content))
         if self.fail_upload:
-            from experiment_designer.lock.api import ApiError
+            from pmspec.lock.api import ApiError
             raise ApiError("upload failed", status=422, detail="bad json")
         return {}
 
@@ -1951,8 +1951,8 @@ def test_provenance_values_fit_the_api_column():
 
 - [ ] **Step 2: Run to verify they fail**
 
-Run: `venv/bin/pytest experiment_designer/tests/test_lock_upload.py -v`
-Expected: `ModuleNotFoundError: experiment_designer.lock.upload`.
+Run: `venv/bin/pytest pmspec/tests/test_lock_upload.py -v`
+Expected: `ModuleNotFoundError: pmspec.lock.upload`.
 
 - [ ] **Step 3: Write api.py**
 
@@ -2050,7 +2050,7 @@ from dataclasses import dataclass
 from datetime import date, datetime
 from typing import Any
 
-from experiment_designer.spec.time_utils import API_TIMEZONE, format_iso8601
+from pmspec.spec.time_utils import API_TIMEZONE, format_iso8601
 
 from .anchor import UPLOAD_ANCHOR, resolve_anchor
 from .io import is_lock_document, load_lock, sha256_text
@@ -2221,13 +2221,13 @@ def upload_lock(
 
 - [ ] **Step 5: Run tests**
 
-Run: `venv/bin/pytest experiment_designer/tests/test_lock_upload.py -v`
+Run: `venv/bin/pytest pmspec/tests/test_lock_upload.py -v`
 Expected: PASS. `test_uploaded_json_has_resolved_start_at...`: the fixture lock's queue offset is `+5m` and `NOW` is 10:00 → `10:05:00+02:00`.
 
 - [ ] **Step 6: Commit**
 
 ```bash
-git add experiment_designer/lock/api.py experiment_designer/lock/upload.py experiment_designer/tests/test_lock_upload.py
+git add pmspec/lock/api.py pmspec/lock/upload.py pmspec/tests/test_lock_upload.py
 git commit -m "designer: one uploader for locks, with provenance preferences and mode"
 ```
 
@@ -2236,8 +2236,8 @@ git commit -m "designer: one uploader for locks, with provenance preferences and
 ### Task 8: `verify` — binding and structural diff
 
 **Files:**
-- Create: `experiment_designer/lock/verify.py`
-- Test: `experiment_designer/tests/test_lock_verify.py`
+- Create: `pmspec/lock/verify.py`
+- Test: `pmspec/tests/test_lock_verify.py`
 
 **Interfaces:**
 - Consumes: Task 2 `load_lock`, `sha256_text`; Task 4 `resolve_anchor`, `resolve_start_at`; Task 7 `ApiSession`-shaped session (`get`).
@@ -2265,7 +2265,7 @@ Where the live side comes from (no single endpoint returns the tree):
 - [ ] **Step 1: Write the failing tests**
 
 ```python
-# experiment_designer/tests/test_lock_verify.py
+# pmspec/tests/test_lock_verify.py
 """verify: is this live experiment the one this lock describes?"""
 
 import csv
@@ -2274,9 +2274,9 @@ import zipfile
 from datetime import datetime
 from typing import Any
 
-from experiment_designer.lock.io import dump_lock, sha256_text
-from experiment_designer.lock.verify import Difference, compare_shapes, lock_shape, verify_lock
-from experiment_designer.spec.time_utils import API_TIMEZONE
+from pmspec.lock.io import dump_lock, sha256_text
+from pmspec.lock.verify import Difference, compare_shapes, lock_shape, verify_lock
+from pmspec.spec.time_utils import API_TIMEZONE
 
 from .test_lock_io import make_lock
 
@@ -2411,7 +2411,7 @@ def test_lock_shape_masks_nothing_but_never_includes_credentials():
 
 - [ ] **Step 2: Run to verify they fail**
 
-Run: `venv/bin/pytest experiment_designer/tests/test_lock_verify.py -v`
+Run: `venv/bin/pytest pmspec/tests/test_lock_verify.py -v`
 Expected: `ModuleNotFoundError`.
 
 - [ ] **Step 3: Add `get_bytes` to `ApiSession`**
@@ -2647,13 +2647,13 @@ Both sides sort a crawler's queues by `(start_at wall clock, name)` so the lists
 
 - [ ] **Step 5: Run tests**
 
-Run: `venv/bin/pytest experiment_designer/tests/test_lock_verify.py -v`
+Run: `venv/bin/pytest pmspec/tests/test_lock_verify.py -v`
 Expected: PASS.
 
 - [ ] **Step 6: Commit**
 
 ```bash
-git add experiment_designer/lock/verify.py experiment_designer/lock/api.py experiment_designer/tests/test_lock_verify.py
+git add pmspec/lock/verify.py pmspec/lock/api.py pmspec/tests/test_lock_verify.py
 git commit -m "designer: verify binds a live experiment to its lock and diffs the structure"
 ```
 
@@ -2662,8 +2662,8 @@ git commit -m "designer: verify binds a live experiment to its lock and diffs th
 ### Task 9: `pmspec upload`, `pmspec verify`, `pmspec secrets check`
 
 **Files:**
-- Modify: `experiment_designer/cli.py` (`upload` at `:218-416` is replaced wholesale)
-- Test: `experiment_designer/tests/test_lock_cli_upload.py`
+- Modify: `pmspec/cli.py` (`upload` at `:218-416` is replaced wholesale)
+- Test: `pmspec/tests/test_lock_cli_upload.py`
 
 **Interfaces:**
 - Consumes: Task 5 `compile_spec`; Task 7 `ApiSession`, `ApiError`, `upload_lock`, `UploadOptions`, `UploadRefused`, `MODES`; Task 8 `verify_lock`; Task 3 `SecretStore`, `find_placeholders`, `InsecureSecretsFile`.
@@ -2676,16 +2676,16 @@ git commit -m "designer: verify binds a live experiment to its lock and diffs th
 - [ ] **Step 1: Write the failing tests**
 
 ```python
-# experiment_designer/tests/test_lock_cli_upload.py
+# pmspec/tests/test_lock_cli_upload.py
 from pathlib import Path
 
 import pytest
 from click.testing import CliRunner
 
-from experiment_designer import cli as cli_module
-from experiment_designer.cli import cli
-from experiment_designer.lock.io import dump_lock
-from experiment_designer.lock.upload import UploadResult
+from pmspec import cli as cli_module
+from pmspec.cli import cli
+from pmspec.lock.io import dump_lock
+from pmspec.lock.upload import UploadResult
 
 from .test_lock_io import make_lock
 
@@ -2794,7 +2794,7 @@ def test_secrets_check(lock_file, secrets_file, tmp_path):
 
 - [ ] **Step 2: Run to verify they fail**
 
-Run: `venv/bin/pytest experiment_designer/tests/test_lock_cli_upload.py -v`
+Run: `venv/bin/pytest pmspec/tests/test_lock_cli_upload.py -v`
 Expected: failures on `--mode` (unknown option), `verify`/`secrets` unknown commands, `cli_module.upload_lock` attribute missing.
 
 - [ ] **Step 3: Implement**
@@ -2945,13 +2945,13 @@ Delete the old `upload` body entirely (the `requests`-based create/upload code a
 
 - [ ] **Step 4: Run tests**
 
-Run: `venv/bin/pytest experiment_designer/tests/ -q && venv/bin/ruff check experiment_designer/ && venv/bin/mypy experiment_designer/ --ignore-missing-imports`
+Run: `venv/bin/pytest pmspec/tests/ -q && venv/bin/ruff check pmspec/ && venv/bin/mypy pmspec/ --ignore-missing-imports`
 Expected: all pass. mypy will want `-> None` on the click functions and `Any`-typed session params — add them.
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add experiment_designer/cli.py experiment_designer/tests/test_lock_cli_upload.py
+git add pmspec/cli.py pmspec/tests/test_lock_cli_upload.py
 git commit -m "pmspec: upload reads locks, writes provenance, verifies; verify and secrets check commands"
 ```
 
@@ -2984,8 +2984,8 @@ from typing import Any
 
 import pytest
 
-from experiment_designer.lock.io import dump_lock
-from experiment_designer.tests.test_lock_io import make_lock
+from pmspec.lock.io import dump_lock
+from pmspec.tests.test_lock_io import make_lock
 from orchestrator.mcp_server import server as s
 
 SPEC = """
@@ -3060,7 +3060,7 @@ def test_upload_applies_through_upload_lock(monkeypatch: pytest.MonkeyPatch):
     seen = {}
 
     def fake_upload_lock(lock_text, *, session, store, options):
-        from experiment_designer.lock.upload import UploadResult
+        from pmspec.lock.upload import UploadResult
 
         seen["mode"] = options.mode
         seen["session"] = session
@@ -3085,7 +3085,7 @@ def test_upload_applies_through_upload_lock(monkeypatch: pytest.MonkeyPatch):
 
 
 def test_verify_experiment_tool(monkeypatch: pytest.MonkeyPatch):
-    from experiment_designer.lock.verify import Difference, VerifyResult
+    from pmspec.lock.verify import Difference, VerifyResult
 
     monkeypatch.setattr(
         s, "verify_lock",
@@ -3108,14 +3108,14 @@ Expected: `AttributeError: module has no attribute 'compile_experiment_spec'` et
 Module-level imports in `server.py` (so tests can patch them): 
 
 ```python
-from experiment_designer.lock.build import compile_spec
-from experiment_designer.lock.io import LockError, dump_lock, is_lock_document, load_lock
-from experiment_designer.lock.secrets import SecretStore, find_placeholders
-from experiment_designer.lock.upload import MODES, UploadOptions, UploadRefused, upload_lock
-from experiment_designer.lock.verify import verify_lock
+from pmspec.lock.build import compile_spec
+from pmspec.lock.io import LockError, dump_lock, is_lock_document, load_lock
+from pmspec.lock.secrets import SecretStore, find_placeholders
+from pmspec.lock.upload import MODES, UploadOptions, UploadRefused, upload_lock
+from pmspec.lock.verify import verify_lock
 ```
 
-(`server.py` already imports experiment_designer lazily inside tools with an ImportError guard; these lock modules import only stdlib + yaml/jsonschema/requests, all hard dependencies, so a top-level import is fine.)
+(`server.py` already imports pmspec lazily inside tools with an ImportError guard; these lock modules import only stdlib + yaml/jsonschema/requests, all hard dependencies, so a top-level import is fine.)
 
 Helpers:
 
@@ -3324,7 +3324,7 @@ Expected: PASS. If `test_mcp_write_guard.py`'s AST walk flags `_McpSession.post_
 
 - [ ] **Step 5: Update the doc resource list**
 
-`server.py` serves `doc://experiment-designer` from `docs/experiment-designer.md`; nothing to change here beyond Task 12's doc edit.
+`server.py` serves `doc://experiment-designer` from `docs/pmspec.md`; nothing to change here beyond Task 12's doc edit.
 
 - [ ] **Step 6: Commit**
 
@@ -3349,15 +3349,15 @@ git commit -m "mcp: compile_experiment_spec, verify_experiment; upload_experimen
 
 ```python
 # orchestrator/tests/test_cli_experiment_upload.py
-"""orchestrator experiment upload is a thin wrapper over experiment_designer.lock."""
+"""orchestrator experiment upload is a thin wrapper over pmspec.lock."""
 
 from pathlib import Path
 
 import pytest
 
-from experiment_designer.lock.io import dump_lock
-from experiment_designer.lock.upload import UploadResult
-from experiment_designer.tests.test_lock_io import make_lock
+from pmspec.lock.io import dump_lock
+from pmspec.lock.upload import UploadResult
+from pmspec.tests.test_lock_io import make_lock
 from orchestrator import cli as cli_module
 from orchestrator.cli import cli
 
@@ -3386,7 +3386,7 @@ def test_upload_delegates_and_uses_settings_credentials(cli_runner, lock_file, m
     monkeypatch.setattr(cli_module, "upload_lock", fake_upload_lock)
     monkeypatch.setattr(cli_module, "verify_lock", lambda *a, **k: _V())
     monkeypatch.setattr("orchestrator.cli.get_settings", lambda: mock_settings)
-    monkeypatch.setattr("experiment_designer.lock.secrets.SecretStore.load", classmethod(lambda cls, p=None: None))
+    monkeypatch.setattr("pmspec.lock.secrets.SecretStore.load", classmethod(lambda cls, p=None: None))
     out = cli_runner.invoke(cli, ["experiment", "upload", str(lock_file), "--mode", "test"])
     assert out.exit_code == 0, out.output
     assert seen == {"base_url": "http://localhost:8090/api/v1", "mode": "test"}
@@ -3410,23 +3410,23 @@ Expected: `--mode` unknown option; `cli_module.upload_lock` missing.
 Add module-level imports in `orchestrator/cli.py` next to the existing ones (the orchestrator CLI uses lazy imports inside commands to keep startup fast; these lock modules are light, but to respect the pattern import them inside the command *and* expose module-level names for patching):
 
 ```python
-from experiment_designer.lock.upload import upload_lock  # noqa: E402  (patched in tests)
-from experiment_designer.lock.verify import verify_lock  # noqa: E402
+from pmspec.lock.upload import upload_lock  # noqa: E402  (patched in tests)
+from pmspec.lock.verify import verify_lock  # noqa: E402
 ```
 
-If startup-time measurement (`time orchestrator --help`) regresses by more than ~50 ms, move them inside the command and patch via `experiment_designer.lock.upload.upload_lock` in the test instead.
+If startup-time measurement (`time orchestrator --help`) regresses by more than ~50 ms, move them inside the command and patch via `pmspec.lock.upload.upload_lock` in the test instead.
 
 Replace the body of `experiment_upload` with:
 
 ```python
     from pathlib import Path
 
-    from experiment_designer.lock.api import ApiError, ApiSession
-    from experiment_designer.lock.build import compile_spec
-    from experiment_designer.lock.io import dump_lock, is_lock_document
-    from experiment_designer.lock.secrets import InsecureSecretsFile, SecretStore, find_placeholders
-    from experiment_designer.lock.io import load_lock
-    from experiment_designer.lock.upload import UploadOptions, UploadRefused
+    from pmspec.lock.api import ApiError, ApiSession
+    from pmspec.lock.build import compile_spec
+    from pmspec.lock.io import dump_lock, is_lock_document
+    from pmspec.lock.secrets import InsecureSecretsFile, SecretStore, find_placeholders
+    from pmspec.lock.io import load_lock
+    from pmspec.lock.upload import UploadOptions, UploadRefused
 
     settings = ctx.obj["settings"]
     file_path = Path(file)
@@ -3497,10 +3497,10 @@ git commit -m "orchestrator: experiment upload delegates to the lock uploader"
 ### Task 12: Documentation
 
 **Files:**
-- Modify: `docs/experiment-designer.md` (the "Workflow" section at the top, `:5-88`; add a new section "Locks, provenance and verify" after "Runner assignment"), `CLAUDE.md` (the "Uploading Experiments" and "Experiment Designer" sections), `.claude/skills/primemover-compose/SKILL.md` (the `upload_experiment` line at `:56`)
+- Modify: `docs/pmspec.md` (the "Workflow" section at the top, `:5-88`; add a new section "Locks, provenance and verify" after "Runner assignment"), `CLAUDE.md` (the "Uploading Experiments" and "Experiment Designer" sections), `.claude/skills/primemover-compose/SKILL.md` (the `upload_experiment` line at `:56`)
 - No new tests; `make check` still runs.
 
-- [ ] **Step 1: Rewrite the workflow steps 3–5 in `docs/experiment-designer.md`**
+- [ ] **Step 1: Rewrite the workflow steps 3–5 in `docs/pmspec.md`**
 
 Replace Steps 3–5 and "The `--seed` Option" with:
 
@@ -3560,7 +3560,7 @@ Then add, after "### Runner assignment":
 ### Locks, provenance and verify — for generators
 
 A lock can also be *written* directly by a generator (R, Python) instead of compiled from a
-spec; `pmspec validate my.lock.yaml` checks it against `experiment_designer/schema/lock-1.schema.json`.
+spec; `pmspec validate my.lock.yaml` checks it against `pmspec/schema/lock-1.schema.json`.
 Shape:
 
 ```yaml
@@ -3584,7 +3584,7 @@ committed repo.
 
 - [ ] **Step 2: CLAUDE.md**
 
-In "Uploading Experiments (JSON Scenario)", add one sentence at the top: "For anything that is a study rather than a one-off scenario, use a **lock** (`pmspec compile` → `pmspec upload --mode …` → `pmspec verify`); the raw JSON path below records no provenance." In "Experiment Designer", after the first paragraph, add: "The reproducibility artifact is the *lock* (`docs/experiment-designer.md` § Locks): committed, hashed, bound to the experiment via `pmspec.*` preferences, checked by `pmspec verify`. `upload_experiment` takes a lock and a required `mode`."
+In "Uploading Experiments (JSON Scenario)", add one sentence at the top: "For anything that is a study rather than a one-off scenario, use a **lock** (`pmspec compile` → `pmspec upload --mode …` → `pmspec verify`); the raw JSON path below records no provenance." In "Experiment Designer", after the first paragraph, add: "The reproducibility artifact is the *lock* (`docs/pmspec.md` § Locks): committed, hashed, bound to the experiment via `pmspec.*` preferences, checked by `pmspec verify`. `upload_experiment` takes a lock and a required `mode`."
 
 - [ ] **Step 3: Skill**
 
@@ -3596,7 +3596,7 @@ Run: `make check`
 Expected: format/lint/typecheck/test all pass.
 
 ```bash
-git add docs/experiment-designer.md CLAUDE.md .claude/skills/primemover-compose/SKILL.md
+git add docs/pmspec.md CLAUDE.md .claude/skills/primemover-compose/SKILL.md
 git commit -m "docs: spec -> lock -> upload -> verify"
 ```
 
