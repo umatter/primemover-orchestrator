@@ -751,6 +751,18 @@ design:
 | `beta` | `alpha`, `beta` | Probabilities, proportions |
 | `fixed` / `value` | `value` | Constants |
 
+**Where a sampled value goes.** Every sampled parameter is written to the
+crawler's `configuration.params.<name>`. The API keeps only the standard params
+(`pi`, `psi`, `kappa`, `tau`, `alpha`, `beta`, `active`, `search_terms`,
+`media_outlet_urls`); any other name in `configuration.params` is dropped on
+upload. So a non-standard sampled parameter (`epsilon`, `engagement` above) is
+only useful as a `{name}` / `{name:fmt}` substitution variable -- in a
+preference value, a description, a job text -- and `pmspec compile` refuses a
+spec that samples one and references it nowhere (`design.parameters.<name>:
+sampled value lands in configuration.params, which the API drops`). When it is
+referenced, the converter strips it from `configuration.params` so the emitted
+JSON carries the value only where it was substituted.
+
 ### Proportional Factor Levels (Stratified Sampling)
 
 Create stratified designs with specific proportions:

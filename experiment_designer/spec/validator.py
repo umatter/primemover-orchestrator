@@ -29,6 +29,9 @@ from .time_utils import is_relative_time
 
 _TEMPLATE_VAR_RE = re.compile(r"\$\{(?!secret:)[^}]*\}|\{[A-Za-z_][A-Za-z0-9_]*(?::[^}]*)?\}")
 _INDEX_RE = re.compile(r"\[\d+\]")
+# A `{name}` / `{name:fmt}` design placeholder (not a `${var}` template
+# variable), capturing the name -- see _referenced_placeholders.
+_PLACEHOLDER_RE = re.compile(r"(?<!\$)\{([A-Za-z_][A-Za-z0-9_]*)(?::[^}]*)?\}")
 
 
 @dataclass
@@ -224,9 +227,8 @@ class SpecValidator:
     # BehaviorSchema names, which are the *API* behavior names emitted after
     # expansion -- see _BEHAVIOR_KEYS above for that distinction). Used to build
     # the generated JSON schema's per-shorthand `options` object (schema_gen.py)
-    # and, from phase 5 task 2 on, to report an option key outside this set as a
-    # drop ("the runner never sees it"). Not wired to any drop site yet -- this
-    # task only builds the table.
+    # and by _validate_job_options to report an option key outside this set as
+    # a drop ("the runner never sees it").
     #
     # visit/wait have no dict form at all today: _expand_shorthand uses the
     # scalar value directly (visit) or only accepts int/float/str
@@ -417,6 +419,28 @@ class SpecValidator:
                         "`strategy` + `treatment` block",
                     )
 
+        # A sampled parameter (design.parameters.<name>) is written by
+        # DesignExpander._apply_cell_to_template into configuration.params.<name>
+        # of every design crawler. For a standard name that is the point; for
+        # any other name the API drops the key, so the draw reaches nobody --
+        # unless the spec also uses it as a `{name}` / `{name:fmt}` substitution
+        # variable, in which case the value has already landed where it was
+        # referenced and SpecConverter._convert_configuration strips the
+        # leftover params key (see `sampled_substitution_params`).
+        parameters = design.get("parameters")
+        if isinstance(parameters, dict):
+            non_standard = [name for name in parameters if name not in self._KNOWN_PARAMS]
+            if non_standard:
+                referenced = self._referenced_placeholders(spec)
+                for name in non_standard:
+                    if name not in referenced:
+                        self.drops.report(
+                            f"design.parameters.{name}",
+                            "sampled value lands in configuration.params, which the API drops",
+                            f"use it as a {{{name}}} substitution variable or give it a "
+                            "standard name",
+                        )
+
         for i, crawler in enumerate(spec.get("crawlers", [])):
             params = (crawler.get("configuration") or {}).get("params")
             if not isinstance(params, dict):
@@ -437,6 +461,35 @@ class SpecValidator:
                     )
 
         return errors, warnings
+
+    @staticmethod
+    def _referenced_placeholders(spec: dict[str, Any]) -> set[str]:
+        """Names used as `{name}` / `{name:fmt}` anywhere under crawlers or templates.
+
+        Templates count because the parser splices them into a crawler's
+        workflow before the expander substitutes, so `{alpha_draw}` in a
+        template body is consumed exactly like one written on the crawler.
+        `${var}` template variables are a different namespace (excluded by
+        the lookbehind), and the Multilogin profile is a JSON document with
+        its own placeholders, skipped as `_scan_unresolved` skips it.
+        """
+        names: set[str] = set()
+
+        def walk(node: Any) -> None:
+            if isinstance(node, str):
+                for m in _PLACEHOLDER_RE.finditer(node):
+                    names.add(m.group(1))
+            elif isinstance(node, dict):
+                for key, value in node.items():
+                    if key != "multilogin_profile":
+                        walk(value)
+            elif isinstance(node, list):
+                for value in node:
+                    walk(value)
+
+        walk(spec.get("crawlers"))
+        walk(spec.get("templates"))
+        return names
 
     def _validate_unknown_keys(self, spec: dict[str, Any]) -> None:
         """Keys the pipeline never reads are dropped silently; report them.
@@ -560,6 +613,23 @@ class SpecValidator:
             return errors, warnings
 
         for factor_name, factor_def in factors.items():
+            if not isinstance(factor_def, dict):
+                errors.append(f"design.factors.{factor_name}: must be a mapping")
+                continue
+
+            # DesignExpander._parse_factor reads exactly `levels` and `maps_to`
+            # and nothing else, so `mapsto:` beside `levels:` is a factor with
+            # no mapping at all -- every cell gets the same params -- and no
+            # message anywhere. A drop.
+            for key in factor_def:
+                if key not in self._KEYS_FACTOR:
+                    self.drops.report(
+                        f"design.factors.{factor_name}.{key}",
+                        "unknown key; the design expander never reads it",
+                        "a factor has only levels and maps_to (a level's weight is "
+                        "levels[i].proportion)",
+                    )
+
             # Validate factor has levels
             levels = factor_def.get("levels", [])
             if not levels:
@@ -861,6 +931,7 @@ class SpecValidator:
         matched_types = [job_type for job_type in job_types if job_type in item]
         for job_type in matched_types:
             self._validate_job_shorthand(job_type, item[job_type], prefix, errors, warnings)
+            self._validate_job_options(job_type, item[job_type], prefix)
 
         # SpecParser._expand_workflow_item iterates its own shorthand_keys list
         # (the same order as job_types above) and returns on the *first* match
@@ -1070,6 +1141,32 @@ class SpecValidator:
             else:
                 out.append(f"{generic}: {message} ({len(paths)} place(s), first: {paths[0]})")
         return out
+
+    def _validate_job_options(self, job_type: str, value: Any, prefix: str) -> None:
+        """A dict-form option key SpecParser._expand_shorthand never reads is a drop.
+
+        `_expand_shorthand` reads the mapping form of each shorthand with
+        `value.get(<key>)` for a fixed set of keys (`_OPTION_KEYS`) and never
+        looks at the rest, so `click: {selector: x, sped: fast}` silently loses
+        `sped` -- the runner never sees it. visit/wait have no dict form at all
+        (`_OPTION_KEYS` is empty for both): a dict value there is already
+        rejected by `_validate_job_shorthand`, so it is skipped here rather
+        than reported a second time key-by-key. Only the top level is checked:
+        lambda_select's `treatment` sub-keys are the strategy schema's business
+        (`_validate_lambda_select_treatment`), not option keys.
+        """
+        if not isinstance(value, dict) or job_type in ("visit", "wait"):
+            return
+        allowed = self._OPTION_KEYS.get(job_type)
+        if allowed is None:  # unreachable: callers pass only registered shorthands
+            return
+        for key in value:
+            if key not in allowed:
+                self.drops.report(
+                    f"{prefix}.{job_type}.{key}",
+                    "unknown option; the runner never sees it",
+                    f"{job_type} reads only: {', '.join(sorted(allowed))}",
+                )
 
     def _validate_job_shorthand(
         self, job_type: str, value: Any, prefix: str, errors: list[str], warnings: list[str]
