@@ -755,7 +755,7 @@ def test_live_job_without_a_type_is_not_a_shape_finding():
                 row.pop("type", None)
         return rows
 
-    session.get = get  # type: ignore[method-assign]
+    session.get = get
     result = audit_experiment(session, EXPERIMENT_ID, LOCK_TEXT)
     assert _bot_t_finding(result).outcome == "ok"
 

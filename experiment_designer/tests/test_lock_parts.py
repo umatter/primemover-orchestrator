@@ -156,7 +156,9 @@ def test_dangling_agent_ref_in_a_lock_file_is_a_lock_error():
 def _lock_dict(n: int = 1) -> dict:
     import yaml
 
-    return yaml.safe_load(dump_lock(_fleet(n)))
+    d = yaml.safe_load(dump_lock(_fleet(n)))
+    assert isinstance(d, dict)
+    return d
 
 
 def test_queue_part_without_jobs_fails_validation_naming_the_part():
