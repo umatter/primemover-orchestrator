@@ -652,7 +652,11 @@ class SpecConverter:
             "name": job.get("name", "Job"),
             "type": job.get("type", "waitjob"),
             "description": job.get("description", "Generated job"),
-            "active": True,
+            # A full job definition may say `active: false` (SpecParser
+            # `_normalize_job` keeps it; shorthand jobs always get True). This
+            # used to be a hard-coded True, which uploaded an inactive job as
+            # active with no message anywhere. Same bool shape as before.
+            "active": bool(job.get("active", True)),
         }
 
         # Convert behaviors

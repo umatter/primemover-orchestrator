@@ -120,12 +120,16 @@ class TestExampleSpecsValidate:
         ever accepts int/float/str (`_parse_duration`); a dict silently
         becomes duration 0 -- it was never a supported construct, so the
         schema correctly rejects it rather than modelling a shape nothing
-        reads. This is the *only* violation; every other construct in the
-        file (data_pools with a documentary-only `type`/`description`,
-        lambda_select's own documentary-only `description`, from_pool proxy
-        assignment, unresolved `{param}` placeholders in configuration.params)
-        is deliberately schema-permissive (see schema_gen.py's `_params_schema`
-        and the `dataPool`/shorthand-options `additionalProperties: true`)."""
+        reads. This is the *only* schema violation; every other construct in
+        the file (data_pools with a documentary-only `type`/`description`,
+        lambda_select's `description`, from_pool proxy assignment, unresolved
+        `{param}` placeholders in configuration.params) is deliberately
+        schema-permissive (see schema_gen.py's `_params_schema` and the
+        `dataPool`/shorthand-options `additionalProperties: true`). Permissive
+        in the *schema* only: `lambda_select.description` is not in
+        `_OPTION_KEYS["lambda_select"]`, so `SpecValidator` reports it as a
+        drop ("unknown option; the runner never sees it") -- the schema leaves
+        it to the validator precisely so that `--lax` can downgrade it."""
         spec = _load_example(EXAMPLES_DIR / "websearch-polarization-study.yaml")
         validator = jsonschema.Draft7Validator(build_schema())
         errors = sorted(validator.iter_errors(spec), key=lambda e: list(e.absolute_path))
@@ -187,3 +191,120 @@ crawlers:
         spec = yaml.safe_load(self.BASE.format(item="wait: 2.5"))
         result = SpecValidator().validate(spec)
         assert result.valid, result.errors
+
+
+class TestDesignParameterForms:
+    """`DistributionFactory.create` accepts a bare scalar (`parameters: {tau: 1.0}`
+    -> `FixedValue`) and the expander writes it into `params.tau` -- so the
+    schema must accept the scalar form beside the `{distribution: ...}` /
+    `{value: ...}` object forms, or a spec the pipeline honours is rejected."""
+
+    BASE = """
+version: "1.0"
+experiment:
+  name: X
+design:
+  factors:
+    arm:
+      levels: [a, b]
+  parameters:
+    tau: {value}
+  replications: 1
+crawlers:
+  - name: bot_{{arm}}
+    from_design: true
+    session:
+      start: "+1m"
+      workflow:
+        - visit: https://example.com
+"""
+
+    @pytest.mark.parametrize("value", ["1.0", "1", "true", "'text'"])
+    def test_scalar_parameter_validates(self, value):
+        spec = yaml.safe_load(self.BASE.format(value=value))
+        jsonschema.validate(spec, build_schema())
+        result = SpecValidator().validate(spec)
+        assert result.valid, result.errors
+
+    @pytest.mark.parametrize("value", ["{distribution: uniform, min: 0, max: 1}", "{value: 1.0}"])
+    def test_object_parameter_still_validates(self, value):
+        spec = yaml.safe_load(self.BASE.format(value=value))
+        jsonschema.validate(spec, build_schema())
+
+    def test_distribution_enum_is_the_factorys_own_list(self):
+        from experiment_designer.spec.distributions import DistributionFactory
+
+        param = build_schema()["definitions"]["designParameter"]
+        obj = next(b for b in param["oneOf"] if b.get("type") == "object")
+        assert obj["properties"]["distribution"]["enum"] == DistributionFactory.list_types()
+
+
+class TestEnumsMatchWhatTheRunnerAccepts:
+    """The parser passes `typing_mode` through verbatim and upper-cases
+    `direction`; the runner then does `TypingModeType.valueOf(...)` /
+    `ScrollDirection.valueOf(...)` (primemover_runner
+    `PrimemoverApiConverter.java`), which is exact and case-sensitive. So the
+    schema's enums must be exactly the runner's enum constants for
+    typing_mode, and both cases of the runner's two scroll directions."""
+
+    # primemover_runner/.../primemover/model/TypingModeType.java, verified 2026-09-13.
+    RUNNER_TYPING_MODES = [
+        "DIRECT",
+        "SIMULATED_KEEPINGTYPOS",
+        "SIMULATED_FIXINGTYPOS",
+        "SIMULATED_NOTYPOS",
+    ]
+
+    def test_typing_mode_enum_is_the_runners(self):
+        schema = build_schema()
+        assert schema["definitions"]["defaults"]["properties"]["typing_mode"]["enum"] == (
+            self.RUNNER_TYPING_MODES
+        )
+
+    BASE = """
+version: "1.0"
+experiment:
+  name: X
+crawlers:
+  - name: bot
+    session:
+      start: "+1m"
+      workflow:
+        - {item}
+"""
+
+    @pytest.mark.parametrize(
+        "item",
+        [
+            "scroll: {duration: 5, direction: up}",
+            "scroll: {duration: 5, direction: DOWN}",
+            "try_scroll: {duration: 5, direction: down}",
+            "scroll_length: {pixels: 100, direction: up}",
+            "try_scroll_length: {length: 100, direction: UP}",
+            "type: {text: hi, selector: x, typing_mode: DIRECT}",
+            "try_type: {text: hi, selector: x, typing_mode: SIMULATED_NOTYPOS}",
+        ],
+    )
+    def test_values_the_parser_honours_validate(self, item):
+        spec = yaml.safe_load(self.BASE.format(item=item))
+        result = SpecValidator().validate(spec)
+        assert result.valid and result.dropped == 0, result.errors
+
+    @pytest.mark.parametrize(
+        "item",
+        [
+            "scroll: {duration: 5, direction: left}",
+            "type: {text: hi, selector: x, typing_mode: FAST}",
+            "type: {text: hi, selector: x, typing_mode: direct}",
+        ],
+    )
+    def test_values_the_runner_rejects_are_invalid(self, item):
+        spec = yaml.safe_load(self.BASE.format(item=item))
+        result = SpecValidator().validate(spec)
+        assert not result.valid
+
+
+def test_pool_source_does_not_claim_s3_support():
+    """FileLoader reads local files only; the schema used to advertise an s3:// URI."""
+    source = build_schema()["definitions"]["dataPool"]["properties"]["source"]
+    assert "s3" not in source["description"].lower()

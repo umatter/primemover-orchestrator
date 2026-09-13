@@ -416,12 +416,27 @@ class _SkeletonConflictError(Exception):
 
 
 def _get_leaf(data: dict[str, Any], key: str) -> Any:
-    """The value at a dotted path in a parsed TOML table, or `_MISSING_LEAF`."""
+    """The string at a dotted path in a parsed TOML table, or `_MISSING_LEAF`.
+
+    Raises `_SkeletonConflictError` if the path exists but does not hold a string --
+    a table where the lock needs a leaf (`[oxylabs.a.username]`), or a number. Either
+    way `SecretStore.get` refuses it and `secrets check` reports the key MISSING, so
+    reporting it "already present" here would leave the user with a store that init
+    says is complete and check says is not; and adding a leaf beside it would mangle
+    the existing shape. The reverse collision (a value where a table is needed) is
+    `_set_leaf`'s.
+    """
     node: Any = data
     for part in key.split("."):
         if not isinstance(node, dict) or part not in node:
             return _MISSING_LEAF
         node = node[part]
+    if not isinstance(node, str):
+        what = "a table" if isinstance(node, dict) else "not a string"
+        raise _SkeletonConflictError(
+            f"{key}: existing value is {what} in the existing secrets file; "
+            "refusing to rewrite it"
+        )
     return node
 
 
@@ -527,11 +542,23 @@ def _write_secrets_file(path: Path, text: str) -> None:
     temp file created with O_EXCL (so a reader can never observe a half-written file),
     then moved into place with `os.replace`, which is atomic on POSIX -- the target
     always either has its old content or its complete new content, never a partial
-    write from a killed process."""
+    write from a killed process.
+
+    `path` is resolved first: `~/.config/primemover/secrets.toml` is commonly a symlink
+    into a dotfiles or password-store checkout, and `os.replace` onto the link itself
+    would swap the link for a regular file, silently detaching the store from where
+    the user keeps it. Resolving puts the temp file beside the real target and lands
+    the rename on it, keeping the link (dangling or not) intact.
+
+    A leftover `<name>.tmp` is ours by naming convention (an earlier run killed
+    between create and rename) and is removed rather than left to make this run die
+    on O_EXCL."""
     import os
 
+    path = path.resolve()
     path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
     tmp = path.with_name(path.name + ".tmp")
+    tmp.unlink(missing_ok=True)
     fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as f:
@@ -913,6 +940,8 @@ def secrets_init(lock: str, secrets_path: str | None, force: bool) -> None:
     present: list[str] = []
     try:
         for key in needed:
+            # `_get_leaf` raises on a non-string at the path, so "present" here
+            # means a string leaf (filled or empty) -- what `secrets check` counts.
             if _get_leaf(data, key) is _MISSING_LEAF:
                 _set_leaf(data, key, "")
                 added.append(key)

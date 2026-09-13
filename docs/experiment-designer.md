@@ -71,7 +71,11 @@ references, grouped into `[section]` tables by the dotted key's prefix (`oxylabs
 refuses to touch an existing file unless `--force`, which merges in place: every existing value
 (filled or not) and every table the lock does not reference are kept, and only the still-missing
 leaves are added -- it prints which keys were added and which were already present, and never a
-value.
+value. The merge rewrites the file from the parsed data, so comments and key order in the
+existing file are not preserved (values are; keys come out sorted within each table). If the
+path is a symlink the rewrite lands on its target and the link is kept. A key the lock needs as a
+string but the file holds as a table (or a non-string) is a conflict: init refuses and changes
+nothing, matching `secrets check`, which reports such a key MISSING.
 
 `--mode` is required. Upload resolves `${secret:key}` from `~/.config/primemover/secrets.toml`
 (mode 600; or `$PMSPEC_SECRETS_FILE`), resolves the anchor (`upload` = now, Europe/Zurich),
@@ -354,9 +358,11 @@ set `_validate_unknown_keys` checks, so the two can no longer disagree; a workfl
 same from `_validate_workflow_item`'s job-type list. A per-job shorthand's options (e.g.
 `click: {selector, task, flag, ...}`) and `configuration.params` stay `additionalProperties: true`,
 since an unknown key there is the *validator's* drop to report (downgradable under `--lax`), not a
-hard schema rejection. A factor's own keys (`levels`/`maps_to`) also get `additionalProperties:
-false` in the schema, but nothing enforces it yet at the Python level — that check, and the
-matching schema-error filter, arrive with phase 5 task 2's `_KEYS_FACTOR`-driven drop site.
+hard schema rejection. A factor's own keys (`levels`/`maps_to`, from `_KEYS_FACTOR`) get
+`additionalProperties: false` in the schema and the same treatment at the Python level:
+`_validate_design` reports any other key as a drop (`design.factors.<f>.<key>: unknown key; the
+design expander never reads it`), since a misspelt `maps_to` is a factor with no mapping at all
+and every cell gets the same params.
 
 ## Installation
 

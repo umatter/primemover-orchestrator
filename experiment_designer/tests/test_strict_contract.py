@@ -416,6 +416,36 @@ class TestFullJobWorkflowItem:
         assert any("weight" in e for e in r.errors), r.errors
         assert r.dropped >= 1
 
+    def test_full_job_stray_key_message_names_the_job_definition(self):
+        text = self.FULL_JOB.replace(
+            "          description: go there\n",
+            "          description: go there\n          weight: 0.7\n",
+        )
+        r = _validate(text)
+        msg = next(e for e in r.errors if "weight" in e)
+        assert "job definition" in msg, msg
+        assert "first job shorthand" not in msg, msg
+
+    def test_full_job_active_false_reaches_the_api_json(self):
+        """`_normalize_job` keeps the job's own `active`; `_convert_job` used
+        to overwrite it with True, so an inactive full job was uploaded
+        active with no message anywhere."""
+        text = self.FULL_JOB.replace(
+            "          description: go there\n",
+            "          description: go there\n          active: false\n",
+        )
+        parsed = SpecParser().parse(text)
+        assert not parsed.errors, parsed.errors
+        r = SpecConverter().convert(parsed)
+        assert r.errors == [], r.errors
+        job = r.json_data[0]["queues"][0]["jobs"][0]
+        assert job["active"] is False
+
+    def test_full_job_active_defaults_to_true(self):
+        parsed = SpecParser().parse(self.FULL_JOB)
+        job = SpecConverter().convert(parsed).json_data[0]["queues"][0]["jobs"][0]
+        assert job["active"] is True
+
     def test_type_shorthand_with_a_dict_still_works(self):
         text = BASE.replace(
             "        - visit: https://example.com\n",
@@ -549,6 +579,66 @@ class TestSampledSubstitutionParameter:
         r = _validate(text)
         assert r.valid and r.dropped == 0, (r.errors, r.warnings)
 
+    POOL_SPEC = (
+        BASE.replace(
+            "  - name: bot\n",
+            "  - name: bot_{arm}\n    from_design: true\n"
+            "    configuration:\n      params:\n"
+            "        search_terms:\n          from_pool: terms\n          select: top\n"
+            "          count: 1\n"
+            '          score: "-abs({crawler.epsilon} - {item.pi})"\n'
+            "      preferences:\n"
+            "        - {name: eps, value: '{epsilon}'}\n",
+        )
+        + "data_pools:\n  terms:\n    source: terms.csv\n"
+        + "design:\n  seed: 7\n  factors:\n    arm:\n      levels: [a, b]\n"
+        "  parameters:\n    epsilon:\n      distribution: discrete\n"
+        "      values: {0.0: 0.5, 1.0: 0.5}\n"
+        "  replications: 2\n"
+    )
+
+    def test_crawler_dot_reference_in_a_pool_score_counts(self):
+        """`{crawler.epsilon}` is the documented way to read a crawler
+        parameter inside a pool `score:`/`filter:` expression (the evaluator
+        builds its context from configuration.params); it is a reference."""
+        text = self.POOL_SPEC.replace(
+            "      preferences:\n        - {name: eps, value: '{epsilon}'}\n", ""
+        )
+        r = _validate(text)
+        assert r.valid and r.dropped == 0, (r.errors, r.warnings)
+
+    def test_crawler_dot_reference_in_a_pool_filter_counts(self):
+        text = self.POOL_SPEC.replace(
+            "      preferences:\n        - {name: eps, value: '{epsilon}'}\n", ""
+        ).replace(
+            '          score: "-abs({crawler.epsilon} - {item.pi})"\n',
+            '          filter: {pi: "{crawler.epsilon}"}\n',
+        )
+        r = _validate(text)
+        assert r.valid and r.dropped == 0, (r.errors, r.warnings)
+
+    def test_pool_scoring_sees_the_draw_and_the_strip_comes_after(self, tmp_path):
+        """Pool references resolve from configuration.params *before*
+        _convert_configuration strips the sampled name: the selected item is
+        the one nearest each crawler's own draw, and `epsilon` is gone from
+        the emitted params."""
+        (tmp_path / "terms.csv").write_text("term,pi\nlow,0.0\nhigh,1.0\n")
+        parsed = SpecParser(base_dir=tmp_path).parse(self.POOL_SPEC)
+        assert not parsed.errors, parsed.errors
+        r = SpecConverter().convert(parsed)
+        assert r.errors == [] and r.dropped == 0, (r.errors, r.warnings)
+        assert len(r.json_data) == 4
+        seen = set()
+        for crawler in r.json_data:
+            params = crawler["configuration"]["params"]
+            assert "epsilon" not in params, params
+            pref = {p["name"]: p["value"] for p in crawler["configuration"]["preferences"]}
+            eps = float(pref["eps"])
+            seen.add(eps)
+            (picked,) = params["search_terms"]
+            assert picked["term"] == ("low" if eps == 0.0 else "high"), (eps, picked)
+        assert seen == {0.0, 1.0}, seen  # both draws occurred, so the pick tracked the draw
+
     def test_converter_strips_it_from_params_and_preference_carries_the_number(self):
         parsed = SpecParser().parse(self.SPEC)
         assert not parsed.errors, parsed.errors
@@ -603,7 +693,7 @@ class TestJobOptionKeys:
         [
             "click: {selector: x, selection_type: CSS, captcha_mode: never, task: t, flag: f}",
             "try_click: {selector: x, task: t}",
-            "type: {text: hi, selector: x, selection_type: CSS, typing_mode: FAST, submit: true, "
+            "type: {text: hi, selector: x, selection_type: CSS, typing_mode: DIRECT, submit: true, "
             "captcha_mode: never}",
             "scroll: {duration: 5, direction: up}",
             "scroll_length: {pixels: 100, direction: down}",
@@ -616,7 +706,7 @@ class TestJobOptionKeys:
     )
     def test_known_option_keys_are_clean(self, item):
         r = _validate(BASE.replace("        - visit: https://example.com\n", f"        - {item}\n"))
-        assert r.dropped == 0, (r.errors, r.warnings)
+        assert r.valid and r.dropped == 0, (r.errors, r.warnings)
 
     def test_visit_dict_is_an_error_not_a_drop(self):
         r = _validate(

@@ -32,6 +32,11 @@ _INDEX_RE = re.compile(r"\[\d+\]")
 # A `{name}` / `{name:fmt}` design placeholder (not a `${var}` template
 # variable), capturing the name -- see _referenced_placeholders.
 _PLACEHOLDER_RE = re.compile(r"(?<!\$)\{([A-Za-z_][A-Za-z0-9_]*)(?::[^}]*)?\}")
+# `{crawler.name}` inside a data-pool `score:`/`filter:` expression: the
+# ExpressionEvaluator reads it from the crawler's configuration.params (see
+# SpecConverter.convert, which builds that context before the sampled-name
+# strip runs), so it consumes a sampled parameter just as `{name}` does.
+_CRAWLER_REF_RE = re.compile(r"\{crawler\.([A-Za-z_][A-Za-z0-9_]*)\}")
 
 
 @dataclass
@@ -504,10 +509,15 @@ class SpecValidator:
 
     @classmethod
     def _referenced_placeholders(cls, spec: dict[str, Any]) -> set[str]:
-        """Names used as `{name}` / `{name:fmt}` under crawlers or a template
-        some crawler reaches.
+        """Names used as `{name}` / `{name:fmt}`, or as `{crawler.name}` in a
+        pool expression, under crawlers or a template some crawler reaches.
 
-        Reached templates count because the parser splices them into the
+        `{crawler.name}` counts because the converter resolves pool references
+        from a context built out of `configuration.params` *before*
+        `_convert_configuration` strips the sampled name (`SpecConverter.convert`
+        orders it that way on purpose), so a draw used only in a `score:` or
+        `filter:` expression has already done its work by the time the key is
+        removed. Reached templates count because the parser splices them into the
         crawler's workflow before the expander substitutes, so `{alpha_draw}`
         in such a template body is consumed exactly like one written on the
         crawler. An orphan template (`_reachable_templates`) does not: its
@@ -523,6 +533,8 @@ class SpecValidator:
         def walk(node: Any) -> None:
             if isinstance(node, str):
                 for m in _PLACEHOLDER_RE.finditer(node):
+                    names.add(m.group(1))
+                for m in _CRAWLER_REF_RE.finditer(node):
                     names.add(m.group(1))
             elif isinstance(node, dict):
                 for key, value in node.items():
@@ -602,15 +614,11 @@ class SpecValidator:
         pattern/...) is not covered by those checks and is still reported as
         before.
 
-        One gap, by design, not yet by omission: ``design.factors.<name>``'s
-        own keys (the ``factor`` definition, from `_KEYS_FACTOR`) have no
-        Python-level check yet -- phase 5 task 2 adds one. Filtering
-        ``additionalProperties`` unconditionally means an unknown factor key
-        is not caught by schema validation either, for now; that matches
-        today's behaviour (neither the old schema nor
-        `_validate_unknown_keys` checked factor keys) rather than silently
-        introducing new strictness for a container this task does not wire a
-        drop site for.
+        ``design.factors.<name>``'s own keys (the ``factor`` definition, from
+        `_KEYS_FACTOR`) are covered the same way: `_validate_design` reports
+        a key outside `_KEYS_FACTOR` as a drop (``design.factors.<f>.<key>``),
+        so filtering the schema's ``additionalProperties`` error for it loses
+        nothing.
         """
         if not HAS_JSONSCHEMA or not self.schema:
             return []
@@ -949,8 +957,8 @@ class SpecValidator:
                 if key not in self._FULL_JOB_KEYS:
                     self.drops.report(
                         f"{prefix}.{key}",
-                        "stray key on a workflow item; only the first job shorthand is used",
-                        "one job per item",
+                        "key not read by a job definition",
+                        "a full job has only type, name, description, active and behaviors",
                     )
             return
 
@@ -996,8 +1004,8 @@ class SpecValidator:
                 if key != used:
                     self.drops.report(
                         f"{prefix}.{key}",
-                        "stray key on a workflow item; only the first job shorthand is used",
-                        "one job per item",
+                        "key not read by a job definition",
+                        "a full job has only type, name, description, active and behaviors",
                     )
 
         # An item that is neither a template/repeat block (returned above) nor a

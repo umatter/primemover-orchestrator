@@ -190,9 +190,10 @@
           "type": "string",
           "description": "Text input simulation mode",
           "enum": [
-            "INSTANT",
-            "SIMULATED",
-            "SIMULATED_FIXINGTYPOS"
+            "DIRECT",
+            "SIMULATED_KEEPINGTYPOS",
+            "SIMULATED_FIXINGTYPOS",
+            "SIMULATED_NOTYPOS"
           ],
           "default": "SIMULATED_FIXINGTYPOS"
         }
@@ -669,7 +670,7 @@
       "properties": {
         "source": {
           "type": "string",
-          "description": "File path (relative to the spec) or an s3:// URI"
+          "description": "File path, relative to the spec"
         },
         "format": {
           "type": "string",
@@ -698,26 +699,37 @@
       "additionalProperties": true
     },
     "designParameter": {
-      "type": "object",
-      "description": "A parameter distribution (design.parameters.<name>), or a fixed `value:` shorthand with no 'distribution' key",
-      "properties": {
-        "distribution": {
-          "type": "string",
-          "enum": [
-            "uniform",
-            "discrete",
-            "normal",
-            "gumbel",
-            "truncated_normal",
-            "beta",
-            "fixed"
-          ]
+      "description": "A parameter distribution (design.parameters.<name>): a `distribution:` object, a fixed `value:` shorthand with no 'distribution' key, or a bare scalar (DistributionFactory.create wraps a non-dict in FixedValue)",
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "distribution": {
+              "type": "string",
+              "enum": [
+                "uniform",
+                "discrete",
+                "normal",
+                "gumbel",
+                "truncated_normal",
+                "beta",
+                "fixed"
+              ]
+            },
+            "value": {
+              "description": "Fixed value shorthand"
+            }
+          },
+          "additionalProperties": true
         },
-        "value": {
-          "description": "Fixed value shorthand"
+        {
+          "type": [
+            "number",
+            "string",
+            "boolean"
+          ]
         }
-      },
-      "additionalProperties": true
+      ]
     },
     "workflowItem": {
       "type": "object",
@@ -888,9 +900,10 @@
                 "typing_mode": {
                   "type": "string",
                   "enum": [
-                    "INSTANT",
-                    "SIMULATED",
-                    "SIMULATED_FIXINGTYPOS"
+                    "DIRECT",
+                    "SIMULATED_KEEPINGTYPOS",
+                    "SIMULATED_FIXINGTYPOS",
+                    "SIMULATED_NOTYPOS"
                   ]
                 }
               },
@@ -935,9 +948,10 @@
             "typing_mode": {
               "type": "string",
               "enum": [
-                "INSTANT",
-                "SIMULATED",
-                "SIMULATED_FIXINGTYPOS"
+                "DIRECT",
+                "SIMULATED_KEEPINGTYPOS",
+                "SIMULATED_FIXINGTYPOS",
+                "SIMULATED_NOTYPOS"
               ]
             }
           },
@@ -964,8 +978,8 @@
                   "enum": [
                     "UP",
                     "DOWN",
-                    "LEFT",
-                    "RIGHT"
+                    "up",
+                    "down"
                   ]
                 },
                 "duration": {
@@ -998,8 +1012,8 @@
                   "enum": [
                     "UP",
                     "DOWN",
-                    "LEFT",
-                    "RIGHT"
+                    "up",
+                    "down"
                   ]
                 },
                 "duration": {
@@ -1029,8 +1043,8 @@
                   "enum": [
                     "UP",
                     "DOWN",
-                    "LEFT",
-                    "RIGHT"
+                    "up",
+                    "down"
                   ]
                 },
                 "length": {
@@ -1065,8 +1079,8 @@
                   "enum": [
                     "UP",
                     "DOWN",
-                    "LEFT",
-                    "RIGHT"
+                    "up",
+                    "down"
                   ]
                 },
                 "length": {

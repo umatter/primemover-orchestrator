@@ -435,10 +435,6 @@ class SpecParser:
             if key in item:
                 return [self._expand_shorthand(key, item, defaults)]
 
-        # Check if it's a full job definition with 'type'
-        if "type" in item:
-            return [self._normalize_job(item, defaults)]
-
         # Unknown format. `_expand_workflow_item` is reached from crawler expansion,
         # repeat blocks and template expansion (templates are shared across
         # crawlers), so a precise crawler/queue/job index is not available here

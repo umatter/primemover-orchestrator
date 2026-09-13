@@ -29,6 +29,7 @@ import json
 from pathlib import Path
 from typing import Any
 
+from .distributions import DistributionFactory
 from .job_registry import JobRegistry
 from .validator import SpecValidator
 
@@ -41,20 +42,19 @@ _PROXY_TYPES = ["http", "brightdata", "oxylabs"]
 
 _BROWSER_TYPES = ["mlx", "chrome", "firefox"]
 _CAPTCHA_MODES = ["never", "always", "ondemand"]
-_TYPING_MODES = ["INSTANT", "SIMULATED", "SIMULATED_FIXINGTYPOS"]
 _SELECTION_TYPES = ["XPATH", "CSS", "ID", "NAME"]
-_SCROLL_DIRECTIONS = ["UP", "DOWN", "LEFT", "RIGHT"]
 
-# Distribution types DistributionFactory.create() accepts (distributions.py).
-_DISTRIBUTION_TYPES = [
-    "uniform",
-    "discrete",
-    "normal",
-    "gumbel",
-    "truncated_normal",
-    "beta",
-    "fixed",
-]
+# The runner's enum constants, verified against primemover_runner's
+# `primemover/model/TypingModeType.java` and `ScrollDirection.java`
+# (2026-09-13). PrimemoverApiConverter.java reads both with `Enum.valueOf`,
+# which is exact and case-sensitive. The parser passes `typing_mode` through
+# verbatim, so only the runner's own spelling is valid; it upper-cases
+# `direction` (`_expand_shorthand`), so both cases of the runner's two values
+# are honoured. The old hand-written `INSTANT`/`SIMULATED` and `LEFT`/`RIGHT`
+# were never runner values: a spec using them validated here and then failed
+# `valueOf` on the box.
+_TYPING_MODES = ["DIRECT", "SIMULATED_KEEPINGTYPOS", "SIMULATED_FIXINGTYPOS", "SIMULATED_NOTYPOS"]
+_SCROLL_DIRECTIONS = ["UP", "DOWN", "up", "down"]
 
 
 def _object(
@@ -525,7 +525,7 @@ def build_schema() -> dict[str, Any]:
             "properties": {
                 "source": {
                     "type": "string",
-                    "description": "File path (relative to the spec) or an s3:// URI",
+                    "description": "File path, relative to the spec",
                 },
                 "format": {
                     "type": "string",
@@ -550,16 +550,28 @@ def build_schema() -> dict[str, Any]:
             "additionalProperties": True,
         },
         "designParameter": {
-            "type": "object",
             "description": (
-                "A parameter distribution (design.parameters.<name>), or a fixed `value:` "
-                "shorthand with no 'distribution' key"
+                "A parameter distribution (design.parameters.<name>): a `distribution:` "
+                "object, a fixed `value:` shorthand with no 'distribution' key, or a bare "
+                "scalar (DistributionFactory.create wraps a non-dict in FixedValue)"
             ),
-            "properties": {
-                "distribution": {"type": "string", "enum": _DISTRIBUTION_TYPES},
-                "value": {"description": "Fixed value shorthand"},
-            },
-            "additionalProperties": True,
+            # The scalar branch is the YAML scalar types. A list would also be
+            # wrapped in FixedValue and land in params verbatim, but no spec
+            # has used that and it is not modelled here.
+            "oneOf": [
+                {
+                    "type": "object",
+                    "properties": {
+                        "distribution": {
+                            "type": "string",
+                            "enum": DistributionFactory.list_types(),
+                        },
+                        "value": {"description": "Fixed value shorthand"},
+                    },
+                    "additionalProperties": True,
+                },
+                {"type": ["number", "string", "boolean"]},
+            ],
         },
         "workflowItem": {
             "type": "object",
