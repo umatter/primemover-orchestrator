@@ -21,6 +21,7 @@ from typing import Any
 import yaml
 
 from .data_pools import DataPoolManager
+from .draws import is_draw, make_token
 from .drops import Drops
 from .file_loader import FileLoader, create_file_tag_loader, resolve_file_references
 from .job_registry import JobRegistry
@@ -649,11 +650,22 @@ class SpecParser:
             # call. It was ignored here until 2026-09-12: the template's ${var}
             # survived to design expansion, which replaced only the {var} part
             # and handed the decision function "$green".
+            #
+            # A pool draw among the values is re-tokenised per repetition
+            # (below) rather than tokenised once and reused: each repetition
+            # is a distinct draw against the pool, without replacement, so it
+            # needs its own ordinal. `n_draws` is how far the ordinal sequence
+            # advances per repetition.
             variables = item.get("with")
             if isinstance(variables, dict) and variables:
-                template_jobs = self._apply_variables(template_jobs, variables)
-            for _ in range(count):
-                jobs.extend(copy.deepcopy(template_jobs))
+                n_draws = sum(1 for v in variables.values() if is_draw(v))
+                for rep in range(count):
+                    rep_variables = self._tokenise_draws(variables, rep * n_draws)
+                    rep_jobs = self._apply_variables(template_jobs, rep_variables)
+                    jobs.extend(copy.deepcopy(rep_jobs))
+            else:
+                for _ in range(count):
+                    jobs.extend(copy.deepcopy(template_jobs))
         elif "jobs" in item:
             for _ in range(count):
                 for job in item["jobs"]:
@@ -686,11 +698,33 @@ class SpecParser:
 
         template_jobs = self._get_template_jobs(template_name, templates, defaults)
 
-        # Apply variable substitution if provided
+        # Apply variable substitution if provided. A pool draw among the
+        # values becomes a deferred draw token first (see draws.py); the
+        # converter resolves it later, once per crawler.
         if variables:
+            variables = self._tokenise_draws(variables)
             template_jobs = self._apply_variables(template_jobs, variables)
 
         return template_jobs
+
+    def _tokenise_draws(self, variables: dict[str, Any], base_ordinal: int = 0) -> dict[str, Any]:
+        """Replace pool-draw values in a `with:` dict with deferred draw
+        tokens (draws.py). Ordinals are assigned in key order, counting only
+        draw-valued entries, starting at ``base_ordinal`` -- callers repeating
+        a template pass the previous repetition's draw count so the ordinal
+        sequence keeps advancing instead of restarting at 0."""
+        tokenised: dict[str, Any] = {}
+        n = 0
+        for key, value in variables.items():
+            if is_draw(value):
+                select = value.get("select") or "random"
+                tokenised[key] = make_token(
+                    value["from_pool"], value["field"], select, base_ordinal + n
+                )
+                n += 1
+            else:
+                tokenised[key] = value
+        return tokenised
 
     def _get_template_jobs(
         self, template_name: str, templates: dict[str, Any], defaults: dict[str, Any]
