@@ -864,6 +864,15 @@ hashed, bound to the experiment via `pmspec.*` preferences, checked by `pmspec v
 `compile` writes) factors each distinct queue/agent body once under `parts`, keyed by its own
 content hash, instead of repeating it per crawler; `validate` still accepts format 1.
 
+**Where each step runs.** Design, `validate`, `preview` and `compile` are the CLI *in the research
+repo* — that is where the provenance a lock records (`git_commit`, `spec_path`, pool sha256s) is
+read from, and where pools resolve; commit the lock there. Upload, verify, status, audit and
+cleanup go through the MCP on ex63 (`upload_experiment`, `verify_experiment`, `experiment_status`,
+`audit_experiment`, `pm_cleanup_test_experiments`), which passes the lock as text: the write-guard
+only allows the local API and the `${secret:…}` store is a mode-600 file on the box, so nothing
+secret leaves it. `pmspec secrets init|check` is a one-time shell step on ex63 and deliberately
+not an MCP tool. On a machine that runs the stack itself the CLI does both halves.
+
 Day to day, once a study is running: `pmspec status <id> [lock] [--hours N] [--deep]` (provenance +
 health always; with a lock, also `verify`), `pmspec diff <lock_a> <lock_b>` (compare two locks, no
 live experiment involved), `pmspec audit <id> <lock> [--hours N] [--sample K] [--strict]` (did each

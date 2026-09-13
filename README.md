@@ -546,19 +546,32 @@ pmspec schema job lambda_select
 | **Relative Timestamps** | `now`, `+5m`, `+1h`, `+1d` for session scheduling |
 | **Reproducibility** | `--seed` option for deterministic randomization |
 
-### Workflow
+### Workflow — and where each step runs
 
-1. Describe experiment in plain English
-2. Draft YAML spec (use Claude to help translate)
-3. Validate: `pmspec validate spec.yaml --seed 42`
-4. Preview: `pmspec preview spec.yaml`
-5. Upload via **one of**:
-   - **CLI**: `pmspec upload spec.yaml` (direct upload)
-   - **GUI**: Generate JSON first, then upload via GUI:
-     ```bash
-     pmspec generate spec.yaml -o output.json --seed 42
-     # Then upload output.json via GUI at http://localhost:8090/gui
-     ```
+`pmspec` is a pure function of the research repo until the moment of upload, and the two halves
+run in different places on purpose:
+
+| step | runs | why there |
+|---|---|---|
+| draft the spec, `pmspec validate`, `preview`, `summary` | **CLI, in the research repo** | the spec's pools and `!file` includes resolve relative to the spec |
+| `pmspec compile spec.yaml --seed N` → `spec.lock.yaml`, then **commit the lock** | **CLI, in the research repo** | provenance (`git_commit`, `spec_path`, `spec_sha256`, pool sha256s) is read from that repo — over MCP a client can only *assert* them |
+| `pmspec diff a.lock.yaml b.lock.yaml` | CLI (or MCP `diff_locks`) | no server involved |
+| upload, verify, status, audit, cleanup | **MCP on ex63** (`upload_experiment`, `verify_experiment`, `experiment_status`, `audit_experiment`, `pm_cleanup_test_experiments`) — or the CLI *on ex63* | the write-guard allows only the local API, and the `${secret:…}` store lives on the box; a lock is passed as text, so nothing secret leaves ex63 |
+| `pmspec secrets init` / `secrets check` | CLI **on ex63**, once | credentials stay in one mode-600 file; deliberately not an MCP tool |
+
+1. Describe the experiment; draft the YAML spec (Claude Code helps translate)
+2. `pmspec validate spec.yaml` — strict by default: a construct the pipeline would silently drop
+   is an error, not a warning (`--lax` only to see what a broken spec would have produced)
+3. `pmspec preview spec.yaml` / `pmspec summary spec.yaml`
+4. `pmspec compile spec.yaml --seed 42`; commit spec, pools and lock
+5. Upload the lock: `upload_experiment(lock_content, mode="test")` from a Claude Code session, or
+   `pmspec upload spec.lock.yaml --mode test` on ex63 (`--mode real` refuses a dirty commit)
+6. `experiment_status` / `pmspec status <id> <lock>` while it runs; `audit_experiment` /
+   `pmspec audit <id> <lock>` once sessions finish — did each lambda job apply the treatment the
+   lock says it should?
+
+`pmspec generate spec.yaml -o out.json` still produces bare API JSON for the GUI's upload form,
+but it records no provenance and is not the path for a study.
 
 See [docs/experiment-designer.md](docs/experiment-designer.md) for full documentation.
 
@@ -673,21 +686,26 @@ The orchestrator provides tools for AI-assisted experiment design and monitoring
 
 ### Using Claude Code (CLI)
 
-Claude Code can directly use the `pmspec` and `orchestrator` CLI tools:
+Claude Code uses the `pmspec` CLI for the design half and the MCP server for the ex63 half
+(see "Workflow — and where each step runs" above):
 
 ```bash
-# Design experiments with Claude Code
-pmspec validate my-spec.yaml    # Validate YAML spec
-pmspec preview my-spec.yaml     # Preview factorial design
-pmspec compile my-spec.yaml --seed 42      # Compile to my-spec.lock.yaml
-pmspec upload my-spec.lock.yaml --mode test  # Upload the lock (or --mode real)
+# In the research repo: design, validate, compile, commit the lock
+pmspec validate my-spec.yaml
+pmspec preview my-spec.yaml
+pmspec compile my-spec.yaml --seed 42      # writes my-spec.lock.yaml
 
-# Monitor and debug
+# Then, via the MCP server on ex63 (upload_experiment, experiment_status, audit_experiment):
+# upload the committed lock as text, watch it, audit it.
+
+# On a machine that runs the stack itself, the CLI covers both halves:
+pmspec upload my-spec.lock.yaml --mode test
 orchestrator logs query -c runner -t 1h
 orchestrator trace experiment 123
 ```
 
-Claude Code doesn't need MCP configuration - it calls CLI tools directly.
+A laptop that only talks to ex63 needs the MCP registered (`claude mcp add … primemover-me`, see
+CLAUDE.md "Composing as a specific user"); a box that runs the stack needs no MCP at all.
 
 ### Using Claude Desktop (MCP)
 
