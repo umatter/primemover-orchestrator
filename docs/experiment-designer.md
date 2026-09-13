@@ -119,7 +119,7 @@ lock's expected treatment against the decision function's own reported verdict:
 |---|---|
 | `ok` | the job requested and received exactly the treatment the lock's behaviours describe |
 | `unfinished` | the job's `status_code` is a running state — never a failure, `--strict` or not |
-| `shape` | the live job at this ordinal is a different `type` than the lock's — the queue drifted and nothing at that ordinal can be trusted; always a failure |
+| `shape` | the live job at this ordinal is a different `type` than the lock's, or the live queue has more jobs than the lock's (one finding per queue; its ordinals are still audited) — the queue drifted; always a failure |
 | `unreported` | the job finished but carries no decision verdict at all (or a NULL/unrecognised `status_code`) — unknown, not clean |
 | `mismatch` | the decision function requested a different filter set than the lock's treatment implies |
 | `lost` | `decision_treatment_lost` — the bot was configured to be treated and produced control-arm data |

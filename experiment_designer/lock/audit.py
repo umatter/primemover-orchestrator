@@ -23,7 +23,12 @@ job):
     the lock's lambda job lands on a live ``visitjob`` (which reports nothing)
     while the real lambda job -- possibly treatment-lost -- is never examined.
     Type mismatch -> ``shape``, always a failure. A live row with no ``type``
-    at all cannot be checked and is not a ``shape`` finding.
+    at all cannot be checked and is not a ``shape`` finding. A matched queue
+    whose live job count differs from the lock's also gets one ``shape``
+    finding of its own when the live side has *more* jobs (``lock has N jobs,
+    live has M``, no job id) -- an extra job at the *tail* lines every ordinal
+    up and would otherwise pass -- and its ordinals are still audited on their
+    merits. Fewer live jobs is ``missing`` per ordinal, as before.
 ``reported``
     Did the job carry a decision verdict at all (:func:`orchestrator.status.
     job_decision_reported`)? ``False`` -> ``unreported`` -- unknown, never
@@ -63,9 +68,9 @@ to audit and produces no finding, but still occupies its ordinal so a
 genuinely missing job downstream is not mistaken for one that was never a
 lambda job to begin with.
 
-Queues sharing a name within a crawler are matched by ``start_offset`` order
-on the lock side against ``start_at`` order on the live side (the same rule
-``verify`` uses), so authoring order in the spec does not decide which live
+Queues sharing a name within a crawler are matched in ``start_offset`` order
+on the lock side -- which is what the live side's ``start_at`` order
+corresponds to -- so authoring order in the spec does not decide which live
 queue a lock queue is compared with.
 
 An audit that examines **no** job at all is vacuous: it fails under
@@ -527,9 +532,9 @@ def audit_experiment(
         qname_position: dict[str, int] = {}
 
         # Same-name queues: the live side is sorted by start_at, so the lock
-        # side must be sorted by start_offset too (as verify does), or the
-        # authoring order in the spec decides which live queue each lock
-        # queue is compared with.
+        # side is sorted by offset, which is what that start order corresponds
+        # to -- otherwise the authoring order in the spec decides which live
+        # queue each lock queue is compared with.
         lock_queues = sorted(
             crawler.get("queues", []), key=lambda q: (_offset_seconds(q), q.get("name", ""))
         )
@@ -561,6 +566,25 @@ def audit_experiment(
                 continue
 
             live_jobs = _live_jobs(session, int(live_queue["id"]))
+
+            # More live jobs than the lock is a drifted queue even when every
+            # lock ordinal happens to line up (the extra job is at the tail):
+            # one queue-level shape finding, then the ordinals are still
+            # audited on their own merits. Fewer live jobs is already caught
+            # per ordinal as `missing` (strict-only by design) and is not
+            # escalated here.
+            if len(live_jobs) > len(lock_jobs):
+                findings.append(
+                    JobFinding(
+                        name,
+                        qname,
+                        0,
+                        None,
+                        arm,
+                        "shape",
+                        f"lock has {len(lock_jobs)} jobs, live has {len(live_jobs)}",
+                    )
+                )
 
             for ordinal, job in enumerate(lock_jobs):
                 resolved = _job_treatment(crawler, job)

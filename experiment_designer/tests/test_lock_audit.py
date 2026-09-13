@@ -741,6 +741,41 @@ def test_ordinal_drift_is_a_shape_finding_never_a_pass():
     assert "shape" in result.render()
 
 
+class LongerQueueSession(FakeSession):
+    """bot_t's live queue carries one more job than the lock at the tail --
+    every lock ordinal still lines up, so nothing is caught per job."""
+
+    def get(self, path, params=None):
+        rows = super().get(path, params)
+        if path == "jobs" and (params or {}).get("filter[queue]") == "500":
+            rows.append(
+                {
+                    "id": 902,
+                    "order": 3,
+                    "type": LAMBDA_TYPE,
+                    "status_code": "success",
+                    "decision_report": {
+                        "requested": ["mainstream_media", "similar"],
+                        "applied": [],
+                    },
+                    "decision_treatment_lost": True,
+                }
+            )
+        return rows
+
+
+def test_live_queue_with_a_different_job_count_is_a_shape_finding_and_still_audited():
+    job2 = _treated_job(["mainstream_media", "similar"])
+    result = audit_experiment(LongerQueueSession(job2), EXPERIMENT_ID, LOCK_TEXT)
+    shapes = [f for f in result.findings if f.crawler == "bot_t" and f.outcome == "shape"]
+    assert len(shapes) == 1, result.findings
+    assert shapes[0].detail == "lock has 2 jobs, live has 3"
+    assert shapes[0].job_id is None
+    # The ordinals that do line up are still audited on their own merits.
+    assert _bot_t_finding(result).outcome == "ok"
+    assert not result.ok(strict=False)
+
+
 def test_live_job_without_a_type_is_not_a_shape_finding():
     # An older API row with no `type` says nothing about the shape; the
     # report is still audited.

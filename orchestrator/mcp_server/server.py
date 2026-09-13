@@ -2757,7 +2757,8 @@ def audit_experiment_tool(
     the lock file, which does not apply to lock text passed in over MCP).
 
     Returns:
-        JSON: {"experiment_id", "ok", "sampled", "total", "counts": [{"arm", "outcome", "n"}],
+        JSON: {"experiment_id", "ok", "sampled", "total", "audited" (jobs actually examined --
+        0 is a vacuous audit, failed under strict), "counts": [{"arm", "outcome", "n"}],
         "findings": [first 50 as dicts], "render"}.
     """
     from experiment_designer.spec.validator import SpecValidator
@@ -2802,6 +2803,7 @@ def audit_experiment_tool(
             "ok": result.ok(strict),
             "sampled": result.sampled,
             "total": result.total,
+            "audited": result.audited,
             "counts": [
                 {"arm": arm, "outcome": outcome, "n": n}
                 for (arm, outcome), n in sorted(result.counts().items())

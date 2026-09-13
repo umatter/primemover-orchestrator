@@ -62,6 +62,7 @@ def test_audit_experiment_tool(monkeypatch):
     assert out["experiment_id"] == 181
     assert out["ok"] is False
     assert out["sampled"] == 1 and out["total"] == 1
+    assert out["audited"] == 2
     assert {"arm": "pi=1,psi=0,kappa=0,tau=0", "outcome": "lost", "n": 1} in out["counts"]
     assert {"arm": "pi=1,psi=0,kappa=0,tau=0", "outcome": "ok", "n": 1} in out["counts"]
     assert len(out["findings"]) == 2
@@ -77,6 +78,15 @@ def test_audit_experiment_tool(monkeypatch):
     assert "render" in out
     assert calls["experiment_id"] == 181
     assert calls["hours"] == 6 and calls["sample"] == 2 and calls["strict"] is True
+
+
+def test_audit_experiment_tool_reports_a_vacuous_audit_as_audited_zero(monkeypatch):
+    from experiment_designer.lock.audit import AuditResult
+
+    result = AuditResult(experiment_id=1, hours=24, sampled=1, total=1, findings=[])
+    monkeypatch.setattr(s, "audit_experiment", lambda *a, **k: result)
+    out = json.loads(s.audit_experiment_tool(1, _lock_text(), strict=True))
+    assert out["audited"] == 0 and out["ok"] is False
 
 
 def test_audit_experiment_tool_caps_findings_at_50(monkeypatch):
