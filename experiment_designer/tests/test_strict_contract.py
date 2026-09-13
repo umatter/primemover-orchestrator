@@ -523,6 +523,32 @@ class TestSampledSubstitutionParameter:
         r = _validate(text)
         assert r.valid and r.dropped == 0, (r.errors, r.warnings)
 
+    def test_reference_only_in_an_orphan_template_is_still_a_drop(self):
+        # The template is defined but no crawler calls it, so the parser never
+        # splices it in and nobody receives the draw: still a drop.
+        text = self.SPEC.replace(
+            "        - {name: alpha_draw, value: '{alpha_draw}'}\n",
+            "        - {name: fixed, value: 'x'}\n",
+        ) + ("templates:\n  orphan:\n    - type: {text: 'a={alpha_draw}', selector: '//x'}\n")
+        r = _validate(text)
+        assert not r.valid, r.errors
+        assert any("design.parameters.alpha_draw" in e for e in r.errors), r.errors
+
+    def test_reference_in_a_template_reached_through_another_template_counts(self):
+        text = (
+            self.SPEC.replace(
+                "        - {name: alpha_draw, value: '{alpha_draw}'}\n",
+                "        - {name: fixed, value: 'x'}\n",
+            ).replace(
+                "        - visit: https://example.com\n",
+                "        - repeat: 2\n          jobs: [{template: outer}]\n",
+            )
+            + "templates:\n  outer:\n    - template: inner\n"
+            "  inner:\n    - type: {text: 'a={alpha_draw}', selector: '//x'}\n"
+        )
+        r = _validate(text)
+        assert r.valid and r.dropped == 0, (r.errors, r.warnings)
+
     def test_converter_strips_it_from_params_and_preference_carries_the_number(self):
         parsed = SpecParser().parse(self.SPEC)
         assert not parsed.errors, parsed.errors
@@ -557,6 +583,14 @@ class TestSampledSubstitutionParameter:
         r = SpecConverter().convert(parsed)
         assert r.errors == [], r.errors
         assert all("alpha_draw" not in c["configuration"]["params"] for c in r.json_data)
+
+
+class TestFactorShape:
+    def test_non_mapping_factor_is_an_error_not_an_exception(self):
+        text = BASE + "design:\n  factors:\n    arm: [a, b]\n  replications: 1\n"
+        r = _validate(text)
+        assert not r.valid
+        assert any("design.factors.arm" in e and "mapping" in e for e in r.errors), r.errors
 
 
 class TestJobOptionKeys:

@@ -381,7 +381,10 @@ class SpecConverter:
         # the key anyway. Stripping it keeps the emitted params honest and
         # keeps the strict scan from seeing a "dropped" param that was in fact
         # consumed. Only those names are stripped; a hand-written extra key in
-        # a crawler's own params block still passes through as before.
+        # a crawler's own params block still passes through as before. The
+        # strip is by name alone -- a hand-written params key that happens to
+        # share a sampled parameter's name goes too -- and the validator, not
+        # this method, is the gate that decides whether the spec is acceptable.
         params = config.get("params", {})
         extra = {
             k: v

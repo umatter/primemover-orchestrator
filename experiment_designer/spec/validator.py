@@ -397,6 +397,8 @@ class SpecValidator:
 
         design = spec.get("design") or {}
         for fname, fdef in (design.get("factors") or {}).items():
+            if not isinstance(fdef, dict):
+                continue  # _validate_design has already reported it as an error
             for path, level_map in (fdef.get("maps_to") or {}).items():
                 parts = str(path).split(".")
                 leaf = parts[-1]
@@ -463,15 +465,58 @@ class SpecValidator:
         return errors, warnings
 
     @staticmethod
-    def _referenced_placeholders(spec: dict[str, Any]) -> set[str]:
-        """Names used as `{name}` / `{name:fmt}` anywhere under crawlers or templates.
+    def _reachable_templates(spec: dict[str, Any]) -> dict[str, Any]:
+        """The templates some crawler actually calls, transitively.
 
-        Templates count because the parser splices them into a crawler's
-        workflow before the expander substitutes, so `{alpha_draw}` in a
-        template body is consumed exactly like one written on the crawler.
-        `${var}` template variables are a different namespace (excluded by
-        the lookbehind), and the Multilogin profile is a JSON document with
-        its own placeholders, skipped as `_scan_unresolved` skips it.
+        A `template:` item anywhere under crawlers (a workflow item, or one
+        nested in `repeat.jobs`) names a template; a template body is itself a
+        list of workflow items expanded through the same
+        `SpecParser._expand_workflow_item`, so it can call further templates.
+        A template nobody reaches is never spliced into any crawler, and a
+        placeholder in it is consumed by nobody.
+        """
+        templates = spec.get("templates")
+        if not isinstance(templates, dict):
+            return {}
+
+        def refs(node: Any, out: set[str]) -> None:
+            if isinstance(node, dict):
+                name = node.get("template")
+                if isinstance(name, str):
+                    out.add(name)
+                for key, value in node.items():
+                    if key != "multilogin_profile":
+                        refs(value, out)
+            elif isinstance(node, list):
+                for value in node:
+                    refs(value, out)
+
+        pending: set[str] = set()
+        refs(spec.get("crawlers"), pending)
+        reached: dict[str, Any] = {}
+        while pending:
+            name = pending.pop()
+            if name in reached or name not in templates:
+                continue
+            reached[name] = templates[name]
+            refs(templates[name], pending)
+        return reached
+
+    @classmethod
+    def _referenced_placeholders(cls, spec: dict[str, Any]) -> set[str]:
+        """Names used as `{name}` / `{name:fmt}` under crawlers or a template
+        some crawler reaches.
+
+        Reached templates count because the parser splices them into the
+        crawler's workflow before the expander substitutes, so `{alpha_draw}`
+        in such a template body is consumed exactly like one written on the
+        crawler. An orphan template (`_reachable_templates`) does not: its
+        placeholder would satisfy the rule while the draw reached nobody, and
+        the converter would then strip the value from params -- a silent drop
+        with extra steps. `${var}` template variables are a different
+        namespace (excluded by the lookbehind), and the Multilogin profile is a
+        JSON document with its own placeholders, skipped as `_scan_unresolved`
+        skips it.
         """
         names: set[str] = set()
 
@@ -488,7 +533,7 @@ class SpecValidator:
                     walk(value)
 
         walk(spec.get("crawlers"))
-        walk(spec.get("templates"))
+        walk(list(cls._reachable_templates(spec).values()))
         return names
 
     def _validate_unknown_keys(self, spec: dict[str, Any]) -> None:
@@ -681,6 +726,8 @@ class SpecValidator:
         total_cells = 1
 
         for name, factor_def in factors.items():
+            if not isinstance(factor_def, dict):
+                continue  # _validate_design has already reported it as an error
             levels = factor_def.get("levels", [])
             num_levels = len(levels)
             total_cells *= num_levels
