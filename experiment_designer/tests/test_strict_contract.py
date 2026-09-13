@@ -153,6 +153,36 @@ class TestValidatorDropRules:
             "crawler[0].session.begin",
             id="unknown-session-key",
         ),
+        pytest.param(
+            BASE.replace(
+                "        - visit: https://example.com\n",
+                "        - visit: https://example.com\n          weight: 0.7\n",
+            ),
+            "crawler[0].session.workflow[0].weight",
+            id="stray-workflow-item-key",
+        ),
+        pytest.param(
+            BASE.replace(
+                "        - visit: https://example.com\n",
+                "        - click: {selector: x, sped: fast}\n",
+            ),
+            "crawler[0].session.workflow[0].click.sped",
+            id="unknown-job-option",
+        ),
+        pytest.param(
+            BASE + "design:\n  factors:\n    arm:\n      levels: [a, b]\n      mapsto:\n"
+            "        params.pi: {a: 0, b: 1}\n  replications: 1\n",
+            "design.factors.arm.mapsto",
+            id="unknown-factor-key",
+        ),
+        pytest.param(
+            BASE.replace("  - name: bot\n", "  - name: bot_{arm}\n    from_design: true\n")
+            + "design:\n  factors:\n    arm:\n      levels: [a, b]\n"
+            "  parameters:\n    foo:\n      distribution: uniform\n      min: 0\n      max: 1\n"
+            "  replications: 1\n",
+            "design.parameters.foo",
+            id="non-standard-sampled-param-unused",
+        ),
     ]
 
     @pytest.mark.parametrize("yaml_text,needle", ROWS)
@@ -327,6 +357,109 @@ class TestUnknownWorkflowItemDrop:
         assert parsed.dropped == 1
 
 
+class TestFullJobWorkflowItem:
+    """`type` is overloaded: it is both the key of a full job definition
+    (`type: visitjob`, a registered API type string) and the shorthand key of
+    the `type:` (enter text) job (`type: {text: ..., selector: ...}`, a
+    dict). `_expand_workflow_item`'s shorthand loop used to check `type` as a
+    shorthand key first, so a full job's `type: visitjob` was swallowed by
+    that shorthand and errored ("'type' job requires dict with 'text' and
+    'selector'") instead of being recognised as a full job -- full jobs in
+    `workflow:` have been broken since shorthand support was added.
+    `JobRegistry.is_api_type` now gates full-job detection ahead of the
+    shorthand loop in both the parser and the validator."""
+
+    FULL_JOB = BASE.replace(
+        "        - visit: https://example.com\n",
+        "        - type: visitjob\n"
+        "          name: My Visit\n"
+        "          description: go there\n"
+        "          behaviors:\n"
+        "            - {name: url, value: 'https://example.com', description: '', active: true}\n",
+    )
+
+    def test_full_job_parses_to_one_job_with_its_behaviours(self):
+        parsed = SpecParser().parse(self.FULL_JOB)
+        assert not parsed.errors, parsed.errors
+        jobs = parsed.crawlers[0]["queues"][0]["jobs"]
+        assert len(jobs) == 1
+        job = jobs[0]
+        assert job["type"] == "visitjob"
+        assert job["name"] == "My Visit"
+        assert job["behaviors"] == [
+            {
+                "name": "url",
+                "value": "https://example.com",
+                "description": "",
+                "active": True,
+            }
+        ]
+
+    def test_full_job_validates_clean(self):
+        r = _validate(self.FULL_JOB)
+        assert r.valid and r.dropped == 0, (r.errors, r.warnings)
+
+    def test_full_job_with_a_typo_key_is_a_drop(self):
+        text = self.FULL_JOB.replace("          behaviors:\n", "          behaviours:\n")
+        r = _validate(text)
+        assert not r.valid
+        assert any("behaviours" in e for e in r.errors), r.errors
+        assert r.dropped >= 1
+
+    def test_full_job_with_a_stray_key_is_a_drop(self):
+        text = self.FULL_JOB.replace(
+            "          description: go there\n",
+            "          description: go there\n          weight: 0.7\n",
+        )
+        r = _validate(text)
+        assert not r.valid
+        assert any("weight" in e for e in r.errors), r.errors
+        assert r.dropped >= 1
+
+    def test_full_job_stray_key_message_names_the_job_definition(self):
+        text = self.FULL_JOB.replace(
+            "          description: go there\n",
+            "          description: go there\n          weight: 0.7\n",
+        )
+        r = _validate(text)
+        msg = next(e for e in r.errors if "weight" in e)
+        assert "job definition" in msg, msg
+        assert "first job shorthand" not in msg, msg
+
+    def test_full_job_active_false_reaches_the_api_json(self):
+        """`_normalize_job` keeps the job's own `active`; `_convert_job` used
+        to overwrite it with True, so an inactive full job was uploaded
+        active with no message anywhere."""
+        text = self.FULL_JOB.replace(
+            "          description: go there\n",
+            "          description: go there\n          active: false\n",
+        )
+        parsed = SpecParser().parse(text)
+        assert not parsed.errors, parsed.errors
+        r = SpecConverter().convert(parsed)
+        assert r.errors == [], r.errors
+        job = r.json_data[0]["queues"][0]["jobs"][0]
+        assert job["active"] is False
+
+    def test_full_job_active_defaults_to_true(self):
+        parsed = SpecParser().parse(self.FULL_JOB)
+        job = SpecConverter().convert(parsed).json_data[0]["queues"][0]["jobs"][0]
+        assert job["active"] is True
+
+    def test_type_shorthand_with_a_dict_still_works(self):
+        text = BASE.replace(
+            "        - visit: https://example.com\n",
+            "        - type: {text: hello, selector: '//input'}\n",
+        )
+        parsed = SpecParser().parse(text)
+        assert not parsed.errors, parsed.errors
+        jobs = parsed.crawlers[0]["queues"][0]["jobs"]
+        assert len(jobs) == 1 and jobs[0]["type"] == "entertextfieldjob"
+
+        r = _validate(text)
+        assert r.valid and r.dropped == 0, (r.errors, r.warnings)
+
+
 class TestFormatSpecs:
     """design_expander must resolve {name:spec} (e.g. {pi:.2f}), not just the
     handful of bare {name} forms -- our own shipped examples use it."""
@@ -367,6 +500,229 @@ class TestFormatSpecs:
         )
         r = self._convert(text)
         assert any("{arm:.2f}" in e for e in r.errors), r.errors
+
+
+class TestSampledSubstitutionParameter:
+    """A `design.parameters` name outside _KNOWN_PARAMS is a drop when nothing
+    references it (the expander writes it into configuration.params, which the
+    API discards) -- but a spec that uses `{name}` somewhere under crawlers is
+    using it as a substitution variable, which is legitimate. The converter
+    then strips it from params, since the value has already landed where it was
+    referenced and the API would drop the key anyway."""
+
+    SPEC = (
+        BASE.replace(
+            "  - name: bot\n",
+            "  - name: bot_{arm}\n    from_design: true\n"
+            "    configuration:\n      preferences:\n"
+            "        - {name: alpha_draw, value: '{alpha_draw}'}\n",
+        )
+        + "design:\n  seed: 7\n  factors:\n    arm:\n      levels: [a, b]\n"
+        "  parameters:\n    alpha_draw:\n      distribution: uniform\n      min: 0\n      max: 1\n"
+        "  replications: 1\n"
+    )
+
+    def test_converter_and_validator_agree_on_the_standard_params(self):
+        # The strip keys on the converter's copy of the set; the drop rule on
+        # the validator's. They must be the same set or a name could be
+        # stripped without having been checked for a reference (or vice versa).
+        from experiment_designer.spec import converter
+
+        assert converter._STANDARD_PARAM_KEYS == SpecValidator._KNOWN_PARAMS
+
+    def test_referenced_parameter_validates_clean(self):
+        r = _validate(self.SPEC)
+        assert r.valid and r.dropped == 0, (r.errors, r.warnings)
+
+    def test_format_spec_reference_counts_as_a_reference(self):
+        text = self.SPEC.replace("'{alpha_draw}'", "'{alpha_draw:.2f}'")
+        r = _validate(text)
+        assert r.valid and r.dropped == 0, (r.errors, r.warnings)
+
+    def test_reference_inside_a_template_counts(self):
+        text = (
+            self.SPEC.replace(
+                "        - {name: alpha_draw, value: '{alpha_draw}'}\n",
+                "        - {name: fixed, value: 'x'}\n",
+            ).replace(
+                "        - visit: https://example.com\n",
+                "        - template: t\n",
+            )
+            + "templates:\n  t:\n    - type: {text: 'a={alpha_draw}', selector: '//x'}\n"
+        )
+        r = _validate(text)
+        assert r.valid and r.dropped == 0, (r.errors, r.warnings)
+
+    def test_reference_only_in_an_orphan_template_is_still_a_drop(self):
+        # The template is defined but no crawler calls it, so the parser never
+        # splices it in and nobody receives the draw: still a drop.
+        text = self.SPEC.replace(
+            "        - {name: alpha_draw, value: '{alpha_draw}'}\n",
+            "        - {name: fixed, value: 'x'}\n",
+        ) + ("templates:\n  orphan:\n    - type: {text: 'a={alpha_draw}', selector: '//x'}\n")
+        r = _validate(text)
+        assert not r.valid, r.errors
+        assert any("design.parameters.alpha_draw" in e for e in r.errors), r.errors
+
+    def test_reference_in_a_template_reached_through_another_template_counts(self):
+        text = (
+            self.SPEC.replace(
+                "        - {name: alpha_draw, value: '{alpha_draw}'}\n",
+                "        - {name: fixed, value: 'x'}\n",
+            ).replace(
+                "        - visit: https://example.com\n",
+                "        - repeat: 2\n          jobs: [{template: outer}]\n",
+            )
+            + "templates:\n  outer:\n    - template: inner\n"
+            "  inner:\n    - type: {text: 'a={alpha_draw}', selector: '//x'}\n"
+        )
+        r = _validate(text)
+        assert r.valid and r.dropped == 0, (r.errors, r.warnings)
+
+    POOL_SPEC = (
+        BASE.replace(
+            "  - name: bot\n",
+            "  - name: bot_{arm}\n    from_design: true\n"
+            "    configuration:\n      params:\n"
+            "        search_terms:\n          from_pool: terms\n          select: top\n"
+            "          count: 1\n"
+            '          score: "-abs({crawler.epsilon} - {item.pi})"\n'
+            "      preferences:\n"
+            "        - {name: eps, value: '{epsilon}'}\n",
+        )
+        + "data_pools:\n  terms:\n    source: terms.csv\n"
+        + "design:\n  seed: 7\n  factors:\n    arm:\n      levels: [a, b]\n"
+        "  parameters:\n    epsilon:\n      distribution: discrete\n"
+        "      values: {0.0: 0.5, 1.0: 0.5}\n"
+        "  replications: 2\n"
+    )
+
+    def test_crawler_dot_reference_in_a_pool_score_counts(self):
+        """`{crawler.epsilon}` is the documented way to read a crawler
+        parameter inside a pool `score:`/`filter:` expression (the evaluator
+        builds its context from configuration.params); it is a reference."""
+        text = self.POOL_SPEC.replace(
+            "      preferences:\n        - {name: eps, value: '{epsilon}'}\n", ""
+        )
+        r = _validate(text)
+        assert r.valid and r.dropped == 0, (r.errors, r.warnings)
+
+    def test_crawler_dot_reference_in_a_pool_filter_counts(self):
+        text = self.POOL_SPEC.replace(
+            "      preferences:\n        - {name: eps, value: '{epsilon}'}\n", ""
+        ).replace(
+            '          score: "-abs({crawler.epsilon} - {item.pi})"\n',
+            '          filter: {pi: "{crawler.epsilon}"}\n',
+        )
+        r = _validate(text)
+        assert r.valid and r.dropped == 0, (r.errors, r.warnings)
+
+    def test_pool_scoring_sees_the_draw_and_the_strip_comes_after(self, tmp_path):
+        """Pool references resolve from configuration.params *before*
+        _convert_configuration strips the sampled name: the selected item is
+        the one nearest each crawler's own draw, and `epsilon` is gone from
+        the emitted params."""
+        (tmp_path / "terms.csv").write_text("term,pi\nlow,0.0\nhigh,1.0\n")
+        parsed = SpecParser(base_dir=tmp_path).parse(self.POOL_SPEC)
+        assert not parsed.errors, parsed.errors
+        r = SpecConverter().convert(parsed)
+        assert r.errors == [] and r.dropped == 0, (r.errors, r.warnings)
+        assert len(r.json_data) == 4
+        seen = set()
+        for crawler in r.json_data:
+            params = crawler["configuration"]["params"]
+            assert "epsilon" not in params, params
+            pref = {p["name"]: p["value"] for p in crawler["configuration"]["preferences"]}
+            eps = float(pref["eps"])
+            seen.add(eps)
+            (picked,) = params["search_terms"]
+            assert picked["term"] == ("low" if eps == 0.0 else "high"), (eps, picked)
+        assert seen == {0.0, 1.0}, seen  # both draws occurred, so the pick tracked the draw
+
+    def test_converter_strips_it_from_params_and_preference_carries_the_number(self):
+        parsed = SpecParser().parse(self.SPEC)
+        assert not parsed.errors, parsed.errors
+        r = SpecConverter().convert(parsed)
+        assert r.errors == [] and r.dropped == 0, (r.errors, r.warnings)
+        assert len(r.json_data) == 2
+        for crawler in r.json_data:
+            params = crawler["configuration"]["params"]
+            assert "alpha_draw" not in params, params
+            assert set(params) == SpecValidator._KNOWN_PARAMS, params
+            pref = {p["name"]: p["value"] for p in crawler["configuration"]["preferences"]}
+            assert 0.0 <= float(pref["alpha_draw"]) <= 1.0, pref
+
+    def test_standard_sampled_parameter_still_lands_in_params(self):
+        text = self.SPEC.replace("alpha_draw", "alpha")
+        parsed = SpecParser().parse(text)
+        r = SpecConverter().convert(parsed)
+        assert r.errors == [], r.errors
+        for crawler in r.json_data:
+            alpha = crawler["configuration"]["params"]["alpha"]
+            assert 0.0 <= alpha <= 1.0 and alpha != 1, alpha  # sampled, not the default
+
+    def test_converter_strips_an_unreferenced_one_too(self):
+        """The validator is what refuses the spec; in lax mode (or a caller
+        that skips validation) the converter still does not emit a key the
+        API would drop."""
+        text = self.SPEC.replace(
+            "        - {name: alpha_draw, value: '{alpha_draw}'}\n",
+            "        - {name: fixed, value: 'x'}\n",
+        )
+        parsed = SpecParser().parse(text)
+        r = SpecConverter().convert(parsed)
+        assert r.errors == [], r.errors
+        assert all("alpha_draw" not in c["configuration"]["params"] for c in r.json_data)
+
+
+class TestFactorShape:
+    def test_non_mapping_factor_is_an_error_not_an_exception(self):
+        text = BASE + "design:\n  factors:\n    arm: [a, b]\n  replications: 1\n"
+        r = _validate(text)
+        assert not r.valid
+        assert any("design.factors.arm" in e and "mapping" in e for e in r.errors), r.errors
+
+
+class TestJobOptionKeys:
+    """Every dict-form option key SpecParser._expand_shorthand reads stays
+    clean; visit/wait have no dict form and are already an error there, so
+    the option check must not add a second message."""
+
+    @pytest.mark.parametrize(
+        "item",
+        [
+            "click: {selector: x, selection_type: CSS, captcha_mode: never, task: t, flag: f}",
+            "try_click: {selector: x, task: t}",
+            "type: {text: hi, selector: x, selection_type: CSS, typing_mode: DIRECT, submit: true, "
+            "captcha_mode: never}",
+            "scroll: {duration: 5, direction: up}",
+            "scroll_length: {pixels: 100, direction: down}",
+            "try_scroll_length: {length: 100}",
+            "lambda_select: {task: t, function: f, link_type: FUNCTION_NAME, captcha_mode: never}",
+            "single_select: {target: x, selection_type: CSS}",
+            "switch: {selector: x, captcha_mode: never}",
+            "handle_alert: {action: dismiss}",
+        ],
+    )
+    def test_known_option_keys_are_clean(self, item):
+        r = _validate(BASE.replace("        - visit: https://example.com\n", f"        - {item}\n"))
+        assert r.valid and r.dropped == 0, (r.errors, r.warnings)
+
+    def test_visit_dict_is_an_error_not_a_drop(self):
+        r = _validate(
+            BASE.replace("        - visit: https://example.com\n", "        - visit: {url: x}\n")
+        )
+        assert not r.valid and r.dropped == 0, (r.errors, r.warnings)
+        assert not any("unknown option" in e for e in r.errors), r.errors
+
+    def test_lambda_select_treatment_keys_are_not_options(self):
+        text = BASE.replace(
+            "        - visit: https://example.com\n",
+            "        - lambda_select: {task: t, function: f, strategy: s, "
+            "treatment: {reliability: high}}\n",
+        ) + ("strategy_schemas:\n  s: {type: object, properties: {reliability: {type: string}}}\n")
+        r = _validate(text)
+        assert not any("unknown option" in e for e in r.errors + r.warnings), (r.errors, r.warnings)
 
 
 class TestCompileIsStrict:

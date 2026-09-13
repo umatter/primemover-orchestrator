@@ -73,7 +73,9 @@ design:
     tau:
       value: 1.0
 
-    # Error term: Gumbel distribution (for discrete choice models)
+    # Error term: Gumbel distribution (for discrete choice models). Not a
+    # standard param, so the API would drop it from configuration.params;
+    # it is recorded on the bot as a preference instead ({epsilon} below).
     epsilon:
       distribution: gumbel
       mu: -0.4557735
@@ -145,8 +147,9 @@ crawlers:
       params:
         active: true
 
-        # Sampled parameters are automatically injected here:
-        # pi, kappa, alpha, tau, epsilon
+        # Sampled parameters with standard names are injected here:
+        # pi, kappa, alpha, tau. epsilon is not standard, so it is only
+        # available as a {epsilon} substitution (used in preferences).
 
         # Media outlets selected based on proximity to crawler's pi
         media_outlet_urls:
@@ -168,6 +171,9 @@ crawlers:
           active: true
         - name: cookie_pref
           value: '{"accept_all": true, "use_memory": true}'
+          active: true
+        - name: epsilon
+          value: "{epsilon:.6f}"
           active: true
 
     proxy:

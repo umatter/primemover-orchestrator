@@ -708,6 +708,13 @@ the token says who may *use* it. Both are required — `tailnet-only` on the edg
 is not a substitute for the token, and the token is not a reason to bind
 publicly.
 
+`GET /health` answers JSON, not plain text: `{"status": "ok", "secrets_store": "ok" |
+"missing" | "insecure" | "invalid"}`, reporting the `SecretStore` this process would
+resolve `${secret:…}` placeholders from (path from `PMSPEC_SECRETS_FILE` or the default) —
+`invalid` covers a store present and mode-600 but unparseable (bad TOML). The HTTP status
+stays 200 in every case, since the edge's liveness check only reads the status code; the
+path and any value are never included in the body.
+
 Tokens are **named, one per person**: `MCP_AUTH_TOKENS=ulrich:<hex>,matthias:<hex>`.
 Every request is logged with the name (`journalctl -u primemover-mcp` →
 `mcp request user=matthias …`), and revoking someone is deleting their entry

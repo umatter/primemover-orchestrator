@@ -35,6 +35,7 @@ class Provenance:
     pmspec_version: str
     seed: int
     lax: bool = False
+    pools: dict[str, str] = field(default_factory=dict)
 
 
 @dataclass

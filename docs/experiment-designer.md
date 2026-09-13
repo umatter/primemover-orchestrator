@@ -59,10 +59,23 @@ the pmspec version and the seed; there is no timestamp.
 ### Step 4: Upload the lock
 
 ```bash
+pmspec secrets init my-study.lock.yaml        # scaffold ~/.config/primemover/secrets.toml
 pmspec secrets check my-study.lock.yaml       # which ${secret:…} keys it needs, none printed
 pmspec upload my-study.lock.yaml --mode test  # VM runner, name prefixed test-…, dirty commit ok
 pmspec upload my-study.lock.yaml --mode real  # as in the lock; refuses a dirty/unknown commit
 ```
+
+`secrets init` writes a mode-600 TOML skeleton with one `key = ""` per placeholder the lock
+references, grouped into `[section]` tables by the dotted key's prefix (`oxylabs.a.username` →
+`[oxylabs.a]`). `secrets check` reports each of those as MISSING until filled in by hand. It
+refuses to touch an existing file unless `--force`, which merges in place: every existing value
+(filled or not) and every table the lock does not reference are kept, and only the still-missing
+leaves are added -- it prints which keys were added and which were already present, and never a
+value. The merge rewrites the file from the parsed data, so comments and key order in the
+existing file are not preserved (values are; keys come out sorted within each table). If the
+path is a symlink the rewrite lands on its target and the link is kept. A key the lock needs as a
+string but the file holds as a table (or a non-string) is a conflict: init refuses and changes
+nothing, matching `secrets check`, which reports such a key MISSING.
 
 `--mode` is required. Upload resolves `${secret:key}` from `~/.config/primemover/secrets.toml`
 (mode 600; or `$PMSPEC_SECRETS_FILE`), resolves the anchor (`upload` = now, Europe/Zurich),
@@ -330,6 +343,26 @@ more queues to the same bot — for example a "diet" session followed by a later
 session. It requires a `session` to add to (an error otherwise) and cannot be combined with a
 bare `queues:` list on the same crawler. Each entry is checked exactly like `session` itself
 (unknown keys, missing start time, …).
+
+### Generated JSON Schema
+
+`experiment_designer/schema/experiment-spec.schema.json` is generated, not hand-written — run
+`make schema` (`python -m experiment_designer.spec.schema_gen`) after changing any `_KEYS_*`,
+`_OPTION_KEYS` or `_KNOWN_PARAMS` table in `spec/validator.py`, or the job registry.
+`experiment_designer/tests/test_schema_gen.py::test_checked_in_schema_is_generated` fails if the
+checked-in file and the generator's output disagree, so a table changed without regenerating is
+caught in CI rather than by the next person who edits the schema by hand and re-introduces drift.
+Every structural object (`experiment`, `defaults`, `design`, a crawler, its
+`configuration`/`proxy`/`agent`/`session`) sets `additionalProperties: false` from the same key
+set `_validate_unknown_keys` checks, so the two can no longer disagree; a workflow item does the
+same from `_validate_workflow_item`'s job-type list. A per-job shorthand's options (e.g.
+`click: {selector, task, flag, ...}`) and `configuration.params` stay `additionalProperties: true`,
+since an unknown key there is the *validator's* drop to report (downgradable under `--lax`), not a
+hard schema rejection. A factor's own keys (`levels`/`maps_to`, from `_KEYS_FACTOR`) get
+`additionalProperties: false` in the schema and the same treatment at the Python level:
+`_validate_design` reports any other key as a drop (`design.factors.<f>.<key>: unknown key; the
+design expander never reads it`), since a misspelt `maps_to` is a factor with no mapping at all
+and every cell gets the same params.
 
 ## Installation
 
@@ -733,6 +766,18 @@ design:
 | `beta` | `alpha`, `beta` | Probabilities, proportions |
 | `fixed` / `value` | `value` | Constants |
 
+**Where a sampled value goes.** Every sampled parameter is written to the
+crawler's `configuration.params.<name>`. The API keeps only the standard params
+(`pi`, `psi`, `kappa`, `tau`, `alpha`, `beta`, `active`, `search_terms`,
+`media_outlet_urls`); any other name in `configuration.params` is dropped on
+upload. So a non-standard sampled parameter (`epsilon`, `engagement` above) is
+only useful as a `{name}` / `{name:fmt}` substitution variable -- in a
+preference value, a description, a job text -- and `pmspec compile` refuses a
+spec that samples one and references it nowhere (`design.parameters.<name>:
+sampled value lands in configuration.params, which the API drops`). When it is
+referenced, the converter strips it from `configuration.params` so the emitted
+JSON carries the value only where it was substituted.
+
 ### Proportional Factor Levels (Stratified Sampling)
 
 Create stratified designs with specific proportions:
@@ -895,6 +940,7 @@ crawlers:
 | `audit <experiment_id> <lock> [--hours N] [--sample K] [--strict]` | Did each finished lambda job apply the treatment the lock says it should |
 | `cleanup [--older-than 7d] [--dry-run] [--yes]` | Delete pmspec TEST experiments only (`test-` name **and** `pmspec.mode=test`) |
 | `secrets check <lock> [--secrets]` | List the secrets a lock references and which are missing |
+| `secrets init <lock> [--secrets] [--force]` | Write (or, with --force, merge) a TOML skeleton for a lock's secrets |
 | `generate <file> [-o output.json] [--seed N] [--resolve-secrets]` | Convert a spec or lock to API JSON (GUI upload only; carries no provenance) |
 | `preview <file> [--seed N]` | Preview factorial design; given a lock, its counts, anchor and provenance |
 | `summary <file>... [-e ID] [--compare] [-f text\|json\|html] [--seed N]` | Experiment summary from a spec, a lock, or a live experiment |
@@ -1096,9 +1142,10 @@ experiment_designer/
 │   ├── file_loader.py      # External file loading (Phase 4)
 │   ├── distributions.py    # Parameter distributions (Phase 4)
 │   ├── expression.py       # Safe expression evaluator (Phase 4)
-│   └── data_pools.py       # Data pool management (Phase 4)
+│   ├── data_pools.py       # Data pool management (Phase 4)
+│   └── schema_gen.py       # Generates schema/experiment-spec.schema.json (Phase 5)
 ├── schema/
-│   └── experiment-spec.schema.json
+│   └── experiment-spec.schema.json  # Generated -- do not hand-edit, run `make schema`
 ├── examples/
 │   ├── data/
 │   │   ├── outlets_pool.csv      # Example media outlets

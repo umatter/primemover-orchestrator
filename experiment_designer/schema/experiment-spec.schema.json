@@ -4,19 +4,56 @@
   "title": "PrimeMover Experiment Specification",
   "description": "YAML/JSON schema for defining PrimeMover browser automation experiments",
   "type": "object",
-  "required": ["experiment", "crawlers"],
+  "required": [
+    "experiment",
+    "crawlers"
+  ],
   "properties": {
-    "version": {
-      "type": "string",
-      "description": "Specification version",
-      "default": "1.0",
-      "examples": ["1.0"]
+    "crawlers": {
+      "type": "array",
+      "description": "Crawler definitions",
+      "items": {
+        "$ref": "#/definitions/crawler"
+      },
+      "minItems": 1
+    },
+    "data_pools": {
+      "type": "object",
+      "description": "External data pools (CSV/JSON/YAML) referenced by from_pool draws",
+      "additionalProperties": {
+        "oneOf": [
+          {
+            "type": "string",
+            "description": "Shorthand: just the source path"
+          },
+          {
+            "$ref": "#/definitions/dataPool"
+          }
+        ]
+      }
+    },
+    "defaults": {
+      "$ref": "#/definitions/defaults"
+    },
+    "design": {
+      "$ref": "#/definitions/design"
     },
     "experiment": {
       "$ref": "#/definitions/experiment"
     },
-    "defaults": {
-      "$ref": "#/definitions/defaults"
+    "strategy_schemas": {
+      "type": "object",
+      "description": "Per-strategy JSON Schema for a lambda_select job's treatment block: an inline schema, or a path resolved against the spec's directory",
+      "additionalProperties": {
+        "oneOf": [
+          {
+            "type": "object"
+          },
+          {
+            "type": "string"
+          }
+        ]
+      }
     },
     "templates": {
       "type": "object",
@@ -28,106 +65,145 @@
         }
       }
     },
-    "design": {
-      "$ref": "#/definitions/design"
-    },
-    "crawlers": {
-      "type": "array",
-      "description": "Crawler definitions",
-      "items": {
-        "$ref": "#/definitions/crawler"
-      },
-      "minItems": 1
+    "version": {
+      "type": "string",
+      "description": "Specification version",
+      "default": "1.0",
+      "examples": [
+        "1.0"
+      ]
     }
   },
+  "additionalProperties": false,
   "definitions": {
     "experiment": {
       "type": "object",
       "description": "Experiment metadata",
-      "required": ["name"],
       "properties": {
-        "name": {
+        "contact": {
           "type": "string",
-          "description": "Experiment name",
-          "minLength": 1
+          "description": "Contact info for the experiment owner"
         },
         "description": {
           "type": "string",
           "description": "Experiment description"
         },
-        "runner_user_id": {
-          "type": "integer",
-          "description": "Runner account that executes this experiment; omit for the default runner (1 = ex63). 3 = the runner-only VM."
-        },
         "generator": {
           "type": "string",
           "description": "Free-text provenance: what produced this spec"
+        },
+        "name": {
+          "type": "string",
+          "description": "Experiment name",
+          "minLength": 1
+        },
+        "runner_user_id": {
+          "type": "integer",
+          "description": "Runner account that executes this experiment; omit for the default runner (1 = ex63). 3 = the runner-only VM."
         }
-      }
+      },
+      "additionalProperties": false,
+      "required": [
+        "name"
+      ]
     },
     "defaults": {
       "type": "object",
       "description": "Default values inherited by all crawlers",
       "properties": {
-        "location": {
-          "type": "string",
-          "description": "Default location code",
-          "examples": ["US-IL-CHICAGO", "US-CA-LOS_ANGELES", "DE-BE-BERLIN"]
+        "active": {
+          "type": "boolean",
+          "description": "Default active flag"
         },
         "browser": {
           "type": "string",
           "description": "Browser identification",
-          "enum": ["mlx", "chrome", "firefox"],
+          "enum": [
+            "mlx",
+            "chrome",
+            "firefox"
+          ],
           "default": "mlx"
+        },
+        "captcha_mode": {
+          "type": "string",
+          "description": "Captcha handling mode",
+          "enum": [
+            "never",
+            "always",
+            "ondemand"
+          ],
+          "default": "never"
+        },
+        "location": {
+          "type": "string",
+          "description": "Default location code",
+          "examples": [
+            "US-IL-CHICAGO",
+            "US-CA-LOS_ANGELES",
+            "DE-BE-BERLIN"
+          ]
+        },
+        "proxy": {
+          "$ref": "#/definitions/proxy"
+        },
+        "proxy_type": {
+          "type": "string",
+          "description": "Default proxy type",
+          "enum": [
+            "http",
+            "brightdata",
+            "oxylabs"
+          ],
+          "default": "http"
+        },
+        "selection_type": {
+          "type": "string",
+          "description": "Default element selection type",
+          "enum": [
+            "XPATH",
+            "CSS",
+            "ID",
+            "NAME"
+          ],
+          "default": "XPATH"
         },
         "timezone": {
           "type": "string",
           "description": "Timezone identifier",
-          "examples": ["America/Chicago", "America/New_York", "Europe/Berlin"]
+          "examples": [
+            "America/Chicago",
+            "America/New_York",
+            "Europe/Berlin"
+          ]
         },
         "timezone_utc_offset": {
           "type": "string",
           "description": "UTC offset",
           "pattern": "^[+-]\\d{2}:\\d{2}$",
-          "examples": ["-06:00", "+01:00"]
-        },
-        "captcha_mode": {
-          "type": "string",
-          "description": "Captcha handling mode",
-          "enum": ["never", "always", "ondemand"],
-          "default": "never"
-        },
-        "proxy_type": {
-          "type": "string",
-          "description": "Default proxy type",
-          "enum": ["http", "socks5", "brightdata", "oxylabs"],
-          "default": "http"
+          "examples": [
+            "-06:00",
+            "+01:00"
+          ]
         },
         "typing_mode": {
           "type": "string",
           "description": "Text input simulation mode",
-          "enum": ["INSTANT", "SIMULATED", "SIMULATED_FIXINGTYPOS"],
+          "enum": [
+            "DIRECT",
+            "SIMULATED_KEEPINGTYPOS",
+            "SIMULATED_FIXINGTYPOS",
+            "SIMULATED_NOTYPOS"
+          ],
           "default": "SIMULATED_FIXINGTYPOS"
-        },
-        "selection_type": {
-          "type": "string",
-          "description": "Default element selection type",
-          "enum": ["XPATH", "CSS", "ID", "NAME"],
-          "default": "XPATH"
         }
-      }
+      },
+      "additionalProperties": false
     },
     "design": {
       "type": "object",
       "description": "Factorial experimental design",
-      "required": ["factors"],
       "properties": {
-        "type": {
-          "type": "string",
-          "description": "Design type",
-          "enum": ["factorial"],
-          "default": "factorial"
-        },
         "factors": {
           "type": "object",
           "description": "Factor definitions",
@@ -136,32 +212,68 @@
           },
           "minProperties": 1
         },
+        "parameters": {
+          "type": "object",
+          "description": "Parameter distributions sampled once per crawler",
+          "additionalProperties": {
+            "$ref": "#/definitions/designParameter"
+          }
+        },
         "replications": {
           "type": "integer",
           "description": "Number of replications per cell",
           "minimum": 1,
           "default": 1
+        },
+        "seed": {
+          "type": "integer",
+          "description": "Random seed for reproducible sampling/design expansion"
+        },
+        "total_crawlers": {
+          "type": "integer",
+          "description": "Total crawlers for a stratified design (proportional factor levels)",
+          "minimum": 1
+        },
+        "type": {
+          "type": "string",
+          "description": "Design type",
+          "enum": [
+            "factorial"
+          ],
+          "default": "factorial"
         }
-      }
+      },
+      "additionalProperties": false
     },
     "factor": {
       "type": "object",
       "description": "A factor in the experimental design",
-      "required": ["levels"],
       "properties": {
         "levels": {
           "type": "array",
           "description": "Factor levels",
           "items": {
             "oneOf": [
-              {"type": "string"},
-              {"type": "number"},
+              {
+                "type": "string"
+              },
+              {
+                "type": "number"
+              },
               {
                 "type": "object",
                 "properties": {
-                  "id": {"type": "string"},
-                  "name": {"type": "string"},
-                  "value": {}
+                  "id": {
+                    "type": "string"
+                  },
+                  "name": {
+                    "type": "string"
+                  },
+                  "value": {},
+                  "proportion": {
+                    "type": "number",
+                    "description": "Stratified-sampling weight for this level"
+                  }
                 }
               }
             ]
@@ -170,18 +282,44 @@
         },
         "maps_to": {
           "type": "object",
-          "description": "Parameter mappings for each level",
+          "description": "Parameter path -> {level: value} mapping",
           "additionalProperties": {
             "type": "object",
             "description": "Level-to-value mapping"
           }
         }
-      }
+      },
+      "additionalProperties": false,
+      "required": [
+        "levels"
+      ]
     },
     "crawler": {
       "type": "object",
       "description": "Crawler definition",
       "properties": {
+        "active": {
+          "type": "boolean",
+          "description": "Whether crawler is active",
+          "default": true
+        },
+        "additional_sessions": {
+          "type": "array",
+          "description": "Further sessions beyond the first (converted to extra queues)",
+          "items": {
+            "$ref": "#/definitions/session"
+          }
+        },
+        "agent": {
+          "$ref": "#/definitions/agent"
+        },
+        "configuration": {
+          "$ref": "#/definitions/configuration"
+        },
+        "description": {
+          "type": "string",
+          "description": "Crawler description"
+        },
         "from_design": {
           "type": "boolean",
           "description": "Whether to expand this crawler using the factorial design",
@@ -191,52 +329,42 @@
           "type": "string",
           "description": "Crawler name (supports variable substitution)"
         },
-        "description": {
-          "type": "string",
-          "description": "Crawler description"
+        "proxy": {
+          "$ref": "#/definitions/proxy"
         },
-        "active": {
-          "type": "boolean",
-          "description": "Whether crawler is active",
-          "default": true
+        "queues": {
+          "type": "array",
+          "description": "Queue definitions (alternative to session/additional_sessions)",
+          "items": {
+            "$ref": "#/definitions/session"
+          }
+        },
+        "session": {
+          "$ref": "#/definitions/session"
         },
         "testing": {
           "type": "boolean",
           "description": "Whether crawler is in testing mode",
           "default": false
-        },
-        "configuration": {
-          "$ref": "#/definitions/configuration"
-        },
-        "proxy": {
-          "$ref": "#/definitions/proxy"
-        },
-        "agent": {
-          "$ref": "#/definitions/agent"
-        },
-        "session": {
-          "$ref": "#/definitions/session"
-        },
-        "queues": {
-          "type": "array",
-          "description": "Queue definitions (alternative to session)",
-          "items": {
-            "$ref": "#/definitions/session"
-          }
         }
-      }
+      },
+      "additionalProperties": false
     },
     "configuration": {
       "type": "object",
       "description": "Crawler configuration",
       "properties": {
-        "name": {
-          "type": "string",
-          "description": "Configuration name"
+        "active": {
+          "type": "boolean",
+          "description": "Whether the configuration is active"
         },
         "description": {
           "type": "string",
           "description": "Configuration description"
+        },
+        "name": {
+          "type": "string",
+          "description": "Configuration name"
         },
         "params": {
           "$ref": "#/definitions/params"
@@ -248,56 +376,25 @@
             "$ref": "#/definitions/preference"
           }
         }
-      }
+      },
+      "additionalProperties": false
     },
     "params": {
       "type": "object",
-      "description": "Algorithm parameters",
+      "description": "Algorithm parameters read by the runner/decision function",
       "properties": {
-        "pi": {
-          "enum": [0, 1],
-          "description": "Treatment switch, NOT an intensity. Read by the decision function as int(round(x))==1, so use only 0 or 1 (0.5 rounds to 0 and silently disables the arm)."
-        },
-        "psi": {
-          "enum": [0, 1],
-          "description": "Treatment switch (0 or 1 only; see pi)."
+        "active": {
+          "type": "boolean",
+          "description": "Whether the configuration is active"
         },
         "alpha": {
-          "type": "number",
-          "description": "Alpha parameter",
-          "minimum": 0,
-          "maximum": 1
-        },
-        "tau": {
-          "enum": [0, 1],
-          "description": "Treatment switch (0 or 1 only; see pi)."
-        },
-        "kappa": {
-          "enum": [0, 1],
-          "description": "Treatment switch (0 or 1 only; see pi)."
+          "description": "Alpha parameter"
         },
         "beta": {
-          "type": "number",
           "description": "Beta parameter"
         },
-        "search_terms": {
-          "description": "Search terms with weights, or an unresolved data-pool reference",
-          "oneOf": [
-            {
-              "type": "array",
-              "items": {
-                "type": "object",
-                "properties": {
-                  "term": {"type": "string"},
-                  "pi": {"type": "number"}
-                }
-              }
-            },
-            {
-              "type": "object",
-              "required": ["from_pool"]
-            }
-          ]
+        "kappa": {
+          "description": "Treatment switch; see docs/integration-contract.md and CLAUDE.md"
         },
         "media_outlet_urls": {
           "description": "Media outlet URLs with weights, or an unresolved data-pool reference",
@@ -307,24 +404,70 @@
               "items": {
                 "type": "object",
                 "properties": {
-                  "domain": {"type": "string"},
-                  "url": {"type": "string"},
-                  "pi": {"type": "number"}
+                  "domain": {
+                    "type": "string"
+                  },
+                  "url": {
+                    "type": "string"
+                  },
+                  "pi": {
+                    "type": "number"
+                  }
                 }
               }
             },
             {
               "type": "object",
-              "required": ["from_pool"]
+              "required": [
+                "from_pool"
+              ]
             }
           ]
+        },
+        "pi": {
+          "description": "Treatment switch; see docs/integration-contract.md and CLAUDE.md"
+        },
+        "psi": {
+          "description": "Treatment switch; see docs/integration-contract.md and CLAUDE.md"
+        },
+        "search_terms": {
+          "description": "Search terms with weights, or an unresolved data-pool reference",
+          "oneOf": [
+            {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "term": {
+                    "type": "string"
+                  },
+                  "pi": {
+                    "type": "number"
+                  }
+                }
+              }
+            },
+            {
+              "type": "object",
+              "required": [
+                "from_pool"
+              ]
+            }
+          ]
+        },
+        "tau": {
+          "description": "Treatment switch; see docs/integration-contract.md and CLAUDE.md"
         }
-      }
+      },
+      "additionalProperties": true
     },
     "preference": {
       "type": "object",
       "description": "A configuration preference",
-      "required": ["name", "value"],
+      "required": [
+        "name",
+        "value"
+      ],
       "properties": {
         "name": {
           "type": "string",
@@ -348,17 +491,45 @@
       "type": "object",
       "description": "Proxy configuration",
       "properties": {
-        "name": {
+        "active": {
+          "type": "boolean",
+          "description": "Whether the proxy is active"
+        },
+        "description": {
           "type": "string",
-          "description": "Proxy name"
+          "description": "Proxy description"
+        },
+        "from_pool": {
+          "type": "boolean",
+          "description": "Assign this crawler its own row of a data pool (needs pool/match_field)"
+        },
+        "host": {
+          "type": "string",
+          "description": "Alias for hostname"
         },
         "hostname": {
           "type": "string",
           "description": "Proxy hostname or IP"
         },
-        "host": {
+        "location": {
           "type": "string",
-          "description": "Alias for hostname"
+          "description": "Geo-targeting location code"
+        },
+        "match_field": {
+          "type": "string",
+          "description": "Pool column to match against the agent's location"
+        },
+        "name": {
+          "type": "string",
+          "description": "Proxy name"
+        },
+        "password": {
+          "type": "string",
+          "description": "Proxy password"
+        },
+        "pool": {
+          "type": "string",
+          "description": "Pool name to draw a proxy row from"
         },
         "port": {
           "type": "integer",
@@ -366,28 +537,36 @@
           "minimum": 1,
           "maximum": 65535
         },
-        "username": {
-          "type": "string",
-          "description": "Proxy username"
-        },
-        "password": {
-          "type": "string",
-          "description": "Proxy password"
-        },
         "type": {
           "type": "string",
           "description": "Proxy type",
-          "enum": ["http", "socks5", "brightdata", "oxylabs"]
+          "enum": [
+            "http",
+            "brightdata",
+            "oxylabs"
+          ]
+        },
+        "username": {
+          "type": "string",
+          "description": "Proxy username"
         }
-      }
+      },
+      "additionalProperties": false
     },
     "agent": {
       "type": "object",
       "description": "Browser agent configuration",
       "properties": {
-        "name": {
-          "type": "string",
-          "description": "Agent name"
+        "active": {
+          "type": "boolean",
+          "description": "Whether the agent is active"
+        },
+        "custom_start_urls": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Startup URLs; switches the profile to a custom startup behaviour"
         },
         "description": {
           "type": "string",
@@ -396,7 +575,11 @@
         "identification": {
           "type": "string",
           "description": "Browser identification type",
-          "enum": ["mlx", "chrome", "firefox"]
+          "enum": [
+            "mlx",
+            "chrome",
+            "firefox"
+          ]
         },
         "location": {
           "type": "string",
@@ -408,31 +591,60 @@
         },
         "multilogin_profile": {
           "type": "object",
-          "description": "Multilogin profile configuration"
+          "description": "Multilogin profile configuration overrides"
+        },
+        "name": {
+          "type": "string",
+          "description": "Agent name"
         }
-      }
+      },
+      "additionalProperties": false
     },
     "session": {
       "type": "object",
       "description": "Session/queue definition",
       "properties": {
-        "name": {
-          "type": "string",
-          "description": "Session name"
+        "active": {
+          "type": "boolean",
+          "description": "Whether the session is active",
+          "default": true
         },
         "description": {
           "type": "string",
           "description": "Session description"
         },
+        "jobs": {
+          "type": "array",
+          "description": "Full job definitions (alternative to workflow)",
+          "items": {
+            "$ref": "#/definitions/job"
+          }
+        },
+        "name": {
+          "type": "string",
+          "description": "Session name"
+        },
         "start": {
           "type": "string",
           "description": "Start time: 'now', relative offset (+5m, +1h, +1d), or ISO 8601 timestamp",
-          "examples": ["now", "+5m", "+1h", "+1d", "2025-02-01T10:00:00Z"]
+          "examples": [
+            "now",
+            "+5m",
+            "+1h",
+            "+1d",
+            "2025-02-01T10:00:00Z"
+          ]
         },
         "start_at": {
           "type": "string",
           "description": "Alias for start: 'now', relative offset (+5m, +1h, +1d), or ISO 8601 timestamp",
-          "examples": ["now", "+5m", "+1h", "+1d", "2025-02-01T10:00:00Z"]
+          "examples": [
+            "now",
+            "+5m",
+            "+1h",
+            "+1d",
+            "2025-02-01T10:00:00Z"
+          ]
         },
         "timezone": {
           "type": "string",
@@ -442,35 +654,86 @@
           "type": "string",
           "description": "UTC offset"
         },
-        "schedule": {
-          "type": "string",
-          "description": "Scheduling pattern",
-          "enum": ["once", "daily", "weekly"]
-        },
-        "active": {
-          "type": "boolean",
-          "description": "Whether session is active",
-          "default": true
-        },
         "workflow": {
           "type": "array",
           "description": "Workflow steps",
           "items": {
             "$ref": "#/definitions/workflowItem"
           }
-        },
-        "jobs": {
-          "type": "array",
-          "description": "Job definitions (alternative to workflow)",
-          "items": {
-            "$ref": "#/definitions/job"
-          }
         }
-      }
+      },
+      "additionalProperties": false
+    },
+    "dataPool": {
+      "type": "object",
+      "description": "A data pool loaded from an external file (CSV/JSON/YAML)",
+      "properties": {
+        "source": {
+          "type": "string",
+          "description": "File path, relative to the spec"
+        },
+        "format": {
+          "type": "string",
+          "description": "File format; auto-detected from source if omitted",
+          "enum": [
+            "csv",
+            "json",
+            "yaml"
+          ]
+        },
+        "columns": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Expected columns (for documentation/validation)"
+        },
+        "column_mapping": {
+          "type": "object",
+          "description": "Rename source columns on load"
+        }
+      },
+      "required": [
+        "source"
+      ],
+      "additionalProperties": true
+    },
+    "designParameter": {
+      "description": "A parameter distribution (design.parameters.<name>): a `distribution:` object, a fixed `value:` shorthand with no 'distribution' key, or a bare scalar (DistributionFactory.create wraps a non-dict in FixedValue)",
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "distribution": {
+              "type": "string",
+              "enum": [
+                "uniform",
+                "discrete",
+                "normal",
+                "gumbel",
+                "truncated_normal",
+                "beta",
+                "fixed"
+              ]
+            },
+            "value": {
+              "description": "Fixed value shorthand"
+            }
+          },
+          "additionalProperties": true
+        },
+        {
+          "type": [
+            "number",
+            "string",
+            "boolean"
+          ]
+        }
+      ]
     },
     "workflowItem": {
       "type": "object",
-      "description": "A workflow step (shorthand or full job)",
+      "description": "A workflow step (job shorthand, template reference, or repeat block)",
       "properties": {
         "visit": {
           "type": "string",
@@ -478,73 +741,485 @@
         },
         "wait": {
           "oneOf": [
-            {"type": "integer"},
-            {"type": "string", "pattern": "^\\d+[smh]?$"}
+            {
+              "type": [
+                "integer",
+                "number"
+              ]
+            },
+            {
+              "type": "string",
+              "pattern": "^\\d+(\\.\\d+)?\\s*[a-z]*$"
+            }
           ],
           "description": "Wait duration (e.g., 10, '10s', '5m')"
         },
         "click": {
           "oneOf": [
-            {"type": "string"},
-            {"$ref": "#/definitions/clickOptions"}
+            {
+              "type": "string"
+            },
+            {
+              "type": "object",
+              "description": "Click options",
+              "properties": {
+                "captcha_mode": {
+                  "type": "string",
+                  "enum": [
+                    "never",
+                    "always",
+                    "ondemand"
+                  ]
+                },
+                "flag": {
+                  "type": "string"
+                },
+                "selection_type": {
+                  "type": "string",
+                  "enum": [
+                    "XPATH",
+                    "CSS",
+                    "ID",
+                    "NAME"
+                  ]
+                },
+                "selector": {
+                  "type": "string"
+                },
+                "task": {
+                  "type": "string"
+                }
+              },
+              "additionalProperties": true,
+              "required": [
+                "selector"
+              ]
+            }
           ],
           "description": "Element selector or click options"
         },
         "try_click": {
           "oneOf": [
-            {"type": "string"},
-            {"$ref": "#/definitions/clickOptions"}
+            {
+              "type": "string"
+            },
+            {
+              "type": "object",
+              "description": "Try-click options",
+              "properties": {
+                "captcha_mode": {
+                  "type": "string",
+                  "enum": [
+                    "never",
+                    "always",
+                    "ondemand"
+                  ]
+                },
+                "flag": {
+                  "type": "string"
+                },
+                "selection_type": {
+                  "type": "string",
+                  "enum": [
+                    "XPATH",
+                    "CSS",
+                    "ID",
+                    "NAME"
+                  ]
+                },
+                "selector": {
+                  "type": "string"
+                },
+                "task": {
+                  "type": "string"
+                }
+              },
+              "additionalProperties": true,
+              "required": [
+                "selector"
+              ]
+            }
           ],
           "description": "Try to click (continues on failure)"
         },
         "type": {
-          "$ref": "#/definitions/typeOptions",
-          "description": "Type text into field"
+          "anyOf": [
+            {
+              "type": "string",
+              "enum": [
+                "clickjob",
+                "entertextfieldjob",
+                "handlealertjob",
+                "lambdasingleselectjob",
+                "scrollbydurationjob",
+                "scrollbylengthjob",
+                "singleselectjob",
+                "singleselecturljob",
+                "switchjob",
+                "tryclickjob",
+                "tryentertextfieldjob",
+                "tryhandlealertjob",
+                "tryscrollbydurationjob",
+                "tryscrollbylengthjob",
+                "tryswitchjob",
+                "visitjob",
+                "waitjob"
+              ],
+              "description": "Full job definition: a registered API job type. See the `job` definition for the other allowed keys (name, description, active, behaviors)."
+            },
+            {
+              "type": "object",
+              "description": "Type text into field",
+              "properties": {
+                "captcha_mode": {
+                  "type": "string",
+                  "enum": [
+                    "never",
+                    "always",
+                    "ondemand"
+                  ]
+                },
+                "selection_type": {
+                  "type": "string",
+                  "enum": [
+                    "XPATH",
+                    "CSS",
+                    "ID",
+                    "NAME"
+                  ]
+                },
+                "selector": {
+                  "type": "string"
+                },
+                "submit": {
+                  "type": "boolean"
+                },
+                "text": {
+                  "type": "string"
+                },
+                "typing_mode": {
+                  "type": "string",
+                  "enum": [
+                    "DIRECT",
+                    "SIMULATED_KEEPINGTYPOS",
+                    "SIMULATED_FIXINGTYPOS",
+                    "SIMULATED_NOTYPOS"
+                  ]
+                }
+              },
+              "additionalProperties": true,
+              "required": [
+                "text",
+                "selector"
+              ]
+            }
+          ]
         },
         "try_type": {
-          "$ref": "#/definitions/typeOptions",
-          "description": "Try to type (continues on failure)"
+          "type": "object",
+          "description": "Try to type (continues on failure)",
+          "properties": {
+            "captcha_mode": {
+              "type": "string",
+              "enum": [
+                "never",
+                "always",
+                "ondemand"
+              ]
+            },
+            "selection_type": {
+              "type": "string",
+              "enum": [
+                "XPATH",
+                "CSS",
+                "ID",
+                "NAME"
+              ]
+            },
+            "selector": {
+              "type": "string"
+            },
+            "submit": {
+              "type": "boolean"
+            },
+            "text": {
+              "type": "string"
+            },
+            "typing_mode": {
+              "type": "string",
+              "enum": [
+                "DIRECT",
+                "SIMULATED_KEEPINGTYPOS",
+                "SIMULATED_FIXINGTYPOS",
+                "SIMULATED_NOTYPOS"
+              ]
+            }
+          },
+          "additionalProperties": true,
+          "required": [
+            "text",
+            "selector"
+          ]
         },
         "scroll": {
           "oneOf": [
-            {"type": "integer"},
-            {"type": "string"},
-            {"$ref": "#/definitions/scrollOptions"}
+            {
+              "type": "integer"
+            },
+            {
+              "type": "string"
+            },
+            {
+              "type": "object",
+              "description": "Scroll options",
+              "properties": {
+                "direction": {
+                  "type": "string",
+                  "enum": [
+                    "UP",
+                    "DOWN",
+                    "up",
+                    "down"
+                  ]
+                },
+                "duration": {
+                  "type": [
+                    "integer",
+                    "number",
+                    "string"
+                  ]
+                }
+              },
+              "additionalProperties": true
+            }
           ],
           "description": "Scroll duration or options"
         },
-        "scroll_length": {
-          "oneOf": [
-            {"type": "integer"},
-            {"$ref": "#/definitions/scrollLengthOptions"}
-          ],
-          "description": "Scroll by pixel amount"
-        },
         "try_scroll": {
           "oneOf": [
-            {"type": "integer"},
-            {"type": "string"},
-            {"$ref": "#/definitions/scrollOptions"}
+            {
+              "type": "integer"
+            },
+            {
+              "type": "string"
+            },
+            {
+              "type": "object",
+              "description": "Best-effort scroll options",
+              "properties": {
+                "direction": {
+                  "type": "string",
+                  "enum": [
+                    "UP",
+                    "DOWN",
+                    "up",
+                    "down"
+                  ]
+                },
+                "duration": {
+                  "type": [
+                    "integer",
+                    "number",
+                    "string"
+                  ]
+                }
+              },
+              "additionalProperties": true
+            }
           ],
           "description": "Best-effort scroll by duration (does not fail the job on error)"
         },
+        "scroll_length": {
+          "oneOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "object",
+              "description": "Scroll-by-length options",
+              "properties": {
+                "direction": {
+                  "type": "string",
+                  "enum": [
+                    "UP",
+                    "DOWN",
+                    "up",
+                    "down"
+                  ]
+                },
+                "length": {
+                  "type": [
+                    "integer",
+                    "number"
+                  ]
+                },
+                "pixels": {
+                  "type": [
+                    "integer",
+                    "number"
+                  ]
+                }
+              },
+              "additionalProperties": true
+            }
+          ],
+          "description": "Scroll by pixel amount"
+        },
         "try_scroll_length": {
           "oneOf": [
-            {"type": "integer"},
-            {"$ref": "#/definitions/scrollLengthOptions"}
+            {
+              "type": "integer"
+            },
+            {
+              "type": "object",
+              "description": "Best-effort scroll-by-length options",
+              "properties": {
+                "direction": {
+                  "type": "string",
+                  "enum": [
+                    "UP",
+                    "DOWN",
+                    "up",
+                    "down"
+                  ]
+                },
+                "length": {
+                  "type": [
+                    "integer",
+                    "number"
+                  ]
+                },
+                "pixels": {
+                  "type": [
+                    "integer",
+                    "number"
+                  ]
+                }
+              },
+              "additionalProperties": true
+            }
           ],
           "description": "Best-effort scroll by pixel amount (does not fail the job on error)"
         },
         "lambda_select": {
-          "$ref": "#/definitions/lambdaSelectOptions",
-          "description": "AWS Lambda element selection"
+          "type": "object",
+          "description": "AWS Lambda element selection",
+          "properties": {
+            "captcha_mode": {
+              "type": "string",
+              "enum": [
+                "never",
+                "always",
+                "ondemand"
+              ]
+            },
+            "function": {
+              "type": "string"
+            },
+            "link_type": {
+              "type": "string",
+              "enum": [
+                "FUNCTION_NAME",
+                "FUNCTION_ARN"
+              ]
+            },
+            "link_value": {
+              "type": "string"
+            },
+            "strategy": {
+              "type": "string",
+              "description": "Decision strategy selector; see strategy_schemas"
+            },
+            "task": {
+              "type": "string"
+            },
+            "treatment": {
+              "type": "object",
+              "description": "Strategy-specific treatment config, validated against strategy_schemas"
+            }
+          },
+          "additionalProperties": true,
+          "required": [
+            "task"
+          ]
         },
         "single_select": {
           "oneOf": [
-            {"type": "string"},
-            {"type": "object"}
+            {
+              "type": "string"
+            },
+            {
+              "type": "object",
+              "description": "Select single element",
+              "properties": {
+                "captcha_mode": {
+                  "type": "string",
+                  "enum": [
+                    "never",
+                    "always",
+                    "ondemand"
+                  ]
+                },
+                "selection_type": {
+                  "type": "string",
+                  "enum": [
+                    "XPATH",
+                    "CSS",
+                    "ID",
+                    "NAME"
+                  ]
+                },
+                "selector": {
+                  "type": "string"
+                },
+                "target": {
+                  "type": "string",
+                  "description": "Alias for selector"
+                }
+              },
+              "additionalProperties": true
+            }
           ],
           "description": "Select single element"
+        },
+        "single_select_url": {
+          "oneOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "object",
+              "description": "Select single URL element",
+              "properties": {
+                "captcha_mode": {
+                  "type": "string",
+                  "enum": [
+                    "never",
+                    "always",
+                    "ondemand"
+                  ]
+                },
+                "selection_type": {
+                  "type": "string",
+                  "enum": [
+                    "XPATH",
+                    "CSS",
+                    "ID",
+                    "NAME"
+                  ]
+                },
+                "selector": {
+                  "type": "string"
+                },
+                "target": {
+                  "type": "string",
+                  "description": "Alias for selector"
+                }
+              },
+              "additionalProperties": true
+            }
+          ],
+          "description": "Select single URL element"
         },
         "template": {
           "type": "string",
@@ -552,117 +1227,199 @@
         },
         "with": {
           "type": "object",
-          "description": "Variables to pass to template"
+          "description": "Variables to pass to the template"
         },
         "repeat": {
           "type": "integer",
           "description": "Number of times to repeat",
           "minimum": 1
         },
+        "jobs": {
+          "type": "array",
+          "description": "Workflow items to repeat (alternative to template, with repeat:)",
+          "items": {
+            "$ref": "#/definitions/workflowItem"
+          }
+        },
         "handle_alert": {
           "oneOf": [
-            {"type": "string", "enum": ["accept", "dismiss"]},
-            {"type": "object"}
+            {
+              "type": "string",
+              "enum": [
+                "accept",
+                "dismiss"
+              ]
+            },
+            {
+              "type": "object",
+              "description": "Handle browser alert options",
+              "properties": {
+                "action": {
+                  "type": "string",
+                  "enum": [
+                    "accept",
+                    "dismiss"
+                  ]
+                }
+              },
+              "additionalProperties": true
+            }
           ],
           "description": "Handle browser alert"
         },
         "try_handle_alert": {
           "oneOf": [
-            {"type": "string", "enum": ["accept", "dismiss"]},
-            {"type": "object"}
+            {
+              "type": "string",
+              "enum": [
+                "accept",
+                "dismiss"
+              ]
+            },
+            {
+              "type": "object",
+              "description": "Try-handle browser alert options",
+              "properties": {
+                "action": {
+                  "type": "string",
+                  "enum": [
+                    "accept",
+                    "dismiss"
+                  ]
+                }
+              },
+              "additionalProperties": true
+            }
           ],
           "description": "Try to handle alert"
         },
         "switch": {
           "oneOf": [
-            {"type": "string"},
-            {"type": "object"}
+            {
+              "type": "string"
+            },
+            {
+              "type": "object",
+              "description": "Switch to frame/window options",
+              "properties": {
+                "captcha_mode": {
+                  "type": "string",
+                  "enum": [
+                    "never",
+                    "always",
+                    "ondemand"
+                  ]
+                },
+                "selection_type": {
+                  "type": "string",
+                  "enum": [
+                    "XPATH",
+                    "CSS",
+                    "ID",
+                    "NAME"
+                  ]
+                },
+                "selector": {
+                  "type": "string"
+                },
+                "target": {
+                  "type": "string",
+                  "description": "Alias for selector"
+                }
+              },
+              "additionalProperties": true
+            }
           ],
           "description": "Switch to frame/window"
         },
         "try_switch": {
           "oneOf": [
-            {"type": "string"},
-            {"type": "object"}
+            {
+              "type": "string"
+            },
+            {
+              "type": "object",
+              "description": "Try-switch options",
+              "properties": {
+                "captcha_mode": {
+                  "type": "string",
+                  "enum": [
+                    "never",
+                    "always",
+                    "ondemand"
+                  ]
+                },
+                "selection_type": {
+                  "type": "string",
+                  "enum": [
+                    "XPATH",
+                    "CSS",
+                    "ID",
+                    "NAME"
+                  ]
+                },
+                "selector": {
+                  "type": "string"
+                },
+                "target": {
+                  "type": "string",
+                  "description": "Alias for selector"
+                }
+              },
+              "additionalProperties": true
+            }
           ],
           "description": "Try to switch"
         }
-      }
-    },
-    "clickOptions": {
-      "type": "object",
-      "properties": {
-        "selector": {"type": "string"},
-        "selection_type": {"type": "string", "enum": ["XPATH", "CSS", "ID", "NAME"]},
-        "task": {"type": "string"},
-        "flag": {"type": "string"},
-        "captcha_mode": {"type": "string", "enum": ["never", "always", "ondemand"]}
       },
-      "required": ["selector"]
-    },
-    "typeOptions": {
-      "type": "object",
-      "properties": {
-        "text": {"type": "string"},
-        "selector": {"type": "string"},
-        "selection_type": {"type": "string", "enum": ["XPATH", "CSS", "ID", "NAME"]},
-        "submit": {"type": "boolean"},
-        "typing_mode": {"type": "string", "enum": ["INSTANT", "SIMULATED", "SIMULATED_FIXINGTYPOS"]},
-        "captcha_mode": {"type": "string", "enum": ["never", "always", "ondemand"]}
-      },
-      "required": ["text", "selector"]
-    },
-    "scrollOptions": {
-      "type": "object",
-      "properties": {
-        "duration": {"type": "integer"},
-        "direction": {"type": "string", "enum": ["UP", "DOWN", "LEFT", "RIGHT"]},
-        "captcha_mode": {"type": "string"}
-      }
-    },
-    "scrollLengthOptions": {
-      "type": "object",
-      "properties": {
-        "pixels": {"type": "integer"},
-        "direction": {"type": "string", "enum": ["UP", "DOWN", "LEFT", "RIGHT"]},
-        "captcha_mode": {"type": "string"}
-      }
-    },
-    "lambdaSelectOptions": {
-      "type": "object",
-      "properties": {
-        "task": {"type": "string"},
-        "function": {"type": "string"},
-        "link_value": {"type": "string"},
-        "link_type": {"type": "string", "enum": ["FUNCTION_NAME", "ARN"]},
-        "captcha_mode": {"type": "string"}
-      },
-      "required": ["task"]
+      "additionalProperties": false
     },
     "job": {
       "type": "object",
       "description": "Full job definition",
-      "required": ["type"],
+      "required": [
+        "type"
+      ],
       "properties": {
-        "name": {"type": "string"},
+        "name": {
+          "type": "string"
+        },
         "type": {
           "type": "string",
           "enum": [
-            "visitjob", "waitjob", "clickjob", "tryclickjob",
-            "entertextfieldjob", "tryentertextfieldjob",
-            "scrollbydurationjob", "scrollbylengthjob",
-            "lambdasingleselectjob", "singleselectjob", "singleselecturljob",
-            "switchjob", "tryswitchjob",
-            "handlealertjob", "tryhandlealertjob"
+            "clickjob",
+            "entertextfieldjob",
+            "handlealertjob",
+            "lambdasingleselectjob",
+            "scrollbydurationjob",
+            "scrollbylengthjob",
+            "singleselectjob",
+            "singleselecturljob",
+            "switchjob",
+            "tryclickjob",
+            "tryentertextfieldjob",
+            "tryhandlealertjob",
+            "tryscrollbydurationjob",
+            "tryscrollbylengthjob",
+            "tryswitchjob",
+            "visitjob",
+            "waitjob"
           ]
         },
-        "description": {"type": "string"},
-        "active": {"type": "boolean", "default": true},
+        "description": {
+          "type": "string"
+        },
+        "active": {
+          "type": "boolean",
+          "default": true
+        },
         "behaviors": {
           "oneOf": [
             {
               "type": "array",
-              "items": {"$ref": "#/definitions/behavior"}
+              "items": {
+                "$ref": "#/definitions/behavior"
+              }
             },
             {
               "type": "object",
@@ -675,12 +1432,22 @@
     "behavior": {
       "type": "object",
       "description": "Job behavior parameter",
-      "required": ["name", "value"],
+      "required": [
+        "name",
+        "value"
+      ],
       "properties": {
-        "name": {"type": "string"},
+        "name": {
+          "type": "string"
+        },
         "value": {},
-        "description": {"type": "string"},
-        "active": {"type": "boolean", "default": true}
+        "description": {
+          "type": "string"
+        },
+        "active": {
+          "type": "boolean",
+          "default": true
+        }
       }
     }
   }

@@ -1,3 +1,4 @@
+import stat
 from pathlib import Path
 
 import pytest
@@ -7,6 +8,7 @@ from experiment_designer import cli as cli_module
 from experiment_designer.cli import cli
 from experiment_designer.lock.api import ApiError
 from experiment_designer.lock.io import dump_lock
+from experiment_designer.lock.secrets import SecretStore
 from experiment_designer.lock.upload import UploadResult
 
 from .test_lock_io import make_lock
@@ -185,6 +187,243 @@ def test_secrets_check_rejects_a_corrupt_lock(tmp_path):
     assert out.exit_code == 1
     assert "Lock invalid" in out.output
     assert "Traceback" not in out.output
+
+
+def test_secrets_init_creates_skeleton_with_mode_600(lock_file, tmp_path):
+    target = tmp_path / "new-secrets.toml"
+    out = CliRunner().invoke(cli, ["secrets", "init", str(lock_file), "--secrets", str(target)])
+    assert out.exit_code == 0, out.output
+    assert stat.S_IMODE(target.stat().st_mode) == 0o600
+    assert SecretStore.load(target).data == {"oxylabs": {"a": {"username": "", "password": ""}}}
+    assert "oxylabs.a.username" in out.output
+    assert "oxylabs.a.password" in out.output
+    assert str(target) in out.output
+
+
+def test_secrets_init_refuses_to_overwrite_without_force(lock_file, tmp_path):
+    target = tmp_path / "secrets.toml"
+    original = '[oxylabs.a]\nusername = "u"\n'
+    target.write_text(original)
+    target.chmod(0o600)
+    out = CliRunner().invoke(cli, ["secrets", "init", str(lock_file), "--secrets", str(target)])
+    assert out.exit_code == 1
+    assert "--force" in out.output
+    assert target.read_text() == original
+
+
+def test_secrets_init_force_merges_keeping_existing_values(lock_file, tmp_path):
+    target = tmp_path / "secrets.toml"
+    target.write_text('[oxylabs.a]\nusername = "keepme"\nother = "x"\n')
+    target.chmod(0o600)
+    out = CliRunner().invoke(
+        cli, ["secrets", "init", str(lock_file), "--secrets", str(target), "--force"]
+    )
+    assert out.exit_code == 0, out.output
+    data = SecretStore.load(target).data
+    assert data["oxylabs"]["a"]["username"] == "keepme"
+    assert data["oxylabs"]["a"]["other"] == "x"
+    assert data["oxylabs"]["a"]["password"] == ""
+    assert "oxylabs.a.password" in out.output
+    assert "oxylabs.a.username" in out.output
+    assert "keepme" not in out.output
+    assert stat.S_IMODE(target.stat().st_mode) == 0o600
+
+
+def test_secrets_init_force_on_an_insecure_existing_file_is_refused(lock_file, tmp_path):
+    target = tmp_path / "secrets.toml"
+    target.write_text('[oxylabs.a]\nusername = "keepme"\n')
+    target.chmod(0o644)
+    out = CliRunner().invoke(
+        cli, ["secrets", "init", str(lock_file), "--secrets", str(target), "--force"]
+    )
+    assert out.exit_code == 1
+    assert "chmod 600" in out.output
+    assert target.read_text() == '[oxylabs.a]\nusername = "keepme"\n'
+
+
+def test_secrets_init_then_check_reports_every_added_key_missing(lock_file, tmp_path):
+    target = tmp_path / "secrets.toml"
+    CliRunner().invoke(cli, ["secrets", "init", str(lock_file), "--secrets", str(target)])
+    out = CliRunner().invoke(cli, ["secrets", "check", str(lock_file), "--secrets", str(target)])
+    assert out.exit_code == 1
+    assert out.output.count("MISSING") == 2
+
+
+def test_secrets_init_force_refuses_a_leaf_table_collision(lock_file, tmp_path):
+    """The store already has `oxylabs.a` as a plain string; the lock needs it to be a
+    table (`oxylabs.a.username`/`.password`). Turning it into `{}` would destroy the
+    existing secret, so this must refuse rather than silently overwrite it."""
+    target = tmp_path / "secrets.toml"
+    original = '[oxylabs]\na = "hunter2"\n'
+    target.write_text(original)
+    target.chmod(0o600)
+    out = CliRunner().invoke(
+        cli, ["secrets", "init", str(lock_file), "--secrets", str(target), "--force"]
+    )
+    assert out.exit_code == 1
+    assert "oxylabs.a" in out.output
+    assert "hunter2" not in out.output
+    assert target.read_text() == original
+
+
+def test_secrets_init_force_refuses_a_non_string_existing_leaf(lock_file, tmp_path):
+    target = tmp_path / "secrets.toml"
+    original = "[oxylabs.a]\nusername = 5\n"
+    target.write_text(original)
+    target.chmod(0o600)
+    out = CliRunner().invoke(
+        cli, ["secrets", "init", str(lock_file), "--secrets", str(target), "--force"]
+    )
+    assert out.exit_code == 1
+    assert "not a string" in out.output
+    assert target.read_text() == original
+
+
+def test_secrets_init_force_writes_through_a_symlink(lock_file, tmp_path):
+    """`~/.config/primemover/secrets.toml` is often a symlink into a dotfiles or
+    password-store checkout. The atomic rename must land on the symlink's target,
+    not replace the link itself with a regular file (which would silently detach
+    the store from wherever the user keeps it)."""
+    real_dir = tmp_path / "store"
+    real_dir.mkdir()
+    real = real_dir / "real.toml"
+    real.write_text('[oxylabs.a]\nusername = "keepme"\n')
+    real.chmod(0o600)
+    link = tmp_path / "secrets.toml"
+    link.symlink_to(real)
+    out = CliRunner().invoke(
+        cli, ["secrets", "init", str(lock_file), "--secrets", str(link), "--force"]
+    )
+    assert out.exit_code == 0, out.output
+    assert link.is_symlink() and link.resolve() == real.resolve()
+    assert stat.S_IMODE(real.stat().st_mode) == 0o600
+    data = SecretStore.load(real).data
+    assert data["oxylabs"]["a"] == {"username": "keepme", "password": ""}
+    assert not (tmp_path / "secrets.toml.tmp").exists()
+    assert not (real_dir / "real.toml.tmp").exists()
+
+
+def test_secrets_init_creates_the_target_through_a_dangling_symlink(lock_file, tmp_path):
+    """A symlink whose target does not exist yet (fresh dotfiles checkout): the
+    file is created at the target and the link is kept."""
+    real = tmp_path / "store" / "real.toml"
+    real.parent.mkdir()
+    link = tmp_path / "secrets.toml"
+    link.symlink_to(real)
+    out = CliRunner().invoke(cli, ["secrets", "init", str(lock_file), "--secrets", str(link)])
+    assert out.exit_code == 0, out.output
+    assert link.is_symlink() and real.is_file()
+    assert stat.S_IMODE(real.stat().st_mode) == 0o600
+    assert SecretStore.load(link).data == {"oxylabs": {"a": {"username": "", "password": ""}}}
+
+
+def test_secrets_init_recovers_from_a_stale_tmp_file(lock_file, tmp_path):
+    """A `<name>.tmp` left behind by a killed earlier run is ours by naming
+    convention; the next init must not die on it with a raw FileExistsError."""
+    target = tmp_path / "secrets.toml"
+    stale = tmp_path / "secrets.toml.tmp"
+    stale.write_text("half-written garbage")
+    out = CliRunner().invoke(cli, ["secrets", "init", str(lock_file), "--secrets", str(target)])
+    assert out.exit_code == 0, out.output
+    assert not stale.exists()
+    assert stat.S_IMODE(target.stat().st_mode) == 0o600
+    assert SecretStore.load(target).data == {"oxylabs": {"a": {"username": "", "password": ""}}}
+
+
+def test_secrets_init_force_refuses_a_table_at_a_leaf_path(lock_file, tmp_path):
+    """The store has `oxylabs.a.username` as a *table*; `secrets check` reports the
+    key MISSING (not a string), so init must not report it "already present" and
+    walk away -- nor rewrite the table. It is a conflict, like the reverse case."""
+    target = tmp_path / "secrets.toml"
+    original = '[oxylabs.a]\npassword = "testpass"\n[oxylabs.a.username]\nx = "y"\n'
+    target.write_text(original)
+    target.chmod(0o600)
+    out = CliRunner().invoke(
+        cli, ["secrets", "init", str(lock_file), "--secrets", str(target), "--force"]
+    )
+    assert out.exit_code == 1, out.output
+    assert "oxylabs.a.username" in out.output
+    assert "already present" not in out.output
+    assert "testpass" not in out.output
+    assert target.read_text() == original
+
+
+def test_secrets_init_force_round_trips_control_characters(lock_file, tmp_path):
+    """A value containing a raw newline or a NUL byte must come back identical after
+    --force adds an unrelated key -- proving the writer escapes rather than emits a
+    literal control character (which tomllib cannot parse back at all)."""
+    target = tmp_path / "secrets.toml"
+    target.write_text('[oxylabs.a]\nusername = "line1\\nline2"\nother = "\\u0000tail"\n')
+    target.chmod(0o600)
+    out = CliRunner().invoke(
+        cli, ["secrets", "init", str(lock_file), "--secrets", str(target), "--force"]
+    )
+    assert out.exit_code == 0, out.output
+    data = SecretStore.load(target).data
+    assert data["oxylabs"]["a"]["username"] == "line1\nline2"
+    assert data["oxylabs"]["a"]["other"] == "\x00tail"
+    assert data["oxylabs"]["a"]["password"] == ""
+
+
+def test_toml_escape_round_trips_every_control_character(tmp_path):
+    from experiment_designer.cli import _toml_escape
+
+    original = "".join(chr(cp) for cp in [*range(0x20), 0x7F]) + '"\\end'
+    p = tmp_path / "s.toml"
+    p.write_text(f'k = "{_toml_escape(original)}"\n')
+    p.chmod(0o600)
+    assert SecretStore.load(p).data["k"] == original
+
+
+def test_secrets_init_force_quotes_a_key_that_is_not_bare(lock_file, tmp_path):
+    target = tmp_path / "secrets.toml"
+    target.write_text('[oxylabs]\n"user.name" = "u"\n')
+    target.chmod(0o600)
+    out = CliRunner().invoke(
+        cli, ["secrets", "init", str(lock_file), "--secrets", str(target), "--force"]
+    )
+    assert out.exit_code == 0, out.output
+    data = SecretStore.load(target).data
+    assert data["oxylabs"]["user.name"] == "u"
+    assert data["oxylabs"]["a"]["username"] == ""
+    assert data["oxylabs"]["a"]["password"] == ""
+    assert '"user.name" = "u"' in target.read_text()
+
+
+def test_secrets_check_rejects_invalid_toml(lock_file, tmp_path):
+    target = tmp_path / "secrets.toml"
+    target.write_text("this = [is not valid")
+    target.chmod(0o600)
+    out = CliRunner().invoke(cli, ["secrets", "check", str(lock_file), "--secrets", str(target)])
+    assert out.exit_code == 1
+    assert "not valid TOML" in out.output
+    assert "Traceback" not in out.output
+
+
+def test_secrets_init_force_rejects_invalid_toml(lock_file, tmp_path):
+    target = tmp_path / "secrets.toml"
+    original = "this = [is not valid"
+    target.write_text(original)
+    target.chmod(0o600)
+    out = CliRunner().invoke(
+        cli, ["secrets", "init", str(lock_file), "--secrets", str(target), "--force"]
+    )
+    assert out.exit_code == 1
+    assert "not valid TOML" in out.output
+    assert target.read_text() == original
+
+
+def test_secrets_init_with_no_placeholders_writes_nothing(tmp_path):
+    text = dump_lock(make_lock())
+    text = text.replace("${secret:oxylabs.a.username}", "literal-user")
+    text = text.replace("${secret:oxylabs.a.password}", "literal-pass")
+    lock_path = tmp_path / "no-secrets.lock.yaml"
+    lock_path.write_text(text)
+    target = tmp_path / "secrets.toml"
+    out = CliRunner().invoke(cli, ["secrets", "init", str(lock_path), "--secrets", str(target)])
+    assert out.exit_code == 0, out.output
+    assert "none referenced" in out.output
+    assert not target.exists()
 
 
 def test_upload_reports_an_anchor_error(lock_file, secrets_file, fake_upload, monkeypatch):

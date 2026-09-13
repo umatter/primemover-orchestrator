@@ -59,6 +59,20 @@ class JobRegistry:
         return cls._api_type_map.get(yaml_name)
 
     @classmethod
+    def is_api_type(cls, value: Any) -> bool:
+        """True if `value` is a registered API job type string (e.g.
+        'visitjob'), the marker a full job definition's `type:` carries.
+
+        Needed because `type` is also the YAML key for the `type:` (enter
+        text) shorthand -- a full job (`{type: visitjob, name: ..., behaviors:
+        [...]}`) and a typing shorthand (`{type: {text: ..., selector: ...}}`)
+        both use the same top-level key, so the two must be told apart by the
+        *value*'s shape before either the parser or the validator decide
+        which one they are looking at.
+        """
+        return isinstance(value, str) and value in cls._api_type_map.values()
+
+    @classmethod
     def list_all(cls) -> list[JobTypeSchema]:
         """List all registered job types."""
         return list(cls._job_types.values())

@@ -29,6 +29,14 @@ from .time_utils import is_relative_time
 
 _TEMPLATE_VAR_RE = re.compile(r"\$\{(?!secret:)[^}]*\}|\{[A-Za-z_][A-Za-z0-9_]*(?::[^}]*)?\}")
 _INDEX_RE = re.compile(r"\[\d+\]")
+# A `{name}` / `{name:fmt}` design placeholder (not a `${var}` template
+# variable), capturing the name -- see _referenced_placeholders.
+_PLACEHOLDER_RE = re.compile(r"(?<!\$)\{([A-Za-z_][A-Za-z0-9_]*)(?::[^}]*)?\}")
+# `{crawler.name}` inside a data-pool `score:`/`filter:` expression: the
+# ExpressionEvaluator reads it from the crawler's configuration.params (see
+# SpecConverter.convert, which builds that context before the sampled-name
+# strip runs), so it consumes a sampled parameter just as `{name}` does.
+_CRAWLER_REF_RE = re.compile(r"\{crawler\.([A-Za-z_][A-Za-z0-9_]*)\}")
 
 
 @dataclass
@@ -101,11 +109,12 @@ class SpecValidator:
     )
 
     # Keys the parser/converter/design-expander actually read, per level. These
-    # are the whitelist for _validate_unknown_keys; the JSON schema is a drifted,
-    # partial mirror (it lacks data_pools, additional_sessions, proxy pools, ...)
-    # so the reading code is the authority, not additionalProperties. A key that
-    # is missing here but read somewhere is a false error, bounded by the
-    # example/research-spec whitelist test in test_strict_contract.py.
+    # are the whitelist for _validate_unknown_keys, and also the authority
+    # schema_gen.py builds experiment-spec.schema.json's `additionalProperties:
+    # false` object definitions from -- the two cannot drift apart again (see
+    # test_schema_gen.py). A key that is missing here but read somewhere is a
+    # false error, bounded by the example/research-spec whitelist test in
+    # test_strict_contract.py.
     _KEYS_ROOT: frozenset[str] = frozenset(
         {
             "version",
@@ -203,6 +212,60 @@ class SpecValidator:
     # The only keys SpecParser._expand_workflow_item reads on a template/repeat
     # item (see _expand_template_ref / _expand_repeat).
     _TEMPLATE_ITEM_KEYS: frozenset[str] = frozenset({"template", "repeat", "with", "jobs"})
+
+    # The only keys SpecParser._normalize_job reads on a full job definition
+    # (`type:` holding a registered API type string, e.g. `visitjob` --
+    # JobRegistry.is_api_type -- as opposed to the `type:` *shorthand*, whose
+    # value is a dict or a non-API-type string).
+    _FULL_JOB_KEYS: frozenset[str] = frozenset(
+        {"type", "name", "description", "active", "behaviors"}
+    )
+
+    # The only keys DesignExpander._parse_factor reads on a design factor
+    # definition. Note there is no per-factor "description" or "proportions":
+    # a level's own weight is `levels[i].proportion` (singular, nested inside
+    # the level item), not a factor-level key.
+    _KEYS_FACTOR: frozenset[str] = frozenset({"levels", "maps_to"})
+
+    # Per-shorthand dict-form option keys SpecParser._expand_shorthand actually
+    # reads (verified against every branch, not copied from job_registry.py's
+    # BehaviorSchema names, which are the *API* behavior names emitted after
+    # expansion -- see _BEHAVIOR_KEYS above for that distinction). Used to build
+    # the generated JSON schema's per-shorthand `options` object (schema_gen.py)
+    # and by _validate_job_options to report an option key outside this set as
+    # a drop ("the runner never sees it").
+    #
+    # visit/wait have no dict form at all today: _expand_shorthand uses the
+    # scalar value directly (visit) or only accepts int/float/str
+    # (wait/_parse_duration), so a dict value here is silently mishandled, not
+    # read key-by-key.
+    _OPTION_KEYS: dict[str, frozenset[str]] = {
+        "visit": frozenset(),
+        "wait": frozenset(),
+        "click": frozenset({"selector", "selection_type", "captcha_mode", "task", "flag"}),
+        "try_click": frozenset({"selector", "selection_type", "captcha_mode", "task", "flag"}),
+        "type": frozenset(
+            {"text", "selector", "selection_type", "typing_mode", "submit", "captcha_mode"}
+        ),
+        "try_type": frozenset(
+            {"text", "selector", "selection_type", "typing_mode", "submit", "captcha_mode"}
+        ),
+        "scroll": frozenset({"duration", "direction"}),
+        "try_scroll": frozenset({"duration", "direction"}),
+        "scroll_length": frozenset({"pixels", "length", "direction"}),
+        "try_scroll_length": frozenset({"pixels", "length", "direction"}),
+        "lambda_select": frozenset(
+            {"task", "link_type", "function", "link_value", "captcha_mode", "strategy", "treatment"}
+        ),
+        # switch/try_switch/single_select/single_select_url share one code
+        # branch in _expand_shorthand, so they share one option-key set.
+        "single_select": frozenset({"selector", "target", "selection_type", "captcha_mode"}),
+        "single_select_url": frozenset({"selector", "target", "selection_type", "captcha_mode"}),
+        "switch": frozenset({"selector", "target", "selection_type", "captcha_mode"}),
+        "try_switch": frozenset({"selector", "target", "selection_type", "captcha_mode"}),
+        "handle_alert": frozenset({"action"}),
+        "try_handle_alert": frozenset({"action"}),
+    }
 
     def __init__(
         self,
@@ -339,6 +402,8 @@ class SpecValidator:
 
         design = spec.get("design") or {}
         for fname, fdef in (design.get("factors") or {}).items():
+            if not isinstance(fdef, dict):
+                continue  # _validate_design has already reported it as an error
             for path, level_map in (fdef.get("maps_to") or {}).items():
                 parts = str(path).split(".")
                 leaf = parts[-1]
@@ -361,6 +426,28 @@ class SpecValidator:
                         "`strategy` + `treatment` block",
                     )
 
+        # A sampled parameter (design.parameters.<name>) is written by
+        # DesignExpander._apply_cell_to_template into configuration.params.<name>
+        # of every design crawler. For a standard name that is the point; for
+        # any other name the API drops the key, so the draw reaches nobody --
+        # unless the spec also uses it as a `{name}` / `{name:fmt}` substitution
+        # variable, in which case the value has already landed where it was
+        # referenced and SpecConverter._convert_configuration strips the
+        # leftover params key (see `sampled_substitution_params`).
+        parameters = design.get("parameters")
+        if isinstance(parameters, dict):
+            non_standard = [name for name in parameters if name not in self._KNOWN_PARAMS]
+            if non_standard:
+                referenced = self._referenced_placeholders(spec)
+                for name in non_standard:
+                    if name not in referenced:
+                        self.drops.report(
+                            f"design.parameters.{name}",
+                            "sampled value lands in configuration.params, which the API drops",
+                            f"use it as a {{{name}}} substitution variable or give it a "
+                            "standard name",
+                        )
+
         for i, crawler in enumerate(spec.get("crawlers", [])):
             params = (crawler.get("configuration") or {}).get("params")
             if not isinstance(params, dict):
@@ -382,14 +469,97 @@ class SpecValidator:
 
         return errors, warnings
 
+    @staticmethod
+    def _reachable_templates(spec: dict[str, Any]) -> dict[str, Any]:
+        """The templates some crawler actually calls, transitively.
+
+        A `template:` item anywhere under crawlers (a workflow item, or one
+        nested in `repeat.jobs`) names a template; a template body is itself a
+        list of workflow items expanded through the same
+        `SpecParser._expand_workflow_item`, so it can call further templates.
+        A template nobody reaches is never spliced into any crawler, and a
+        placeholder in it is consumed by nobody.
+        """
+        templates = spec.get("templates")
+        if not isinstance(templates, dict):
+            return {}
+
+        def refs(node: Any, out: set[str]) -> None:
+            if isinstance(node, dict):
+                name = node.get("template")
+                if isinstance(name, str):
+                    out.add(name)
+                for key, value in node.items():
+                    if key != "multilogin_profile":
+                        refs(value, out)
+            elif isinstance(node, list):
+                for value in node:
+                    refs(value, out)
+
+        pending: set[str] = set()
+        refs(spec.get("crawlers"), pending)
+        reached: dict[str, Any] = {}
+        while pending:
+            name = pending.pop()
+            if name in reached or name not in templates:
+                continue
+            reached[name] = templates[name]
+            refs(templates[name], pending)
+        return reached
+
+    @classmethod
+    def _referenced_placeholders(cls, spec: dict[str, Any]) -> set[str]:
+        """Names used as `{name}` / `{name:fmt}`, or as `{crawler.name}` in a
+        pool expression, under crawlers or a template some crawler reaches.
+
+        `{crawler.name}` counts because the converter resolves pool references
+        from a context built out of `configuration.params` *before*
+        `_convert_configuration` strips the sampled name (`SpecConverter.convert`
+        orders it that way on purpose), so a draw used only in a `score:` or
+        `filter:` expression has already done its work by the time the key is
+        removed. Reached templates count because the parser splices them into the
+        crawler's workflow before the expander substitutes, so `{alpha_draw}`
+        in such a template body is consumed exactly like one written on the
+        crawler. An orphan template (`_reachable_templates`) does not: its
+        placeholder would satisfy the rule while the draw reached nobody, and
+        the converter would then strip the value from params -- a silent drop
+        with extra steps. `${var}` template variables are a different
+        namespace (excluded by the lookbehind), and the Multilogin profile is a
+        JSON document with its own placeholders, skipped as `_scan_unresolved`
+        skips it.
+        """
+        names: set[str] = set()
+
+        def walk(node: Any) -> None:
+            if isinstance(node, str):
+                for m in _PLACEHOLDER_RE.finditer(node):
+                    names.add(m.group(1))
+                for m in _CRAWLER_REF_RE.finditer(node):
+                    names.add(m.group(1))
+            elif isinstance(node, dict):
+                for key, value in node.items():
+                    if key != "multilogin_profile":
+                        walk(value)
+            elif isinstance(node, list):
+                for value in node:
+                    walk(value)
+
+        walk(spec.get("crawlers"))
+        walk(list(cls._reachable_templates(spec).values()))
+        return names
+
     def _validate_unknown_keys(self, spec: dict[str, Any]) -> None:
         """Keys the pipeline never reads are dropped silently; report them.
 
-        The JSON schema is a drifted, partial mirror of the parser, so the
-        parser's accepted keys are the authority here, not additionalProperties.
-        Workflow items are not checked: unknown job *types* are, but option keys
-        inside a known job vary per type and false positives there would cost
-        more than the rare typo they would catch.
+        This is still the authority for these key sets (not
+        ``additionalProperties`` on the JSON schema, even though schema_gen.py
+        now builds the schema's object definitions from these same
+        ``_KEYS_*`` frozensets and can therefore no longer disagree with this
+        function -- see `_validate_schema`'s docstring). Workflow items are
+        not checked here: an unknown job *type*, and a stray sibling key on a
+        matched shorthand item, are `_validate_workflow_item`'s job; option
+        keys inside a known job vary per type and false positives there would
+        cost more than the rare typo they would catch.
         """
 
         def check(obj: Any, allowed: frozenset[str], path: str) -> None:
@@ -423,17 +593,48 @@ class SpecValidator:
                 check(queue, self._KEYS_SESSION, f"{prefix}.queues[{j}]")
 
     def _validate_schema(self, spec: dict[str, Any]) -> list[str]:
-        """Validate against JSON Schema."""
+        """Validate against JSON Schema.
+
+        schema_gen.py builds the schema's `additionalProperties: false` object
+        definitions from the exact key sets two other, lax-aware, Python-level
+        checks already use, so an ``additionalProperties`` violation here is
+        never new information:
+
+        - root, ``experiment``, ``defaults``, ``design``, each crawler, its
+          ``configuration``/``proxy``/``agent``/``session`` (and
+          ``defaults.proxy``) -- ``_validate_unknown_keys``.
+        - a workflow item's job-shorthand key and its stray sibling keys --
+          ``_validate_workflow_item``.
+
+        Surfacing the same violation again here too, as a hard error
+        jsonschema has no concept of ``--lax`` for, would make a spec whose
+        only problem is a lax-downgraded drop still fail ``--lax``
+        validation. So ``additionalProperties`` errors are filtered out
+        below; every other kind of schema violation (required/type/enum/
+        pattern/...) is not covered by those checks and is still reported as
+        before.
+
+        ``design.factors.<name>``'s own keys (the ``factor`` definition, from
+        `_KEYS_FACTOR`) are covered the same way: `_validate_design` reports
+        a key outside `_KEYS_FACTOR` as a drop (``design.factors.<f>.<key>``),
+        so filtering the schema's ``additionalProperties`` error for it loses
+        nothing.
+        """
         if not HAS_JSONSCHEMA or not self.schema:
             return []
 
         errors = []
         try:
-            jsonschema.validate(spec, self.schema)
-        except jsonschema.ValidationError as e:
-            # Get a human-readable path
-            path = ".".join(str(p) for p in e.absolute_path) if e.absolute_path else "root"
-            errors.append(f"Schema validation error at '{path}': {e.message}")
+            validator = jsonschema.Draft7Validator(self.schema)
+            relevant = (
+                e for e in validator.iter_errors(spec) if e.validator != "additionalProperties"
+            )
+            best = jsonschema.exceptions.best_match(relevant)
+            if best is not None:
+                path = (
+                    ".".join(str(p) for p in best.absolute_path) if best.absolute_path else "root"
+                )
+                errors.append(f"Schema validation error at '{path}': {best.message}")
         except jsonschema.SchemaError as e:
             errors.append(f"Schema error: {e.message}")
 
@@ -465,6 +666,23 @@ class SpecValidator:
             return errors, warnings
 
         for factor_name, factor_def in factors.items():
+            if not isinstance(factor_def, dict):
+                errors.append(f"design.factors.{factor_name}: must be a mapping")
+                continue
+
+            # DesignExpander._parse_factor reads exactly `levels` and `maps_to`
+            # and nothing else, so `mapsto:` beside `levels:` is a factor with
+            # no mapping at all -- every cell gets the same params -- and no
+            # message anywhere. A drop.
+            for key in factor_def:
+                if key not in self._KEYS_FACTOR:
+                    self.drops.report(
+                        f"design.factors.{factor_name}.{key}",
+                        "unknown key; the design expander never reads it",
+                        "a factor has only levels and maps_to (a level's weight is "
+                        "levels[i].proportion)",
+                    )
+
             # Validate factor has levels
             levels = factor_def.get("levels", [])
             if not levels:
@@ -516,6 +734,8 @@ class SpecValidator:
         total_cells = 1
 
         for name, factor_def in factors.items():
+            if not isinstance(factor_def, dict):
+                continue  # _validate_design has already reported it as an error
             levels = factor_def.get("levels", [])
             num_levels = len(levels)
             total_cells *= num_levels
@@ -722,6 +942,26 @@ class SpecValidator:
         if "template" in item or "repeat" in item:
             return  # not a job shorthand; everything on it was checked above
 
+        # A full job definition: `type` holds a registered API type string
+        # (e.g. `visitjob`), not a `type:` shorthand value (a dict, or a
+        # non-API-type string). Must be checked before the shorthand loop
+        # below for the same reason SpecParser._expand_workflow_item checks
+        # it first: `type` is also the shorthand key for the `type:` (enter
+        # text) job, and a full job's `type: visitjob` would otherwise be
+        # validated as that shorthand instead (and fail it, since the value
+        # is a string, not a dict). Checked as its own shape entirely
+        # separate from the shorthand path below -- an unknown key here is a
+        # stray key on the job, not an unrecognised job-shorthand option.
+        if JobRegistry.is_api_type(item.get("type")):
+            for key in item:
+                if key not in self._FULL_JOB_KEYS:
+                    self.drops.report(
+                        f"{prefix}.{key}",
+                        "key not read by a job definition",
+                        "a full job has only type, name, description, active and behaviors",
+                    )
+            return
+
         # Validate job types
         job_types = [
             "visit",
@@ -743,11 +983,30 @@ class SpecValidator:
             "try_handle_alert",
         ]
 
-        matched = False
-        for job_type in job_types:
-            if job_type in item:
-                matched = True
-                self._validate_job_shorthand(job_type, item[job_type], prefix, errors, warnings)
+        matched_types = [job_type for job_type in job_types if job_type in item]
+        for job_type in matched_types:
+            self._validate_job_shorthand(job_type, item[job_type], prefix, errors, warnings)
+            self._validate_job_options(job_type, item[job_type], prefix)
+
+        # SpecParser._expand_workflow_item iterates its own shorthand_keys list
+        # (the same order as job_types above) and returns on the *first* match
+        # -- it never looks at the item again after that. So every other key on
+        # a matched item -- a second job-type key (`visit` + `wait` on one
+        # item), or an arbitrary typo (`weight: 0.7` beside `visit:`) -- is
+        # silently ignored by the parser exactly like a template/repeat item's
+        # stray keys above, and is a drop for the same reason. `with`/`jobs`
+        # are not exempt: they only pair with template/repeat items (handled
+        # above, which return before reaching here), so on a plain shorthand
+        # item they too are unread.
+        if matched_types:
+            used = matched_types[0]
+            for key in item:
+                if key != used:
+                    self.drops.report(
+                        f"{prefix}.{key}",
+                        f"ignored: only the first job shorthand ('{used}') is used",
+                        "one job per workflow item; move it to its own item",
+                    )
 
         # An item that is neither a template/repeat block (returned above) nor a
         # known shorthand is skipped by the parser ("Unknown workflow item
@@ -755,7 +1014,7 @@ class SpecValidator:
         # `jobs` a repeat block; anything else on such an item is a job type the
         # registry lacks, and an item left with nothing but those has no job at
         # all.
-        if not matched:
+        if not matched_types:
             unknown = [key for key in item if key not in ("with", "jobs")]
             for key in unknown:
                 self.drops.report(prefix, f"unknown job type '{key}'", "see `pmspec schema jobs`")
@@ -937,6 +1196,32 @@ class SpecValidator:
             else:
                 out.append(f"{generic}: {message} ({len(paths)} place(s), first: {paths[0]})")
         return out
+
+    def _validate_job_options(self, job_type: str, value: Any, prefix: str) -> None:
+        """A dict-form option key SpecParser._expand_shorthand never reads is a drop.
+
+        `_expand_shorthand` reads the mapping form of each shorthand with
+        `value.get(<key>)` for a fixed set of keys (`_OPTION_KEYS`) and never
+        looks at the rest, so `click: {selector: x, sped: fast}` silently loses
+        `sped` -- the runner never sees it. visit/wait have no dict form at all
+        (`_OPTION_KEYS` is empty for both): a dict value there is already
+        rejected by `_validate_job_shorthand`, so it is skipped here rather
+        than reported a second time key-by-key. Only the top level is checked:
+        lambda_select's `treatment` sub-keys are the strategy schema's business
+        (`_validate_lambda_select_treatment`), not option keys.
+        """
+        if not isinstance(value, dict) or job_type in ("visit", "wait"):
+            return
+        allowed = self._OPTION_KEYS.get(job_type)
+        if allowed is None:  # unreachable: callers pass only registered shorthands
+            return
+        for key in value:
+            if key not in allowed:
+                self.drops.report(
+                    f"{prefix}.{job_type}.{key}",
+                    "unknown option; the runner never sees it",
+                    f"{job_type} reads only: {', '.join(sorted(allowed))}",
+                )
 
     def _validate_job_shorthand(
         self, job_type: str, value: Any, prefix: str, errors: list[str], warnings: list[str]

@@ -143,6 +143,9 @@ class SpecConverter:
         self.resolve_times = resolve_times
         self.lax = lax
         self.drops = Drops(lax)
+        # design.parameters names outside _STANDARD_PARAM_KEYS for the spec
+        # being converted; set per convert() and read by _convert_configuration.
+        self._sampled_substitution_params: frozenset[str] = frozenset()
 
     def _runner_user_id(self, experiment: dict[str, Any]) -> int | None:
         """experiment.runner_user_id, validated; None when absent."""
@@ -186,6 +189,7 @@ class SpecConverter:
         # Expand design if present
         # Extract seed from design for reproducibility
         design_seed = parsed.design.get("seed") if parsed.design else None
+        self._sampled_substitution_params = self.sampled_substitution_params(parsed.design)
         effective_seed = self.seed if self.seed is not None else design_seed
         expander = DesignExpander(seed=effective_seed)
         all_crawlers = []
@@ -337,6 +341,22 @@ class SpecConverter:
 
         return api_crawler
 
+    @staticmethod
+    def sampled_substitution_params(design: dict[str, Any] | None) -> frozenset[str]:
+        """`design.parameters` names that are not standard params.
+
+        DesignExpander writes every sampled value into
+        `configuration.params.<name>`; for these names that key is dead on
+        arrival (the API keeps only the standard columns), so their only
+        legitimate use is as a `{name}` substitution variable -- which the
+        validator enforces (an unreferenced one is a drop) and which
+        _convert_configuration relies on to strip them.
+        """
+        parameters = (design or {}).get("parameters")
+        if not isinstance(parameters, dict):
+            return frozenset()
+        return frozenset(name for name in parameters if name not in _STANDARD_PARAM_KEYS)
+
     def _convert_configuration(
         self, config: dict[str, Any], defaults: dict[str, Any]
     ) -> dict[str, Any]:
@@ -353,8 +373,24 @@ class SpecConverter:
         # specific treatment config forward (the validator warns that the current
         # typed pipeline does not yet deliver such keys; the generic channel is the
         # flexible-treatment work). Standard keys win over passthrough.
+        #
+        # The one exception is a non-standard `design.parameters` name: the
+        # expander put it here by default, but its value has already been
+        # substituted wherever the spec referenced `{name}` (the validator
+        # refuses a spec that references it nowhere), and the API would drop
+        # the key anyway. Stripping it keeps the emitted params honest and
+        # keeps the strict scan from seeing a "dropped" param that was in fact
+        # consumed. Only those names are stripped; a hand-written extra key in
+        # a crawler's own params block still passes through as before. The
+        # strip is by name alone -- a hand-written params key that happens to
+        # share a sampled parameter's name goes too -- and the validator, not
+        # this method, is the gate that decides whether the spec is acceptable.
         params = config.get("params", {})
-        extra = {k: v for k, v in params.items() if k not in _STANDARD_PARAM_KEYS}
+        extra = {
+            k: v
+            for k, v in params.items()
+            if k not in _STANDARD_PARAM_KEYS and k not in self._sampled_substitution_params
+        }
         api_config["params"] = {
             **extra,
             "pi": params.get("pi", 0),
@@ -616,7 +652,11 @@ class SpecConverter:
             "name": job.get("name", "Job"),
             "type": job.get("type", "waitjob"),
             "description": job.get("description", "Generated job"),
-            "active": True,
+            # A full job definition may say `active: false` (SpecParser
+            # `_normalize_job` keeps it; shorthand jobs always get True). This
+            # used to be a hard-coded True, which uploaded an inactive job as
+            # active with no message anywhere. Same bool shape as before.
+            "active": bool(job.get("active", True)),
         }
 
         # Convert behaviors

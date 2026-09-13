@@ -18,7 +18,7 @@ data_pools:
     source: queries.csv
 templates:
   search:
-    - type: {text: "${query}", selector: "//x", appendReturn: true}
+    - type: {text: "${query}", selector: "//x", submit: true}
 design:
   factors:
     arm:

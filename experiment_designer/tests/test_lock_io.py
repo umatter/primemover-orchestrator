@@ -6,6 +6,7 @@ import hashlib
 from typing import Any
 
 import pytest
+import yaml
 
 from experiment_designer.lock.io import (
     LockError,
@@ -140,3 +141,11 @@ def test_load_raises_lock_error_with_all_messages():
 def test_sha256_text_matches_hashlib_on_utf8_bytes():
     text = dump_lock(make_lock())
     assert sha256_text(text) == hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+def test_lock_without_pools_loads_with_empty_dict():
+    d = make_lock().to_dict()
+    d["provenance"].pop("pools", None)
+    text = yaml.safe_dump(d, sort_keys=False)
+    lock = load_lock(text)
+    assert lock.provenance.pools == {}

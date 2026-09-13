@@ -38,6 +38,63 @@ def test_health_is_open(client: TestClient) -> None:
     assert client.get("/health").status_code == 200
 
 
+def test_health_reports_ok_secrets_store(
+    client: TestClient, tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    p = tmp_path / "secrets.toml"
+    p.write_text('[a]\nb = "v"\n')
+    p.chmod(0o600)
+    monkeypatch.setenv("PMSPEC_SECRETS_FILE", str(p))
+    r = client.get("/health")
+    assert r.status_code == 200
+    assert r.json() == {"status": "ok", "secrets_store": "ok"}
+
+
+def test_health_reports_missing_secrets_store(
+    client: TestClient, tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("PMSPEC_SECRETS_FILE", str(tmp_path / "nope.toml"))
+    r = client.get("/health")
+    assert r.status_code == 200
+    assert r.json() == {"status": "ok", "secrets_store": "missing"}
+
+
+def test_health_reports_insecure_secrets_store(
+    client: TestClient, tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    p = tmp_path / "secrets.toml"
+    p.write_text('[a]\nb = "v"\n')
+    p.chmod(0o644)
+    monkeypatch.setenv("PMSPEC_SECRETS_FILE", str(p))
+    r = client.get("/health")
+    assert r.status_code == 200
+    assert r.json() == {"status": "ok", "secrets_store": "insecure"}
+
+
+def test_health_reports_invalid_secrets_store(
+    client: TestClient, tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    p = tmp_path / "secrets.toml"
+    p.write_text("this is not [valid toml")
+    p.chmod(0o600)
+    monkeypatch.setenv("PMSPEC_SECRETS_FILE", str(p))
+    r = client.get("/health")
+    assert r.status_code == 200
+    assert r.json() == {"status": "ok", "secrets_store": "invalid"}
+
+
+def test_health_never_leaks_the_path_or_a_value(
+    client: TestClient, tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    p = tmp_path / "secrets.toml"
+    p.write_text('[a]\nb = "super-secret-value"\n')
+    p.chmod(0o600)
+    monkeypatch.setenv("PMSPEC_SECRETS_FILE", str(p))
+    r = client.get("/health")
+    assert "super-secret-value" not in r.text
+    assert str(p) not in r.text
+
+
 def test_missing_token_is_rejected(client: TestClient) -> None:
     r = _mcp_post(client, {})
     assert r.status_code == 401

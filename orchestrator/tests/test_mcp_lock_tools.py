@@ -101,6 +101,24 @@ def test_compile_refuses_a_malformed_client_commit():
     assert "errors" in out and any("git_commit" in e for e in out["errors"])
 
 
+def test_compile_records_pool_sha256_matching_a_disk_compile_of_the_same_bytes(tmp_path):
+    """`files=` writes the pool to a temp dir before compiling (`_materialise_files`), so
+    the sha256 recorded in provenance must be taken from those bytes on disk -- and must
+    equal what `pmspec compile` produces for a spec_dir holding the identical file."""
+    import hashlib
+
+    out = json.loads(s.compile_experiment_spec(SPEC, files=FILES, seed=5))
+    expected = hashlib.sha256(FILES["outlets.csv"].encode()).hexdigest()
+    assert f"outlets: {expected}" in out["lock"]
+
+    from experiment_designer.lock.build import compile_spec
+
+    (tmp_path / "outlets.csv").write_text(FILES["outlets.csv"])
+    result = compile_spec(SPEC, base_dir=tmp_path, spec_path="spec.yaml", seed=5)
+    assert result.lock is not None, result.errors
+    assert result.lock.provenance.pools == {"outlets": expected}
+
+
 def test_compile_records_a_dirty_client_commit_as_dirty():
     out = json.loads(
         s.compile_experiment_spec(SPEC, files=FILES, seed=5, git_commit="a2024c9-dirty")

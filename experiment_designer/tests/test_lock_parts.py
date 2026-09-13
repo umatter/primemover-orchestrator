@@ -77,8 +77,11 @@ def test_size_collapses_for_a_fleet():
 def test_format_1_still_loads(tmp_path):
     lock = make_lock()
     d = lock.to_dict()
-    # hand-build a format-1 document: crawlers inline, no parts
+    # hand-build a format-1 document: crawlers inline, no parts. Format 1
+    # predates pool provenance, so a real one never carries the key -- the
+    # lock-1 schema still forbids it.
     d1 = {k: v for k, v in d.items() if k != "parts"}
+    d1["provenance"] = {k: v for k, v in d1["provenance"].items() if k != "pools"}
     d1["pmspec_lock"] = 1
     d1["crawlers"] = lock.crawlers
     import yaml

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import os
 import re
 from dataclasses import dataclass, field
@@ -220,6 +221,11 @@ def compile_spec(
             queue.update(ordered)
 
     repo_dir = git_root or base_dir
+    pools: dict[str, str] = {}
+    if parsed.pool_manager is not None:
+        for pool_name in sorted(parsed.pool_manager.sources):
+            path = parsed.pool_manager.sources[pool_name]
+            pools[pool_name] = hashlib.sha256(path.read_bytes()).hexdigest()
     provenance = Provenance(
         spec_path=recorded_spec_path(spec_path, repo_dir),
         spec_sha256=sha256_text(spec_text),
@@ -228,6 +234,7 @@ def compile_spec(
         pmspec_version=pmspec_version(),
         seed=int(effective_seed),
         lax=lax,
+        pools=pools,
     )
     lock = Lock(
         provenance=provenance,
