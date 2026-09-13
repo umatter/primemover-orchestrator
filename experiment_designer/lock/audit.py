@@ -27,14 +27,21 @@ job):
 
 A job whose live ``status_code`` is not terminal is ``unfinished`` before any
 of the above are evaluated -- it has not had a chance to report anything yet.
-A lock job with no live counterpart at its ordinal (a shorter live queue, or no
-live queue at all for that name) is ``missing``. Both are informational, not
-failures, unless the caller asks for ``--strict``.
+A lock job with no live counterpart -- no live crawler at all, no live queue at
+its ordinal, or a shorter live job list -- is ``missing``. ``unfinished`` and
+``missing`` are informational, never a failure, regardless of ``--strict``;
+``unreported``/``degraded`` fail the run only under ``--strict``.
 
 Only jobs whose lock behaviours include a ``strategy`` key are considered --
 a plain ``visitjob`` has nothing to audit and produces no finding, but still
 occupies its ordinal so a genuinely missing job downstream is not mistaken for
 one that was never a lambda job to begin with.
+
+Read bounding: a live queue's own ``finished_at`` is checked against the
+``--hours`` window *before* its jobs are fetched at all, so an old queue costs
+no jobs call; a live job's own ``finished_at``/``started_at`` is checked again
+as a secondary guard once jobs are in hand. Absence of a timestamp on either
+side never excludes anything -- unknown recency is not evidence of staleness.
 """
 
 from __future__ import annotations
@@ -74,13 +81,25 @@ _OFFENDING = frozenset({"unreported", "mismatch", "lost", "degraded", "missing"}
 _ALWAYS_BAD = frozenset({"mismatch", "lost"})
 
 #: Outcomes that only fail the run under ``--strict`` -- absence of evidence
-#: (``unreported``, ``missing``, ``unfinished``) and a degraded-but-not-lost
-#: arm are all "a human should look", never a hard failure on their own.
-_STRICT_BAD = frozenset({"unreported", "degraded", "missing", "unfinished"})
+#: (``unreported``, ``missing``) and a degraded-but-not-lost arm are all "a
+#: human should look", never a hard failure on their own. ``unfinished`` is
+#: deliberately excluded even here: a job still running has not had a chance
+#: to report anything, in strict mode or not.
+_STRICT_BAD = frozenset({"unreported", "degraded", "missing"})
 
 
 def _truthy(value: Any) -> bool:
-    """Is *value* a "requested" treatment value under the generic rule?"""
+    """Is *value* a "requested" treatment value under the generic rule?
+
+    ``False`` and ``0``/``0.0`` are never requested even though their string
+    forms (``"False"``, ``"0.0"``) would not otherwise match the empty-ish set
+    -- a treatment value can arrive already typed (from a schema-validated
+    spec) rather than as the string a lock behaviour normally carries.
+    """
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)) and value == 0:
+        return False
     return str(value).strip() not in _EMPTYISH
 
 
@@ -162,7 +181,8 @@ class AuditResult:
 
     def ok(self, strict: bool) -> bool:
         """No ``mismatch``/``lost`` ever passes; ``--strict`` additionally
-        refuses ``unreported``/``degraded``/``missing``/``unfinished``."""
+        refuses ``unreported``/``degraded``/``missing``. ``unfinished`` never
+        fails the run, strict or not."""
         bad = set(_ALWAYS_BAD)
         if strict:
             bad |= _STRICT_BAD
@@ -220,9 +240,17 @@ def _sort_queues(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
 
 def _live_jobs(session: Any, queue_id: int) -> list[dict[str, Any]]:
-    body = session.get("jobs", params={"filter[queue]": str(queue_id)})
-    rows = body.get("data", body) if isinstance(body, dict) else body
-    rows = list(rows or [])
+    """Every job in a queue, fully paginated.
+
+    A bare ``session.get("jobs", params={"filter[queue]": ...})`` with no
+    ``per_page`` relies on the endpoint's own default page size -- 15 on the
+    real API, sorted newest-id-first -- which silently truncates any queue
+    with more jobs than that to its highest-id ones. Routing through
+    :func:`verify._paginate` requests the same ``per_page`` the queue listings
+    already use and keeps paging until a short page, so every ordinal the lock
+    expects actually has a live job to compare against.
+    """
+    rows = _paginate(session, "jobs", params={"filter[queue]": str(queue_id)})
     return sorted(rows, key=lambda j: (j.get("order") or 0, j.get("id") or 0))
 
 
@@ -243,6 +271,39 @@ def _decision_report(job: dict[str, Any]) -> dict[str, Any]:
         except (TypeError, ValueError):
             return {}
     return raw if isinstance(raw, dict) else {}
+
+
+def _requested_applied(report: dict[str, Any]) -> tuple[set[str], set[str]] | None:
+    """``(requested, applied)`` filter-name sets from a raw ``decision_report``.
+
+    Most reports carry ``requested``/``applied`` directly. Every backfilled
+    row and the decision function's own payload do not -- that shape only ever
+    has ``degraded``/``treatment_lost``/``selection_mode``/``filters``/``llm``
+    -- so those are derived from ``filters`` exactly as the runner derives its
+    own summary lists: a filter in state ``"ok"`` was both requested and
+    applied; one in a ``"failed: ..."`` state was requested but did not apply;
+    ``"skipped"``/``"not_implemented"`` (and any other state) mean it was never
+    requested at all.
+
+    Returns ``None`` when there is no evidence to derive anything from --
+    neither ``requested``/``applied`` nor ``filters`` -- so a caller never
+    compares against a manufactured empty set and calls that a ``mismatch``.
+    """
+    if "requested" in report or "applied" in report:
+        return set(report.get("requested") or []), set(report.get("applied") or [])
+    filters = report.get("filters")
+    if not isinstance(filters, dict):
+        return None
+    requested: set[str] = set()
+    applied: set[str] = set()
+    for name, state in filters.items():
+        state_l = str(state).strip().lower()
+        if state_l == "ok":
+            requested.add(name)
+            applied.add(name)
+        elif state_l.startswith("failed"):
+            requested.add(name)
+    return requested, applied
 
 
 _TZ_OFFSET_RE = re.compile(r"([+-]\d{2})(\d{2})$")
@@ -309,10 +370,21 @@ def audit_experiment(
         name = crawler["name"]
         if name not in chosen:
             continue
+        arm = _arm_label(crawler)
         live_crawler = live_by_name.get(name)
         if live_crawler is None:
+            # Wrong experiment id, or a partial upload that never created this
+            # crawler: every strategy job it should have run is missing, not
+            # silently skipped.
+            for lock_queue in crawler.get("queues", []):
+                qname = lock_queue.get("name", "")
+                for ordinal, job in enumerate(lock_queue.get("jobs", [])):
+                    if "strategy" not in _behaviors(job):
+                        continue
+                    findings.append(
+                        JobFinding(name, qname, ordinal, None, arm, "missing", "no live crawler")
+                    )
             continue
-        arm = _arm_label(crawler)
         live_cid = int(live_crawler["id"])
         live_by_qname: dict[str, list[dict[str, Any]]] = {}
         for q in live_queues_by_crawler.get(live_cid, []):
@@ -336,6 +408,16 @@ def audit_experiment(
                 continue
 
             live_queue = candidates[position]
+
+            # Read bound: a queue's own finished_at is the evidence its jobs
+            # ran recently at all. Checked before the jobs call so an old
+            # queue never costs one. Missing entirely (still running, or an
+            # older API shape without the column) never excludes it -- only a
+            # timestamp that positively predates the window does.
+            queue_occurred = _parse_dt(status_mod.finished_at_of(live_queue))
+            if queue_occurred is not None and queue_occurred < cutoff:
+                continue
+
             live_jobs = _live_jobs(session, int(live_queue["id"]))
 
             for ordinal, job in enumerate(lock_jobs):
@@ -353,12 +435,12 @@ def audit_experiment(
                 live_job = live_jobs[ordinal]
                 job_id = live_job.get("id")
 
-                occurred = _parse_dt(
+                # Secondary guard: the job's own record, in case it disagrees
+                # with its queue's finished_at (or the queue lacked one).
+                job_occurred = _parse_dt(
                     status_mod.finished_at_of(live_job) or status_mod.started_at_of(live_job)
                 )
-                if occurred is not None and occurred < cutoff:
-                    # This job's own record shows it ran outside the audit
-                    # window; skip it entirely rather than judging it stale.
+                if job_occurred is not None and job_occurred < cutoff:
                     continue
 
                 code = status_mod.normalize(live_job.get("status_code"))
@@ -378,12 +460,26 @@ def audit_experiment(
                     )
                     continue
 
+                report = _decision_report(live_job)
+                derived = _requested_applied(report)
+                if derived is None:
+                    findings.append(
+                        JobFinding(
+                            name,
+                            qname,
+                            ordinal,
+                            job_id,
+                            arm,
+                            "unreported",
+                            "decision_report has neither requested/applied nor filters",
+                        )
+                    )
+                    continue
+                requested, applied = derived
+
                 treatment = {k: v for k, v in behaviors.items() if k != "strategy"}
                 schema = schemas.get(strategy)
                 expected = expected_filters(strategy, treatment, schema)
-                report = _decision_report(live_job)
-                requested = set(report.get("requested") or [])
-                applied = set(report.get("applied") or [])
 
                 if expected != requested:
                     findings.append(
@@ -399,27 +495,26 @@ def audit_experiment(
                     )
                     continue
 
-                if status_mod.job_decision_treatment_lost(live_job):
-                    findings.append(
-                        JobFinding(name, qname, ordinal, job_id, arm, "lost", "treatment_lost")
-                    )
+                verdict = status_mod.job_decision_verdict(live_job)
+
+                if verdict.treatment_lost:
+                    detail = "treatment_lost"
+                    if verdict.degraded:
+                        detail += "; degraded"
+                    findings.append(JobFinding(name, qname, ordinal, job_id, arm, "lost", detail))
                     continue
 
                 if not requested <= applied:
+                    detail = f"not applied: {sorted(requested - applied)}"
+                    if verdict.degraded:
+                        detail += "; degraded"
                     findings.append(
-                        JobFinding(
-                            name,
-                            qname,
-                            ordinal,
-                            job_id,
-                            arm,
-                            "degraded",
-                            f"not applied: {sorted(requested - applied)}",
-                        )
+                        JobFinding(name, qname, ordinal, job_id, arm, "degraded", detail)
                     )
                     continue
 
-                findings.append(JobFinding(name, qname, ordinal, job_id, arm, "ok", ""))
+                detail = "degraded" if verdict.degraded else ""
+                findings.append(JobFinding(name, qname, ordinal, job_id, arm, "ok", detail))
 
     return AuditResult(
         experiment_id=experiment_id, hours=hours, sampled=sampled, total=total, findings=findings

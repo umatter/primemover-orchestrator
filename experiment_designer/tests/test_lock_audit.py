@@ -267,8 +267,11 @@ def test_unfinished():
     result = audit_experiment(FakeSession(job2), EXPERIMENT_ID, LOCK_TEXT)
     finding = _bot_t_finding(result)
     assert finding.outcome == "unfinished"
+    # A job still running has not had a chance to report anything: never a
+    # failure, strict or not (the design doc's rule; unlike unreported/
+    # degraded/missing, --strict does not escalate it).
     assert result.ok(strict=False)
-    assert not result.ok(strict=True)
+    assert result.ok(strict=True)
 
 
 def test_missing():
@@ -278,6 +281,225 @@ def test_missing():
     assert finding.job_id is None
     assert result.ok(strict=False)
     assert not result.ok(strict=True)
+
+
+class MissingCrawlerSession(FakeSession):
+    """Serves an experiment where bot_t was never created (wrong experiment
+    id, or a partial upload) -- ``experiments/{id}`` lists only bot_c."""
+
+    def get(self, path, params=None):
+        if path == f"experiments/{EXPERIMENT_ID}":
+            self.calls.append(path)
+            return {"id": EXPERIMENT_ID, "crawlers": [{"id": 31, "name": "bot_c"}]}
+        return super().get(path, params)
+
+
+def test_missing_crawler_is_reported_not_skipped():
+    job2 = {"status_code": "success"}  # never read: bot_t has no live crawler at all
+    result = audit_experiment(MissingCrawlerSession(job2), EXPERIMENT_ID, LOCK_TEXT)
+    finding = _bot_t_finding(result)
+    assert finding.outcome == "missing"
+    assert finding.detail == "no live crawler"
+    assert finding.job_id is None
+    assert finding.arm == TREATED_ARM
+    assert result.ok(strict=False)
+    assert not result.ok(strict=True)
+    # bot_c is unaffected and still audited normally.
+    assert any(f.crawler == "bot_c" for f in result.findings)
+
+
+def test_report_derives_requested_applied_from_filters_only():
+    # Every backfilled row, and the decision function's own payload, carry
+    # only `filters` -- never `requested`/`applied` directly.
+    job2 = {
+        "status_code": "success",
+        "decision_report": {"filters": {"mainstream_media": "ok", "similar": "ok"}},
+        "decision_treatment_lost": False,
+    }
+    result = audit_experiment(FakeSession(job2), EXPERIMENT_ID, LOCK_TEXT)
+    finding = _bot_t_finding(result)
+    assert finding.outcome == "ok"
+
+
+def test_report_derives_degraded_from_filters_only():
+    job2 = {
+        "status_code": "success",
+        "decision_report": {"filters": {"mainstream_media": "ok", "similar": "failed: xpath"}},
+        "decision_treatment_lost": False,
+    }
+    result = audit_experiment(FakeSession(job2), EXPERIMENT_ID, LOCK_TEXT)
+    finding = _bot_t_finding(result)
+    assert finding.outcome == "degraded"
+
+
+def test_report_with_neither_requested_nor_filters_is_unreported():
+    job2 = {
+        "status_code": "success",
+        "decision_report": {},
+        "decision_treatment_lost": False,
+    }
+    result = audit_experiment(FakeSession(job2), EXPERIMENT_ID, LOCK_TEXT)
+    finding = _bot_t_finding(result)
+    assert finding.outcome == "unreported"
+
+
+def test_ok_finding_carries_degraded_in_detail_when_verdict_says_so():
+    # requested <= applied and not treatment_lost -- but the decision
+    # function's own `degraded` flag is still set (e.g. selection failed for
+    # an unrelated reason). Outcome stays "ok"; the flag must not be silent.
+    job2 = {
+        "status_code": "success",
+        "decision_degraded": True,
+        "decision_report": {
+            "requested": ["mainstream_media", "similar"],
+            "applied": ["mainstream_media", "similar"],
+            "filters": {"mainstream_media": "ok", "similar": "ok"},
+        },
+        "decision_treatment_lost": False,
+    }
+    result = audit_experiment(FakeSession(job2), EXPERIMENT_ID, LOCK_TEXT)
+    finding = _bot_t_finding(result)
+    assert finding.outcome == "ok"
+    assert "degraded" in finding.detail
+
+
+class OldQueueSession(FakeSession):
+    """bot_t's queue finished long before the audit window; bot_c's did not."""
+
+    def get(self, path, params=None):
+        if path == "jobs" and (params or {}).get("filter[queue]") == "500":
+            raise AssertionError(
+                "bot_t's queue is outside the window; its jobs must not be fetched"
+            )
+        result = super().get(path, params)
+        if (
+            path == f"experiments/{EXPERIMENT_ID}/queues-unprocessed"
+            and (params or {}).get("page", 1) == 1
+        ):
+            for row in result:
+                if row["crawler_id"] == 30:
+                    row["finished_at"] = "2020-01-01T00:00:00+00:00"
+        return result
+
+
+def test_queue_outside_the_window_is_skipped_before_fetching_its_jobs():
+    job2 = {
+        "status_code": "success",
+        "decision_report": {
+            "requested": ["mainstream_media", "similar"],
+            "applied": ["mainstream_media", "similar"],
+            "filters": {"mainstream_media": "ok", "similar": "ok"},
+        },
+        "decision_treatment_lost": False,
+    }
+    result = audit_experiment(OldQueueSession(job2), EXPERIMENT_ID, LOCK_TEXT, hours=24)
+    assert not any(f.crawler == "bot_t" for f in result.findings)
+    assert any(f.crawler == "bot_c" and f.outcome == "ok" for f in result.findings)
+
+
+def _crawler_with_jobs(name: str, jobs: list[dict]) -> dict:
+    return {
+        "name": name,
+        "description": "d",
+        "configuration": {
+            "name": "c",
+            "description": "d",
+            "active": 1,
+            "params": {"pi": 0, "psi": 0, "kappa": 0, "tau": 0},
+            "preferences": [],
+        },
+        "proxy": _proxy(),
+        "agent": _agent(),
+        "queues": [
+            {
+                "name": "s1",
+                "description": "d",
+                "start_offset": "+5m",
+                "timezone": "Europe/Zurich",
+                "timezone_utc_offset": "+02:00",
+                "active": True,
+                "jobs": jobs,
+            }
+        ],
+    }
+
+
+def make_pagination_lock_text(n: int) -> str:
+    jobs = [
+        _job(f"select{i}", "lambdaselect", [_behavior("strategy", "youtube_v1")]) for i in range(n)
+    ]
+    crawler = _crawler_with_jobs("bot_p", jobs)
+    lock = Lock(
+        provenance=Provenance(
+            spec_path="design/spec.yaml",
+            spec_sha256="cd" * 32,
+            generator=None,
+            git_commit=None,
+            pmspec_version="0.1.0",
+            seed=2,
+        ),
+        experiment={
+            "name": "Pagination",
+            "description": "",
+            "runner_user_id": None,
+            "contact": None,
+        },
+        schedule={"anchor": "upload"},
+        crawlers=[crawler],
+    )
+    return dump_lock(lock)
+
+
+class PaginatingSession:
+    """A queue with 20 jobs, served exactly like the real API defaults: a
+    request with no explicit ``per_page`` gets back only 15, newest-id-first."""
+
+    base_url = "http://fake"
+
+    def __init__(self, n_jobs: int) -> None:
+        self.n_jobs = n_jobs
+        self.job_page_requests: list[dict] = []
+
+    def get(self, path, params=None):
+        params = params or {}
+        if path == f"experiments/{EXPERIMENT_ID}":
+            return {"id": EXPERIMENT_ID, "crawlers": [{"id": 40, "name": "bot_p"}]}
+        if path == f"experiments/{EXPERIMENT_ID}/queues-unprocessed":
+            if params.get("page", 1) > 1:
+                return []
+            return [{"id": 600, "name": "s1", "crawler_id": 40, "start_at": "2026-09-13 09:00:00"}]
+        if path == f"experiments/{EXPERIMENT_ID}/queues-processed":
+            return []
+        if path == "jobs":
+            assert params.get("filter[queue]") == "600"
+            self.job_page_requests.append(dict(params))
+            per_page = params.get("per_page", 15)
+            page = params.get("page", 1)
+            all_jobs = [
+                {
+                    "id": i + 1,
+                    "order": i + 1,
+                    "status_code": "success",
+                    "decision_report": {"requested": [], "applied": [], "filters": {}},
+                    "decision_treatment_lost": False,
+                }
+                for i in range(self.n_jobs)
+            ]
+            start = (page - 1) * per_page
+            return {"data": all_jobs[start : start + per_page]}
+        raise AssertionError(path)
+
+
+def test_queue_with_more_than_fifteen_jobs_is_fully_paginated():
+    session = PaginatingSession(20)
+    lock_text = make_pagination_lock_text(20)
+    result = audit_experiment(session, EXPERIMENT_ID, lock_text)
+    ordinals = sorted(f.ordinal for f in result.findings if f.crawler == "bot_p")
+    assert ordinals == list(range(20))
+    assert all(f.outcome == "ok" for f in result.findings if f.crawler == "bot_p")
+    # The fix requests a page size well above the real API's own default of
+    # 15 -- without it, this queue would have been truncated to 15 jobs.
+    assert any(req.get("per_page", 0) > 15 for req in session.job_page_requests)
 
 
 def test_sample_audits_one_crawler():
@@ -347,3 +569,11 @@ def test_expected_filters_custom_strategy_with_x_requested_schema():
     treatment = {"foo": "1", "bar": "1"}
     # "bar" is truthy but absent from the mapping, so it is ignored.
     assert expected_filters("custom_x", treatment, schema) == {"filterA"}
+
+
+def test_expected_filters_custom_strategy_treats_false_and_zero_float_as_not_requested():
+    # A treatment value can arrive already typed (bool/float) rather than as
+    # the string a lock behaviour normally carries; str(False) == "False" and
+    # str(0.0) == "0.0" would otherwise slip past the "empty-ish" string check.
+    treatment = {"foo": False, "bar": 0.0, "baz": "1"}
+    assert expected_filters("custom_x", treatment) == {"baz"}

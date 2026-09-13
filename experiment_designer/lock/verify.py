@@ -154,16 +154,26 @@ def lock_shape(lock: Lock, anchor_dt: datetime, *, deep: bool) -> dict[str, Any]
     return {"crawlers": crawlers}
 
 
-def _paginate(session: Any, path: str) -> list[dict[str, Any]]:
+def _paginate(
+    session: Any, path: str, *, params: dict[str, Any] | None = None
+) -> list[dict[str, Any]]:
     """Every row of a paginated listing.
 
     Both real sessions unwrap ``data`` before returning, so the page's ``meta``
     (and its ``last_page``) never reaches this function: a page is a plain list,
-    and the listing ends at the first page shorter than what was asked for."""
+    and the listing ends at the first page shorter than what was asked for.
+
+    *params* is merged into the pagination keys on every page request -- e.g.
+    ``{"filter[queue]": "500"}`` -- so a filtered listing still pages fully
+    instead of relying on whatever page size the endpoint defaults to when
+    ``per_page`` is left unspecified."""
     rows: list[dict[str, Any]] = []
     page = 1
     while True:
-        body = session.get(path, params={"per_page": _PAGE_SIZE, "page": page})
+        query = {"per_page": _PAGE_SIZE, "page": page}
+        if params:
+            query.update(params)
+        body = session.get(path, params=query)
         data = body.get("data", body) if isinstance(body, dict) else body
         data = list(data or [])
         rows.extend(data)
