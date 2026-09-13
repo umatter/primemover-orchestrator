@@ -563,10 +563,19 @@ def _strategy_schemas_for_lock(lock: Lock, base_dir: Path) -> dict[str, dict[str
 @cli.command()
 @click.argument("experiment_id", type=int)
 @click.argument("lock", type=click.Path(exists=True))
-@click.option("--hours", default=24, show_default=True, type=int, help="Audit window")
-@click.option("--sample", type=int, default=None, help="Audit a seeded random sample of K crawlers")
 @click.option(
-    "--strict", is_flag=True, help="Also fail on unreported/degraded/missing decision reports"
+    "--hours", default=24, show_default=True, type=click.IntRange(min=1), help="Audit window"
+)
+@click.option(
+    "--sample",
+    type=click.IntRange(min=1),
+    default=None,
+    help="Audit a seeded random sample of K crawlers",
+)
+@click.option(
+    "--strict",
+    is_flag=True,
+    help="Also fail on unreported/degraded/missing decision reports, and when no job was audited",
 )
 def audit(experiment_id: int, lock: str, hours: int, sample: int | None, strict: bool) -> None:
     """Did each finished lambda job in EXPERIMENT_ID apply the treatment LOCK says it should?"""

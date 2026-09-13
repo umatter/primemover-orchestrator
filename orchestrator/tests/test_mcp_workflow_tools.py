@@ -89,6 +89,19 @@ def test_audit_experiment_tool_caps_findings_at_50(monkeypatch):
     assert len(out["findings"]) == 50
 
 
+@pytest.mark.parametrize("kwargs", [{"hours": 0}, {"hours": -3}, {"sample": 0}, {"sample": -1}])
+def test_audit_experiment_tool_refuses_non_positive_hours_and_sample(monkeypatch, kwargs):
+    # hours=0 audits nothing and sample=0 audits nobody: either passes
+    # vacuously, so both are errors before audit_experiment is ever reached.
+    def _raise(*a, **k):
+        raise AssertionError("audit_experiment should not be reached")
+
+    monkeypatch.setattr(s, "audit_experiment", _raise)
+    out = json.loads(s.audit_experiment_tool(181, _lock_text(), **kwargs))
+    (name,) = kwargs
+    assert "error" in out and name in out["error"] and ">= 1" in out["error"]
+
+
 def test_audit_experiment_tool_invalid_lock_never_calls_audit_experiment(monkeypatch):
     def _raise(*a, **k):
         raise AssertionError("audit_experiment should not be reached with an invalid lock")

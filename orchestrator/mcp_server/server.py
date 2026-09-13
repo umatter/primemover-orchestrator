@@ -2746,8 +2746,9 @@ def audit_experiment_tool(
         lock_content: the lock text describing what each job should have requested
         hours: only consider queues/jobs finished within this many hours
         sample: audit a seeded random sample of this many crawlers instead of all of them
-        strict: also fail (`ok`) on unreported/degraded/missing decision reports, not just
-            an outright mismatch or a lost treatment
+        strict: also fail (`ok`) on unreported/degraded/missing decision reports -- and on an
+            audit that examined no job at all -- not just an outright mismatch, a lost
+            treatment or a live queue whose job types no longer line up with the lock (`shape`)
 
     Strategy schemas for a non-``youtube_v1`` strategy's ``x-requested`` mapping are resolved
     via ``SpecValidator(base_dir=None)._strategy_schema`` -- a lock has no directory of its
@@ -2760,6 +2761,13 @@ def audit_experiment_tool(
         "findings": [first 50 as dicts], "render"}.
     """
     from experiment_designer.spec.validator import SpecValidator
+
+    # hours=0 audits nothing and sample=0 audits nobody; either would pass
+    # vacuously. Same bound as the CLI's click.IntRange(min=1).
+    if hours < 1:
+        return json.dumps({"error": f"hours must be >= 1, got {hours}"})
+    if sample is not None and sample < 1:
+        return json.dumps({"error": f"sample must be >= 1, got {sample}"})
 
     try:
         parsed = load_lock(lock_content)

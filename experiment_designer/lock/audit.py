@@ -6,13 +6,24 @@ arbitrary keys for anything else). The live job row, once it finishes, carries
 the decision function's own account of what it did: ``decision_report``
 (``requested``/``applied``/``filters``), ``decision_treatment_lost`` and
 ``status_code``. This module walks a lock's jobs, matches each one carrying a
-``strategy`` behaviour to its live counterpart by (crawler name, queue name,
-job ordinal), and reports whether the two agree.
+``strategy`` behaviour -- or, with no ``strategy``, each real lambda-select
+job (:data:`LAMBDA_SELECT_TYPE`), audited under ``youtube_v1`` with the
+crawler's ``configuration.params`` as its treatment, which is how a
+params-based study such as the standing treatment canary carries its arm --
+to its live counterpart by (crawler name, queue name, job ordinal), and
+reports whether the two agree.
 
-Three checks, in order, each producing a distinct outcome the moment it fails
+Four checks, in order, each producing a distinct outcome the moment it fails
 (a later check is never reached once an earlier one has already flagged the
 job):
 
+``shape``
+    Is the live job at this ordinal the same ``type`` as the lock's? A live
+    queue with one extra leading job puts every lock ordinal one job early:
+    the lock's lambda job lands on a live ``visitjob`` (which reports nothing)
+    while the real lambda job -- possibly treatment-lost -- is never examined.
+    Type mismatch -> ``shape``, always a failure. A live row with no ``type``
+    at all cannot be checked and is not a ``shape`` finding.
 ``reported``
     Did the job carry a decision verdict at all (:func:`orchestrator.status.
     job_decision_reported`)? ``False`` -> ``unreported`` -- unknown, never
@@ -20,22 +31,46 @@ job):
 ``requested``
     Does the lock's expected filter set (:func:`expected_filters`) match what
     the decision function says it actually requested? Mismatch -> ``mismatch``.
+    Two filters are **hygiene**, not treatment (:data:`HYGIENE`), and are
+    never a mismatch in either direction: ``children_entertainment`` runs for
+    *every* crawler (the decision function marks it ``ok`` unconditionally and
+    the runner persists it in ``requested``, psi or not), and
+    ``already_watched`` is always-on history filtering (``ok`` on every
+    post-2026-09-10 payload; the runner's ``requestedFilters()`` already
+    leaves it out). So the rule is: every expected filter must be requested,
+    and every requested filter must be expected *or hygiene*. A consequence
+    worth stating plainly: **``psi`` cannot be verified from the report** --
+    the filter's state is ``ok`` for ``psi=0`` and ``psi=1`` alike, and only
+    the LLM prompt differs.
 ``applied``
     Did every requested filter apply, and was the bot not treatment-lost?
     ``decision_treatment_lost`` true -> ``lost``; requested filters not fully
     applied (but not lost) -> ``degraded``; otherwise -> ``ok``.
 
-A job whose live ``status_code`` is not terminal is ``unfinished`` before any
-of the above are evaluated -- it has not had a chance to report anything yet.
+A job whose live ``status_code`` is a known running state is ``unfinished``
+before any of the above are evaluated -- it has not had a chance to report
+anything yet. A ``status_code`` that is neither terminal nor running (NULL,
+empty, or a value :func:`orchestrator.status.normalize` does not recognise)
+is *unknown*, and unknown is ``unreported``, never "still running".
 A lock job with no live counterpart -- no live crawler at all, no live queue at
 its ordinal, or a shorter live job list -- is ``missing``. ``unfinished`` and
 ``missing`` are informational, never a failure, regardless of ``--strict``;
 ``unreported``/``degraded`` fail the run only under ``--strict``.
 
-Only jobs whose lock behaviours include a ``strategy`` key are considered --
-a plain ``visitjob`` has nothing to audit and produces no finding, but still
-occupies its ordinal so a genuinely missing job downstream is not mistaken for
-one that was never a lambda job to begin with.
+Only jobs whose lock behaviours include a ``strategy`` key, or whose type is
+:data:`LAMBDA_SELECT_TYPE`, are considered -- a plain ``visitjob`` has nothing
+to audit and produces no finding, but still occupies its ordinal so a
+genuinely missing job downstream is not mistaken for one that was never a
+lambda job to begin with.
+
+Queues sharing a name within a crawler are matched by ``start_offset`` order
+on the lock side against ``start_at`` order on the live side (the same rule
+``verify`` uses), so authoring order in the spec does not decide which live
+queue a lock queue is compared with.
+
+An audit that examines **no** job at all is vacuous: it fails under
+``--strict`` and says so in its rendering either way, so a window that
+excludes everything, or a lock naming no lambda job, cannot pass as clean.
 
 Read bounding: a live queue's own ``finished_at`` is checked against the
 ``--hours`` window *before* its jobs are fetched at all, so an old queue costs
@@ -55,9 +90,17 @@ from typing import Any
 
 from orchestrator import status as status_mod
 
+from ..spec.job_registry import JobRegistry
+from .anchor import parse_offset
 from .io import load_lock
 from .model import Lock
 from .verify import _paginate
+
+#: The API type of a lambda-select job. A lock job of this type with no
+#: ``strategy`` behaviour is audited under ``youtube_v1`` using the crawler's
+#: ``configuration.params`` -- the legacy/params-based shape the runner still
+#: serves via ``selectionConfiguration``.
+LAMBDA_SELECT_TYPE: str = JobRegistry.get_api_type("lambda_select") or "lambdasingleselectjob"
 
 #: The decision function's own table (``lambda_function.py`` ~L996-1004):
 #: ``pi``/``psi``/``kappa``/``tau`` are switches (only ``1`` requests the
@@ -71,15 +114,29 @@ YOUTUBE_V1: dict[str, str] = {
     "beta": "fringe",
 }
 
+#: Filters the decision function runs (or reports) regardless of any
+#: treatment: ``children_entertainment`` is baseline hygiene on every crawler
+#: and ``already_watched`` is always-on history filtering. Their presence in
+#: a report's ``requested`` set is never a mismatch, and their absence never
+#: is either. See the module docstring: ``psi`` is unverifiable from the
+#: report as a direct consequence.
+HYGIENE: frozenset[str] = frozenset({"already_watched", "children_entertainment"})
+
+#: Filters the runner's ``requestedFilters()`` leaves out of ``requested``
+#: (``LambdaSelectJobResult.NON_TREATMENT_FILTERS``). The derived-from-
+#: ``filters`` fallback in :func:`_requested_applied` mirrors it exactly so a
+#: backfilled row and a runner-persisted row read the same.
+_NON_TREATMENT_FILTERS: frozenset[str] = frozenset({"already_watched"})
+
 #: Values a treatment key's string form must not equal to count as "requested"
 #: under the generic (non-youtube_v1) rule.
 _EMPTYISH = frozenset({"", "0", "none", "None"})
 
 #: Outcomes worth listing individually in a rendered report.
-_OFFENDING = frozenset({"unreported", "mismatch", "lost", "degraded", "missing"})
+_OFFENDING = frozenset({"shape", "unreported", "mismatch", "lost", "degraded", "missing"})
 
 #: Outcomes that fail the run regardless of ``--strict``.
-_ALWAYS_BAD = frozenset({"mismatch", "lost"})
+_ALWAYS_BAD = frozenset({"shape", "mismatch", "lost"})
 
 #: Outcomes that only fail the run under ``--strict`` -- absence of evidence
 #: (``unreported``, ``missing``) and a degraded-but-not-lost arm are all "a
@@ -153,6 +210,17 @@ def expected_filters(
     return result
 
 
+def requested_matches(expected: set[str], requested: set[str]) -> bool:
+    """Does the report's ``requested`` set agree with the lock's expectation?
+
+    Every expected filter must have been requested, and every requested filter
+    must be expected -- except the :data:`HYGIENE` filters, which the decision
+    function requests on its own for every crawler and which therefore carry
+    no information about the treatment either way.
+    """
+    return not (expected - requested) and not ((requested - expected) - HYGIENE)
+
+
 @dataclass
 class JobFinding:
     crawler: str
@@ -180,10 +248,18 @@ class AuditResult:
             out[key] = out.get(key, 0) + 1
         return out
 
+    @property
+    def audited(self) -> int:
+        """How many jobs were actually examined."""
+        return len(self.findings)
+
     def ok(self, strict: bool) -> bool:
-        """No ``mismatch``/``lost`` ever passes; ``--strict`` additionally
-        refuses ``unreported``/``degraded``/``missing``. ``unfinished`` never
-        fails the run, strict or not."""
+        """No ``shape``/``mismatch``/``lost`` ever passes; ``--strict``
+        additionally refuses ``unreported``/``degraded``/``missing`` -- and an
+        audit that examined no job at all, which is vacuous, not clean.
+        ``unfinished`` never fails the run, strict or not."""
+        if strict and self.audited == 0:
+            return False
         bad = set(_ALWAYS_BAD)
         if strict:
             bad |= _STRICT_BAD
@@ -200,7 +276,10 @@ class AuditResult:
             for (arm, outcome), n in sorted(counts.items()):
                 lines.append(f"  {arm}  {outcome}: {n}")
         else:
-            lines.append("no jobs to audit")
+            lines.append(
+                "!! no jobs audited -- nothing in the lock matched a finished job inside the "
+                "window; this says nothing about the treatment (fails under --strict)"
+            )
         offending = [f for f in self.findings if f.outcome in _OFFENDING]
         if offending:
             shown = offending[:10]
@@ -251,6 +330,35 @@ def lock_strategies(lock: Lock) -> set[str]:
                 if strategy:
                     strategies.add(str(strategy))
     return strategies
+
+
+def _job_treatment(
+    crawler: dict[str, Any], job: dict[str, Any]
+) -> tuple[str, dict[str, Any]] | None:
+    """``(strategy, treatment)`` for a lock job worth auditing, else ``None``.
+
+    A ``strategy`` behaviour wins, with the job's other behaviours as the
+    treatment. Without one, a job of :data:`LAMBDA_SELECT_TYPE` is a
+    params-based YouTube job: the runner hands the decision function
+    ``configuration.params`` via ``selectionConfiguration``, so it is audited
+    under ``youtube_v1`` with those params (``pi``/``psi``/``kappa``/``tau``/
+    ``beta``) as the treatment. Anything else has nothing to audit.
+    """
+    behaviors = _behaviors(job)
+    strategy = behaviors.get("strategy")
+    if strategy is not None:
+        return str(strategy), {k: v for k, v in behaviors.items() if k != "strategy"}
+    if job.get("type") == LAMBDA_SELECT_TYPE:
+        params = (crawler.get("configuration") or {}).get("params") or {}
+        return "youtube_v1", {k: params.get(k, 0) for k in YOUTUBE_V1}
+    return None
+
+
+def _offset_seconds(queue: dict[str, Any]) -> float:
+    try:
+        return parse_offset(str(queue.get("start_offset") or "+0s")).total_seconds()
+    except ValueError:
+        return 0.0
 
 
 def _wall(value: Any) -> str:
@@ -307,7 +415,8 @@ def _requested_applied(report: dict[str, Any]) -> tuple[set[str], set[str]] | No
     own summary lists: a filter in state ``"ok"`` was both requested and
     applied; one in a ``"failed: ..."`` state was requested but did not apply;
     ``"skipped"``/``"not_implemented"`` (and any other state) mean it was never
-    requested at all.
+    requested at all; and ``already_watched`` is dropped from both sets,
+    exactly as the runner's ``NON_TREATMENT_FILTERS`` drops it.
 
     Returns ``None`` when there is no evidence to derive anything from --
     neither ``requested``/``applied`` nor ``filters`` -- so a caller never
@@ -321,6 +430,8 @@ def _requested_applied(report: dict[str, Any]) -> tuple[set[str], set[str]] | No
     requested: set[str] = set()
     applied: set[str] = set()
     for name, state in filters.items():
+        if str(name).strip().lower() in _NON_TREATMENT_FILTERS:
+            continue
         state_l = str(state).strip().lower()
         if state_l == "ok":
             requested.add(name)
@@ -403,7 +514,7 @@ def audit_experiment(
             for lock_queue in crawler.get("queues", []):
                 qname = lock_queue.get("name", "")
                 for ordinal, job in enumerate(lock_queue.get("jobs", [])):
-                    if "strategy" not in _behaviors(job):
+                    if _job_treatment(crawler, job) is None:
                         continue
                     findings.append(
                         JobFinding(name, qname, ordinal, None, arm, "missing", "no live crawler")
@@ -415,7 +526,14 @@ def audit_experiment(
             live_by_qname.setdefault(q.get("name", ""), []).append(q)
         qname_position: dict[str, int] = {}
 
-        for lock_queue in crawler.get("queues", []):
+        # Same-name queues: the live side is sorted by start_at, so the lock
+        # side must be sorted by start_offset too (as verify does), or the
+        # authoring order in the spec decides which live queue each lock
+        # queue is compared with.
+        lock_queues = sorted(
+            crawler.get("queues", []), key=lambda q: (_offset_seconds(q), q.get("name", ""))
+        )
+        for lock_queue in lock_queues:
             qname = lock_queue.get("name", "")
             position = qname_position.get(qname, 0)
             qname_position[qname] = position + 1
@@ -424,7 +542,7 @@ def audit_experiment(
 
             if position >= len(candidates):
                 for ordinal, job in enumerate(lock_jobs):
-                    if "strategy" not in _behaviors(job):
+                    if _job_treatment(crawler, job) is None:
                         continue
                     findings.append(
                         JobFinding(name, qname, ordinal, None, arm, "missing", "no live queue")
@@ -445,10 +563,10 @@ def audit_experiment(
             live_jobs = _live_jobs(session, int(live_queue["id"]))
 
             for ordinal, job in enumerate(lock_jobs):
-                behaviors = _behaviors(job)
-                strategy = behaviors.get("strategy")
-                if strategy is None:
+                resolved = _job_treatment(crawler, job)
+                if resolved is None:
                     continue
+                strategy, treatment = resolved
 
                 if ordinal >= len(live_jobs):
                     findings.append(
@@ -467,11 +585,46 @@ def audit_experiment(
                 if job_occurred is not None and job_occurred < cutoff:
                     continue
 
+                # Shape first: a job of the wrong type at this ordinal means
+                # the live queue drifted from the lock and nothing below --
+                # including a clean "unreported" on a visitjob -- can be
+                # trusted. A live row with no type cannot be checked.
+                lock_type = job.get("type")
+                live_type = live_job.get("type")
+                if lock_type and live_type and str(live_type) != str(lock_type):
+                    findings.append(
+                        JobFinding(
+                            name,
+                            qname,
+                            ordinal,
+                            job_id,
+                            arm,
+                            "shape",
+                            f"lock {lock_type} vs live {live_type} at ordinal {ordinal}",
+                        )
+                    )
+                    continue
+
                 code = status_mod.normalize(live_job.get("status_code"))
-                if not status_mod.is_terminal(code):
+                if status_mod.is_running(code):
                     findings.append(
                         JobFinding(
                             name, qname, ordinal, job_id, arm, "unfinished", f"status_code={code}"
+                        )
+                    )
+                    continue
+                if not status_mod.is_terminal(code):
+                    # NULL, empty, or a value the vocabulary does not know:
+                    # unknown, and unknown is never "still running".
+                    findings.append(
+                        JobFinding(
+                            name,
+                            qname,
+                            ordinal,
+                            job_id,
+                            arm,
+                            "unreported",
+                            f"status_code={code!r} is not a known state",
                         )
                     )
                     continue
@@ -501,11 +654,10 @@ def audit_experiment(
                     continue
                 requested, applied = derived
 
-                treatment = {k: v for k, v in behaviors.items() if k != "strategy"}
                 schema = schemas.get(strategy)
                 expected = expected_filters(strategy, treatment, schema)
 
-                if expected != requested:
+                if not requested_matches(expected, requested):
                     findings.append(
                         JobFinding(
                             name,

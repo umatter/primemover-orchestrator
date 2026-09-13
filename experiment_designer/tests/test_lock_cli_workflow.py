@@ -181,6 +181,15 @@ def test_audit_passes_hours_sample_and_strict_through(fake_audit, tmp_path):
     assert result.ok_calls == [True]
 
 
+@pytest.mark.parametrize("args", [["--hours", "0"], ["--hours", "-1"], ["--sample", "0"]])
+def test_audit_refuses_non_positive_hours_and_sample(fake_audit, tmp_path, args):
+    lock = tmp_path / "e.lock.yaml"
+    lock.write_text(_minimal_lock_text())
+    out = CliRunner().invoke(cli, ["audit", "181", str(lock), *args])
+    assert out.exit_code == 2, out.output
+    assert "experiment_id" not in fake_audit  # never reached audit_experiment
+
+
 def test_audit_reports_an_unresolvable_anchor_as_a_refusal(monkeypatch, tmp_path):
     from experiment_designer.lock.anchor import AnchorError
 
