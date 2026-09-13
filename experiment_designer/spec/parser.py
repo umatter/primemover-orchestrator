@@ -21,7 +21,7 @@ from typing import Any
 import yaml
 
 from .data_pools import DataPoolManager
-from .draws import is_draw, make_token
+from .draws import is_draw, make_token, select_error
 from .drops import Drops
 from .file_loader import FileLoader, create_file_tag_loader, resolve_file_references
 from .job_registry import JobRegistry
@@ -722,6 +722,21 @@ class SpecParser:
                     value["from_pool"], value["field"], select, base_ordinal + n
                 )
                 n += 1
+            elif isinstance(value, dict):
+                # A dict that is not a valid draw. Substituting it would hand
+                # the bot `str({...})`; tokenising it would hand the bot a
+                # token no regex can resolve. Neither: report the drop and
+                # leave the key out, so the template's `${key}` survives for
+                # the converter's strict scan to report as unresolved. The
+                # validator says the same thing with a full path when it
+                # runs first; this guard is for the paths it does not cover.
+                why = select_error(value) or "not a valid pool draw"
+                self.drops.report(
+                    f"crawler[?].with.{key}",
+                    why,
+                    "a with: dict value must be "
+                    "{from_pool: <pool>, field: <field>, select: random|first}",
+                )
             else:
                 tokenised[key] = value
         return tokenised

@@ -22,12 +22,10 @@ try:
 except ImportError:
     HAS_JSONSCHEMA = False
 
-from .draws import is_draw, is_valid_name
+from .draws import is_draw, is_valid_name, select_error
 from .drops import Drops
 from .job_registry import JobRegistry
 from .time_utils import is_relative_time
-
-_DRAW_SELECTS = frozenset({"random", "first"})
 
 _TEMPLATE_VAR_RE = re.compile(r"\$\{(?!secret:)[^}]*\}|\{[A-Za-z_][A-Za-z0-9_]*(?::[^}]*)?\}")
 _INDEX_RE = re.compile(r"\[\d+\]")
@@ -677,6 +675,12 @@ class SpecValidator:
                             "pool/field names may only contain letters, digits, _ . -",
                             "rename the pool or the field so from_pool/field fit that charset",
                         )
+                    elif select_error(value) is not None:
+                        self.drops.report(
+                            f"{prefix}.with.{key}",
+                            f"unknown select {value.get('select')!r}",
+                            "select must be 'random' or 'first'",
+                        )
                     elif not is_draw(value):
                         self.drops.report(
                             f"{prefix}.with.{key}",
@@ -689,12 +693,6 @@ class SpecValidator:
                             f"{prefix}.with.{key}",
                             "count is not accepted on a with: draw",
                             "one value per with: key -- N distinct values are N template calls",
-                        )
-                    elif value.get("select") not in (None, *_DRAW_SELECTS):
-                        self.drops.report(
-                            f"{prefix}.with.{key}",
-                            f"unknown select {value.get('select')!r}",
-                            "select must be 'random' or 'first'",
                         )
 
         # Check for template reference

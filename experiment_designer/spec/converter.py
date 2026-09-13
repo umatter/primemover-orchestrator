@@ -15,7 +15,7 @@ from typing import Any
 
 from .data_pools import DataPoolManager, resolve_pool_references
 from .design_expander import DesignExpander
-from .draws import DRAW_TOKEN_RE, resolve_draws
+from .draws import ANY_DRAW_TOKEN_RE, resolve_draws
 from .drops import Drops
 from .parser import ParsedSpec, SpecParser
 from .time_utils import parse_relative_time
@@ -664,7 +664,9 @@ class SpecConverter:
         # A surviving `%%pmspec-draw:...%%` token: `resolve_draws` failed on it
         # (unknown pool, missing field, exhaustion -- already in self.errors)
         # and left it in place rather than guess. Reported separately so the
-        # message names it as a draw, not a plain unresolved variable.
+        # message names it as a draw, not a plain unresolved variable. Matched
+        # loosely (ANY_DRAW_TOKEN_RE) on purpose: a token DRAW_TOKEN_RE cannot
+        # parse is *more* certain to reach the bot as a literal, not less.
         draw_groups: dict[tuple[str, str], list[str]] = {}
 
         def walk(node: Any, path: str) -> None:
@@ -672,7 +674,7 @@ class SpecConverter:
                 for m in _UNRESOLVED_RE.finditer(node):
                     generic = _INDEX_RE.sub("[*]", path)
                     groups.setdefault((m.group(0), generic), []).append(path)
-                for m in DRAW_TOKEN_RE.finditer(node):
+                for m in ANY_DRAW_TOKEN_RE.finditer(node):
                     generic = _INDEX_RE.sub("[*]", path)
                     draw_groups.setdefault((m.group(0), generic), []).append(path)
             elif isinstance(node, dict):

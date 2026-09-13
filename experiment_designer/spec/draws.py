@@ -30,6 +30,14 @@ DRAW_TOKEN_RE = re.compile(
     rf"%%pmspec-draw:({_NAME_PATTERN}):({_NAME_PATTERN}):(random|first):(\d+)%%"
 )
 
+#: Anything that *looks like* a draw token, well-formed or not. The strict
+#: scan uses this one: a token `DRAW_TOKEN_RE` cannot parse (an invalid
+#: select, a truncated body) is still a literal that must not reach a bot.
+ANY_DRAW_TOKEN_RE = re.compile(r"%%pmspec-draw:[^%]*%%")
+
+#: The only `select` modes a draw accepts.
+DRAW_SELECTS = frozenset({"random", "first"})
+
 _TOKEN_FMT = "%%pmspec-draw:{pool}:{field}:{select}:{ordinal}%%"
 
 
@@ -54,12 +62,24 @@ def is_valid_name(value: str) -> bool:
     return bool(_NAME_RE.fullmatch(value))
 
 
+def select_error(value: dict[str, Any]) -> str | None:
+    """Why this draw's `select` is unusable, or ``None`` when it is absent or
+    one of :data:`DRAW_SELECTS`. Shared by the parser and the validator so a
+    `select: randm` is refused with the same words on every path."""
+    select = value.get("select")
+    if select is None or select in DRAW_SELECTS:
+        return None
+    return f"select must be random or first, got {select!r}"
+
+
 def is_draw(value: Any) -> bool:
     """A `with:` value is a pool draw iff it is a dict carrying a string
     `from_pool` and a string `field`, both restricted to the token charset
-    (anything else could not survive round-tripping through a token). `count`
-    is not accepted here -- one value per `with:` key; N distinct values are N
-    template calls."""
+    (anything else could not survive round-tripping through a token), and a
+    `select` that is absent or one of :data:`DRAW_SELECTS` -- any other select
+    would be embedded in a token `DRAW_TOKEN_RE` can never match, and ship to
+    the bot as a literal. `count` is not accepted here -- one value per `with:`
+    key; N distinct values are N template calls."""
     if not isinstance(value, dict):
         return False
     pool, field = value.get("from_pool"), value.get("field")
@@ -68,6 +88,7 @@ def is_draw(value: Any) -> bool:
         and isinstance(field, str)
         and is_valid_name(pool)
         and is_valid_name(field)
+        and select_error(value) is None
     )
 
 
