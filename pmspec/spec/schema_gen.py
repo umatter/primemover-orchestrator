@@ -226,6 +226,14 @@ def build_schema() -> dict[str, Any]:
             "items": {"$ref": "#/definitions/crawler"},
             "minItems": 1,
         },
+        "runs_for": {
+            "type": "string",
+            "description": (
+                "Path to the fleet lock this spec adds sessions to, relative to the spec. "
+                "Its presence makes this a runs spec: no design, no experiment, and no "
+                "agent/proxy/configuration on a crawler."
+            ),
+        },
     }
 
     experiment_fragments = {
@@ -414,6 +422,30 @@ def build_schema() -> dict[str, Any]:
             "description": "Queue definitions (alternative to session/additional_sessions)",
             "items": {"$ref": "#/definitions/session"},
         },
+        "from_base": {
+            "type": "boolean",
+            "description": (
+                "Runs spec only: write one copy of this block per crawler of the base "
+                "fleet lock, with {base.name} / {base.location} / {base.<preference>} "
+                "substituted"
+            ),
+            "default": False,
+        },
+        "updates": {
+            "type": "object",
+            "description": (
+                "Runs spec only: preference values to change on the existing bot when "
+                "this lock is uploaded"
+            ),
+            "properties": {
+                "preferences": {
+                    "type": "object",
+                    "description": "Preference name -> new value",
+                    "additionalProperties": {"type": ["string", "number", "boolean"]},
+                }
+            },
+            "additionalProperties": False,
+        },
     }
 
     design_fragments = {
@@ -496,7 +528,11 @@ def build_schema() -> dict[str, Any]:
             factor_fragments,
             required=["levels"],
         ),
-        "crawler": _object(sv._KEYS_CRAWLER, "Crawler definition", crawler_fragments),
+        "crawler": _object(
+            sv._KEYS_CRAWLER | sv._KEYS_CRAWLER_RUNS,
+            "Crawler definition (a fleet spec's, or a runs spec's)",
+            crawler_fragments,
+        ),
         "configuration": _object(
             sv._KEYS_CONFIGURATION, "Crawler configuration", configuration_fragments
         ),
@@ -911,8 +947,20 @@ def build_schema() -> dict[str, Any]:
         "title": "PrimeMover Experiment Specification",
         "description": "YAML/JSON schema for defining PrimeMover browser automation experiments",
         "type": "object",
-        "required": ["experiment", "crawlers"],
-        "properties": {key: root_fragments[key] for key in sorted(sv._KEYS_ROOT)},
+        # `experiment` is NOT required here, though a fleet spec must carry
+        # one: a *runs* spec (`runs_for:`) takes its experiment from the base
+        # lock and is refused if it declares one. Which of the two is required
+        # therefore depends on the spec kind, which jsonschema would express
+        # only as an `anyOf` whose failure message names neither. The
+        # lax-aware Python check says it precisely instead
+        # (`_validate_required_fields`), as it already did for `experiment.name`.
+        "required": ["crawlers"],
+        # One schema documents both spec kinds; the per-kind whitelists in
+        # `_validate_unknown_keys` are what actually refuses a key in the wrong
+        # one. Same reason `crawler` below is the union of the two key sets.
+        "properties": {
+            key: root_fragments[key] for key in sorted(sv._KEYS_ROOT | sv._KEYS_ROOT_RUNS)
+        },
         "additionalProperties": False,
         "definitions": definitions,
     }

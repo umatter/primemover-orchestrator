@@ -49,12 +49,19 @@ except ImportError:
 from .lock.anchor import AnchorError
 from .lock.api import ApiError, ApiSession
 from .lock.audit import audit_experiment, lock_strategies
-from .lock.build import compile_spec, merge_reports, parse_and_convert, parser_seed
+from .lock.build import (
+    compile_spec,
+    load_spec_raw,
+    merge_reports,
+    parse_and_convert,
+    prepare_runs_spec,
+)
 from .lock.cleanup import CleanupError, delete_experiments, find_test_experiments, parse_age
 from .lock.diff import diff_locks
 from .lock.io import LockError, dump_lock, is_lock_document, load_lock
 from .lock.model import Lock
 from .lock.resolve import resolve_for_upload
+from .lock.runs import unknown_name_errors
 from .lock.secrets import (
     DEFAULT_SECRETS_FILE,
     InsecureSecretsFile,
@@ -99,9 +106,6 @@ def validate(file: str, format: str, strict: bool, lax: bool, seed: int | None):
 
     Use --seed for reproducible file selections with !file tags.
     """
-    import yaml as yaml_lib
-
-    from .spec.file_loader import create_file_tag_loader, resolve_file_references
 
     file_path = Path(file)
     base_dir = file_path.parent
@@ -124,26 +128,33 @@ def validate(file: str, format: str, strict: bool, lax: bool, seed: int | None):
         click.echo(f"Anchor:     {lock.schedule['anchor']}")
         sys.exit(0)
 
-    # Create custom YAML loader with !file tag support (the parser's stream, seed + 1)
-    FileTagLoader, file_loader = create_file_tag_loader(base_dir=base_dir, seed=parser_seed(seed))
-
-    # Parse YAML first (using custom loader for !file tag support)
-    try:
-        raw_spec = yaml_lib.load(content, Loader=FileTagLoader)
-        # Resolve file references for schema validation
-        raw_spec = resolve_file_references(raw_spec, file_loader)
-    except yaml_lib.YAMLError as e:
+    # Parse the YAML first (!file tags resolved), exactly as compile_spec does.
+    raw_spec, yaml_errors = load_spec_raw(content, base_dir=base_dir, seed=seed)
+    if yaml_errors:
         if format == "json":
-            click.echo(
-                json.dumps({"valid": False, "errors": [f"YAML parse error: {e}"], "warnings": []})
-            )
+            click.echo(json.dumps({"valid": False, "errors": yaml_errors, "warnings": []}))
         else:
             click.secho("Validation FAILED", fg="red", bold=True)
-            click.secho(f"  YAML parse error: {e}", fg="red")
+            for error in yaml_errors:
+                click.secho(f"  {error}", fg="red")
+        sys.exit(1)
+
+    # A `runs_for:` spec is validated as a runs spec, against its base fleet
+    # lock -- the same preparation compile_spec does, so validate cannot pass a
+    # spec compile would refuse (or the other way round).
+    raw_spec, base, runs_errors = prepare_runs_spec(raw_spec, base_dir=base_dir)
+    is_runs = isinstance(raw_spec, dict) and "runs_for" in raw_spec
+    if is_runs and base is None:
+        if format == "json":
+            click.echo(json.dumps({"valid": False, "errors": runs_errors, "warnings": []}))
+        else:
+            click.secho("Validation FAILED", fg="red", bold=True)
+            for error in runs_errors:
+                click.secho(f"  ERROR: {error}", fg="red")
         sys.exit(1)
 
     # Run enhanced validator on raw spec
-    validator = SpecValidator(base_dir=base_dir, lax=lax)
+    validator = SpecValidator(base_dir=base_dir, lax=lax, runs=is_runs)
     validation_result = validator.validate(raw_spec)
 
     # Also parse and convert to catch additional errors. All three components
@@ -151,17 +162,30 @@ def validate(file: str, format: str, strict: bool, lax: bool, seed: int | None):
     # validator has already named every unknown workflow item, so the parser
     # does not report it again. Seeded the way compile_spec seeds.
     parsed, result = parse_and_convert(
-        content, base_dir=base_dir, seed=seed, lax=lax, report_unknown_items=False
+        content,
+        base_dir=base_dir,
+        seed=seed,
+        lax=lax,
+        report_unknown_items=False,
+        raw=raw_spec if is_runs else None,
+        runs=is_runs,
     )
 
     # Combine all errors and warnings: de-duplicated, one drop-count line
     dropped = validation_result.dropped + parsed.dropped + result.dropped
+    name_errors = (
+        unknown_name_errors([str(c.get("name", "")) for c in result.json_data], base)
+        if base is not None
+        else []
+    )
     all_errors, all_warnings = merge_reports(
         [
             validation_result.errors,
             parsed.errors,
             result.errors,
             validator.validate_expanded(result.json_data),
+            runs_errors,
+            name_errors,
         ],
         [validation_result.warnings, parsed.warnings, result.warnings],
         dropped,
@@ -179,8 +203,13 @@ def validate(file: str, format: str, strict: bool, lax: bool, seed: int | None):
             "errors": all_errors,
             "warnings": all_warnings,
             "dropped": dropped,
+            "kind": "runs" if is_runs else "fleet",
             "summary": {
-                "experiment_name": parsed.experiment.get("name", ""),
+                "experiment_name": (
+                    base.lock.experiment.get("name", "")
+                    if base is not None
+                    else parsed.experiment.get("name", "")
+                ),
                 "crawler_count": result.crawler_count,
                 "total_jobs": result.total_jobs,
                 "has_design": parsed.design is not None,
@@ -203,7 +232,11 @@ def validate(file: str, format: str, strict: bool, lax: bool, seed: int | None):
                 click.secho(f"  WARNING: {warning}", fg="yellow")
 
         click.echo()
-        click.echo(f"Experiment: {parsed.experiment.get('name', 'N/A')}")
+        if base is not None:
+            click.echo(f"Runs spec for: {base.lock.experiment.get('name', 'N/A')}")
+            click.echo(f"Base lock:  {base.sha256[:12]}")
+        else:
+            click.echo(f"Experiment: {parsed.experiment.get('name', 'N/A')}")
         click.echo(f"Crawlers:   {result.crawler_count}")
         click.echo(f"Total Jobs: {result.total_jobs}")
 
@@ -261,6 +294,9 @@ def compile(
     out_path.write_text(dump_lock(result.lock))
     lock = result.lock
     click.secho(f"Compiled: {out_path}", fg="green")
+    if lock.is_runs:
+        base_sha = lock.provenance.base_lock_sha256 or ""
+        click.echo(f"  Kind: runs  Base: {base_sha[:12]}")
     click.echo(f"  Crawlers: {len(lock.crawlers)}")
     click.echo(f"  Seed:     {lock.provenance.seed}")
     click.echo(f"  Anchor:   {lock.schedule['anchor']}")
@@ -380,6 +416,36 @@ def _load_lock_or_exit(lock_text: str) -> Lock:
         for error in e.errors:
             click.secho(f"  ERROR: {error}", fg="red")
         sys.exit(1)
+
+
+def _lock_header(lock: Lock) -> str:
+    """The one line that says which lock this is.
+
+    A runs lock names its base, because "which fleet were these bots
+    randomized into" is the first question anyone reading one has, and the
+    experiment name alone does not answer it (a fleet can have many runs
+    locks, and a name can be reused).
+    """
+    name = lock.experiment.get("name", "N/A")
+    if lock.is_runs:
+        base = (lock.provenance.base_lock_sha256 or "")[:12]
+        return f"Runs lock for {name} (base {base})"
+    return f"Experiment: {name}"
+
+
+def _runs_lock_header(file_path: str) -> str | None:
+    """`_lock_header` for FILE when it is a runs lock, else None."""
+    try:
+        content = Path(file_path).read_text()
+    except OSError:
+        return None
+    if not is_lock_document(content):
+        return None
+    try:
+        lock = load_lock(content)
+    except LockError:
+        return None
+    return _lock_header(lock) if lock.is_runs else None
 
 
 def _load_summary(generator: Any, file_path: str, seed: int | None, json_spec: bool) -> Any:
@@ -995,7 +1061,7 @@ def preview(file: str, seed: int | None):
             sys.exit(1)
         total_queues = sum(len(c["queues"]) for c in lock.crawlers)
         total_jobs = sum(len(q["jobs"]) for c in lock.crawlers for q in c["queues"])
-        click.secho(f"Experiment: {lock.experiment.get('name', 'N/A')}", bold=True)
+        click.secho(_lock_header(lock), bold=True)
         click.echo()
         click.secho("Lock (post-expansion -- no design formula)", bold=True, underline=True)
         click.echo()
@@ -1199,6 +1265,10 @@ def summary(
 
     # Output based on format
     if format == "text":
+        if files:
+            header = _runs_lock_header(files[0])
+            if header:
+                click.secho(header, bold=True)
         click.echo(summary_data.to_text())
 
     elif format == "json":

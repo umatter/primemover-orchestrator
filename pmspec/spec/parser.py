@@ -84,6 +84,7 @@ class SpecParser:
         *,
         lax: bool = False,
         report_unknown_items: bool = True,
+        runs: bool = False,
     ):
         """
         Initialize the spec parser.
@@ -98,11 +99,15 @@ class SpecParser:
                 validator already names every such item with a precise path, and
                 the parser's ``crawler[?]`` report would double the message and
                 the drop count. A standalone parse keeps reporting.
+            runs: Parse a *runs* spec (one carrying ``runs_for:``). Its
+                experiment is the base lock's, so no ``experiment:`` block is
+                required -- or allowed (the validator refuses one).
         """
         self.base_dir = base_dir or Path.cwd()
         self.seed = seed
         self.lax = lax
         self.report_unknown_items = report_unknown_items
+        self.runs = runs
         self.errors: list[str] = []
         self.warnings: list[str] = []
         self.file_loader: FileLoader | None = None
@@ -162,6 +167,23 @@ class SpecParser:
         self.errors.extend(self.file_loader.errors)
         self.warnings.extend(self.file_loader.warnings)
 
+        return self._build(raw)
+
+    def parse_raw(self, raw: dict[str, Any]) -> ParsedSpec:
+        """Parse a spec mapping that is already loaded and already `!file`-resolved.
+
+        The runs path needs this: ``compile_spec`` loads the YAML itself (to
+        validate it, and to expand ``from_base:`` against the base lock), so
+        re-serialising that dict just to parse it back would be a round trip
+        with nothing to gain and canonicalisation to lose.
+        """
+        self.errors = []
+        self.warnings = []
+        self.drops = Drops(self.lax)
+        self.file_loader = None
+        return self._build(raw)
+
+    def _build(self, raw: dict[str, Any]) -> ParsedSpec:
         # Extract sections
         version = raw.get("version", "1.0")
         experiment = raw.get("experiment", {})
@@ -180,8 +202,9 @@ class SpecParser:
             self.pool_manager.errors = []
             self.pool_manager.warnings = []
 
-        # Validate required fields
-        if not experiment.get("name"):
+        # Validate required fields. A runs spec has no experiment of its own:
+        # the name comes from the base lock it is compiled against.
+        if not self.runs and not experiment.get("name"):
             self.errors.append("experiment.name is required")
 
         # Expand crawlers

@@ -18,8 +18,9 @@ from pmspec.spec.validator import SpecValidator
 
 from .anchor import AnchorError, derive_anchor
 from .io import sha256_text
-from .model import Lock, Provenance
+from .model import Lock, LockError, Provenance
 from .provenance import git_commit, git_toplevel, pmspec_version
+from .runs import BaseLock, expand_from_base, load_base, unknown_name_errors
 from .secrets import find_literal_credentials
 
 _DROP_COUNT_LINE_RE = re.compile(r"^\d+ construct\(s\) would have been dropped")
@@ -80,22 +81,58 @@ def parse_and_convert(
     lax: bool = False,
     resolve_times: bool = True,
     report_unknown_items: bool = True,
+    raw: dict[str, Any] | None = None,
+    runs: bool = False,
 ) -> tuple[ParsedSpec, ConversionResult]:
     """Parse and convert a spec under the one seed rule (see ``parser_seed``).
 
     Every path that expands a spec -- compile_spec, the summary generator,
     `pmspec preview`/`validate` -- goes through here, so a summary and a lock
     built from the same seed draw the same random pool rows. Nothing else in
-    the pipeline may construct a seeded SpecParser or SpecConverter."""
+    the pipeline may construct a seeded SpecParser or SpecConverter.
+
+    *raw* is an already-loaded, already-`!file`-resolved spec mapping to parse
+    instead of *spec_text* -- the runs path, where ``from_base:`` has rewritten
+    the crawler list before anything is parsed. *runs* puts the parser and the
+    converter in runs mode (no experiment of its own; queues only)."""
     parser = SpecParser(
         base_dir=base_dir,
         seed=parser_seed(seed),
         lax=lax,
         report_unknown_items=report_unknown_items,
+        runs=runs,
     )
-    parsed = parser.parse(spec_text)
-    converter = SpecConverter(seed=seed, resolve_times=resolve_times, lax=lax)
+    parsed = parser.parse_raw(raw) if raw is not None else parser.parse(spec_text)
+    converter = SpecConverter(seed=seed, resolve_times=resolve_times, lax=lax, runs=runs)
     return parsed, converter.convert(parsed)
+
+
+def load_spec_raw(spec_text: str, *, base_dir: Path, seed: int | None) -> tuple[Any, list[str]]:
+    """The raw YAML of a spec, `!file` tags resolved, or the YAML error."""
+    FileTagLoader, file_loader = create_file_tag_loader(base_dir=base_dir, seed=parser_seed(seed))
+    try:
+        raw = yaml.load(spec_text, Loader=FileTagLoader)
+    except yaml.YAMLError as e:
+        return None, [f"YAML parse error: {e}"]
+    return resolve_file_references(raw, file_loader), []
+
+
+def prepare_runs_spec(raw: Any, *, base_dir: Path) -> tuple[Any, BaseLock | None, list[str]]:
+    """For a spec carrying ``runs_for:``: load its base fleet lock and expand
+    every ``from_base:`` crawler block against it.
+
+    Returns ``(raw, base, errors)`` -- ``base`` is None for a fleet spec (and
+    for a runs spec whose base could not be loaded, which is a hard error).
+    Shared by ``compile_spec`` and ``pmspec validate`` so the two cannot
+    disagree about what a runs spec is."""
+    if not isinstance(raw, dict) or "runs_for" not in raw:
+        return raw, None, []
+    try:
+        base = load_base(base_dir, str(raw["runs_for"]))
+    except LockError as e:
+        return raw, None, list(e.errors)
+    expanded, errors = expand_from_base(raw, base)
+    return expanded, base, errors
 
 
 def recorded_spec_path(spec_path: str, repo_dir: Path) -> str:
@@ -126,13 +163,19 @@ def compile_spec(
     # The raw YAML, fully resolved (!file tags included), is what the strict
     # contract validates -- structurally and semantically, before a single
     # construct has been expanded or converted.
-    FileTagLoader, file_loader = create_file_tag_loader(base_dir=base_dir, seed=parser_seed(seed))
-    try:
-        raw = yaml.load(spec_text, Loader=FileTagLoader)
-        raw = resolve_file_references(raw, file_loader)
-    except yaml.YAMLError as e:
-        return CompileResult(None, [f"YAML parse error: {e}"], [])
-    validator = SpecValidator(base_dir=base_dir, lax=lax)
+    raw, yaml_errors = load_spec_raw(spec_text, base_dir=base_dir, seed=seed)
+    if yaml_errors:
+        return CompileResult(None, yaml_errors, [])
+
+    # A spec naming a fleet lock with `runs_for:` is a *runs* spec: its
+    # `from_base:` blocks are expanded against that lock before anything else
+    # sees the spec, and every component below runs in runs mode.
+    raw, base, runs_errors = prepare_runs_spec(raw, base_dir=base_dir)
+    is_runs = isinstance(raw, dict) and "runs_for" in raw
+    if is_runs and base is None:
+        return CompileResult(None, runs_errors, [])
+
+    validator = SpecValidator(base_dir=base_dir, lax=lax, runs=is_runs)
     validation = validator.validate(raw if isinstance(raw, dict) else {})
 
     # The validator above already names every unknown workflow item; the parser
@@ -144,6 +187,8 @@ def compile_spec(
         lax=lax,
         resolve_times=False,
         report_unknown_items=False,
+        raw=raw if is_runs else None,
+        runs=is_runs,
     )
     if parsed.errors:
         dropped = validation.dropped + parsed.dropped
@@ -178,14 +223,31 @@ def compile_spec(
             lax=lax,
             resolve_times=False,
             report_unknown_items=False,
+            raw=raw if is_runs else None,
+            runs=is_runs,
         )
 
     # Treatment values are concrete only now (`with:` and design variables
     # substituted); the raw pass above skipped templated ones.
     expanded_errors = validator.validate_expanded(result.json_data)
     dropped = validation.dropped + parsed.dropped + result.dropped
+    # A name with no bot behind it is a session that would go nowhere: checked
+    # after conversion, so a name built from `{base.name}` or a design variable
+    # is judged as the string that would actually be uploaded.
+    name_errors = (
+        unknown_name_errors([str(c.get("name", "")) for c in result.json_data], base)
+        if base is not None
+        else []
+    )
     errors, warnings = merge_reports(
-        [validation.errors, parsed.errors, result.errors, expanded_errors],
+        [
+            validation.errors,
+            parsed.errors,
+            result.errors,
+            expanded_errors,
+            runs_errors,
+            name_errors,
+        ],
         [validation.warnings, parsed.warnings, result.warnings],
         dropped,
         lax,
@@ -235,16 +297,27 @@ def compile_spec(
         seed=int(effective_seed),
         lax=lax,
         pools=pools,
+        base_lock_sha256=base.sha256 if base is not None else None,
+        base_spec_path=base.path if base is not None else None,
     )
-    lock = Lock(
-        provenance=provenance,
-        experiment={
+    # A runs lock's experiment is the base's, verbatim: upload refuses a
+    # mismatch, and a second spelling of the name here would be a second
+    # source of truth for it.
+    experiment = (
+        dict(base.lock.experiment)
+        if base is not None
+        else {
             "name": result.experiment_name,
             "description": result.experiment_description,
             "runner_user_id": result.experiment_runner_user_id,
             "contact": result.experiment_contact,
-        },
+        }
+    )
+    lock = Lock(
+        provenance=provenance,
+        experiment=experiment,
         schedule={"anchor": anchor_value},
         crawlers=crawlers,
+        kind="runs" if base is not None else "fleet",
     )
     return CompileResult(lock, [], warnings, dropped)

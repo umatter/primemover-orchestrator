@@ -12,6 +12,8 @@ from typing import Any
 
 from .anchor import resolve_anchor
 from .io import load_lock
+from .model import Lock, LockError
+from .parts import factor_crawlers
 from .verify import Difference, compare_shapes, lock_shape
 
 _REFERENCE_ANCHOR = "2000-01-01T00:00:00"
@@ -97,9 +99,39 @@ class LockDiff:
         return "\n".join(lines)
 
 
+def runs_shape(lock: Lock) -> dict[str, Any]:
+    """A runs lock's comparable shape: per crawler, its queue list as (part key,
+    start_offset) pairs plus its ``updates``.
+
+    The part key is the content hash of the whole queue body -- name, timezone,
+    jobs, behaviours -- so one changed behaviour shows up as one changed queue
+    rather than as a walk through every job. That is the right grain here: a
+    runs lock's queues are either the sessions the spec asked for or they are
+    not.
+    """
+    _, refs = factor_crawlers(lock.crawlers)
+    return {
+        str(ref.get("name")): {
+            "queues": [[q.get("ref"), q.get("start_offset")] for q in ref.get("queues", [])],
+            "updates": ref.get("updates"),
+        }
+        for ref in refs
+    }
+
+
 def diff_locks(text_a: str, text_b: str, *, deep: bool = True) -> LockDiff:
     lock_a = load_lock(text_a)
     lock_b = load_lock(text_b)
+
+    if lock_a.is_runs != lock_b.is_runs:
+        # Nothing useful to say: a runs lock has no configuration, agent or
+        # proxy, so every crawler would read as wholly rewritten.
+        raise LockError(["cannot diff a runs lock against a fleet lock"])
+
+    if lock_a.is_runs:
+        crawlers_a = runs_shape(lock_a)
+        crawlers_b = runs_shape(lock_b)
+        return _diff_from_shapes(lock_a, lock_b, crawlers_a, crawlers_b)
 
     # Same fixed anchor on both sides: start_at differences must come from a
     # different start_offset, never from the two locks having been compiled
@@ -107,7 +139,15 @@ def diff_locks(text_a: str, text_b: str, *, deep: bool = True) -> LockDiff:
     anchor_dt = resolve_anchor(_REFERENCE_ANCHOR)
     crawlers_a = lock_shape(lock_a, anchor_dt, deep=deep)["crawlers"]
     crawlers_b = lock_shape(lock_b, anchor_dt, deep=deep)["crawlers"]
+    return _diff_from_shapes(lock_a, lock_b, crawlers_a, crawlers_b)
 
+
+def _diff_from_shapes(
+    lock_a: Lock,
+    lock_b: Lock,
+    crawlers_a: dict[str, Any],
+    crawlers_b: dict[str, Any],
+) -> LockDiff:
     names_a, names_b = set(crawlers_a), set(crawlers_b)
     common = names_a & names_b
 

@@ -10,6 +10,7 @@ Performs:
 import json
 import os
 import re
+from collections.abc import Set as AbstractSet
 from dataclasses import dataclass, field
 from datetime import date, datetime
 from pathlib import Path
@@ -145,6 +146,59 @@ class SpecValidator:
             "queues",
         }
     )
+    # A *runs* spec (one that names a fleet lock with `runs_for:`) has its own
+    # whitelists. It adds sessions to bots the base lock already randomized, so
+    # everything that describes a bot is absent here -- and absent as an
+    # *error*, not a drop: an author who wrote `agent:` on a runs crawler meant
+    # to write a fleet spec, and silently dropping it would upload sessions
+    # against a bot configured differently than the spec says.
+    _KEYS_ROOT_RUNS: frozenset[str] = frozenset(
+        {
+            "version",
+            "runs_for",
+            "defaults",
+            "templates",
+            "data_pools",
+            "strategy_schemas",
+            "crawlers",
+        }
+    )
+    _KEYS_CRAWLER_RUNS: frozenset[str] = frozenset(
+        {
+            "from_base",
+            "name",
+            "description",
+            "session",
+            "additional_sessions",
+            "queues",
+            "updates",
+            "assign",
+        }
+    )
+    # A runs spec's `defaults:` may only carry what a *session* reads; a
+    # `location:` or `proxy:` there would describe bots it does not own.
+    _KEYS_DEFAULTS_RUNS: frozenset[str] = frozenset(
+        {
+            "timezone",
+            "timezone_utc_offset",
+            "captcha_mode",
+            "typing_mode",
+            "selection_type",
+            "active",
+        }
+    )
+    # Root blocks a runs spec refuses outright, with why.
+    _RUNS_ROOT_REFUSALS: dict[str, str] = {
+        "design": (
+            "a runs spec adds sessions to a fleet the base lock already randomized; "
+            "design lives in the fleet spec"
+        ),
+        "experiment": (
+            "a runs spec takes its experiment from the base lock; remove the experiment block"
+        ),
+    }
+    _RUNS_CRAWLER_REFUSALS: tuple[str, ...] = ("agent", "proxy", "configuration")
+
     _KEYS_SESSION: frozenset[str] = frozenset(
         {
             "name",
@@ -273,6 +327,7 @@ class SpecValidator:
         *,
         lax: bool = False,
         base_dir: Path | None = None,
+        runs: bool = False,
     ):
         """
         Initialize validator.
@@ -283,10 +338,13 @@ class SpecValidator:
             base_dir: Directory a spec-relative ``strategy_schemas`` path is resolved
                 against (the spec's own directory for the CLI, a materialised temp
                 dir for the MCP). Defaults to the current working directory.
+            runs: Validate as a *runs* spec (one carrying ``runs_for:``) -- the
+                runs key sets above, and the refusals that go with them.
         """
         self.schema = None
         self.lax = lax
         self.base_dir = base_dir
+        self.runs = runs
         self.drops = Drops(lax)
         self._strategy_schemas: dict[str, Any] = {}
         self._load_schema(schema_path)
@@ -347,6 +405,10 @@ class SpecValidator:
             info["design_info"] = self._get_design_info(spec["design"])
         else:
             info["has_design"] = False
+
+        # 3b. Runs-spec refusals (a construct that belongs to the fleet spec)
+        if self.runs:
+            errors.extend(self._validate_runs(spec))
 
         # 4. Crawler validation
         crawler_errors, crawler_warnings = self._validate_crawlers(spec)
@@ -562,7 +624,7 @@ class SpecValidator:
         cost more than the rare typo they would catch.
         """
 
-        def check(obj: Any, allowed: frozenset[str], path: str) -> None:
+        def check(obj: Any, allowed: AbstractSet[str], path: str) -> None:
             if not isinstance(obj, dict):
                 return
             for key in obj:
@@ -573,14 +635,31 @@ class SpecValidator:
                         "remove it or fix the spelling",
                     )
 
-        check(spec, self._KEYS_ROOT, "")
+        root_keys: AbstractSet[str]
+        crawler_keys: AbstractSet[str]
+        defaults_keys: AbstractSet[str]
+        if self.runs:
+            # The refused blocks are named by `_validate_runs` as errors; they
+            # must not also be reported here as drops.
+            root_keys = self._KEYS_ROOT_RUNS | set(self._RUNS_ROOT_REFUSALS)
+            crawler_keys = self._KEYS_CRAWLER_RUNS | set(self._RUNS_CRAWLER_REFUSALS)
+            defaults_keys = self._KEYS_DEFAULTS_RUNS
+        else:
+            root_keys = self._KEYS_ROOT
+            crawler_keys = self._KEYS_CRAWLER
+            defaults_keys = self._KEYS_DEFAULTS
+
+        check(spec, root_keys, "")
         check(spec.get("experiment"), self._KEYS_EXPERIMENT, "experiment")
-        check(spec.get("defaults"), self._KEYS_DEFAULTS, "defaults")
+        if not self.runs:
+            # In runs mode a defaults key outside the session-level set is an
+            # error (`_validate_runs`), not a drop.
+            check(spec.get("defaults"), defaults_keys, "defaults")
         check(spec.get("design"), self._KEYS_DESIGN, "design")
         check((spec.get("defaults") or {}).get("proxy"), self._KEYS_PROXY, "defaults.proxy")
         for i, crawler in enumerate(spec.get("crawlers") or []):
             prefix = f"crawler[{i}]"
-            check(crawler, self._KEYS_CRAWLER, prefix)
+            check(crawler, crawler_keys, prefix)
             if not isinstance(crawler, dict):
                 continue
             check(crawler.get("configuration"), self._KEYS_CONFIGURATION, f"{prefix}.configuration")
@@ -591,6 +670,67 @@ class SpecValidator:
                 check(extra, self._KEYS_SESSION, f"{prefix}.additional_sessions[{j}]")
             for j, queue in enumerate(crawler.get("queues") or []):
                 check(queue, self._KEYS_SESSION, f"{prefix}.queues[{j}]")
+
+    def _validate_runs(self, spec: dict[str, Any]) -> list[str]:
+        """Refusals that only apply to a runs spec.
+
+        Errors, never drops. Each names a construct that belongs to the fleet
+        spec: dropping it would leave a spec that compiles and means something
+        other than what its author wrote.
+        """
+        errors: list[str] = []
+
+        for key, why in self._RUNS_ROOT_REFUSALS.items():
+            if key in spec:
+                errors.append(f"{key}: {why}")
+
+        defaults = spec.get("defaults")
+        if isinstance(defaults, dict):
+            allowed = ", ".join(sorted(self._KEYS_DEFAULTS_RUNS))
+            for key in defaults:
+                if key not in self._KEYS_DEFAULTS_RUNS:
+                    errors.append(
+                        f"defaults.{key}: a runs spec's defaults may only carry session-level "
+                        f"keys ({allowed})"
+                    )
+
+        for i, crawler in enumerate(spec.get("crawlers") or []):
+            if not isinstance(crawler, dict):
+                continue
+            prefix = f"crawler[{i}]"
+            for key in self._RUNS_CRAWLER_REFUSALS:
+                if key in crawler:
+                    errors.append(
+                        f"{prefix}.{key}: a runs spec adds sessions to existing bots; "
+                        "agent/proxy/configuration live in the fleet spec"
+                    )
+            errors.extend(self._validate_updates(crawler.get("updates"), prefix))
+
+        return errors
+
+    def _validate_updates(self, updates: Any, prefix: str) -> list[str]:
+        """``updates: {preferences: {<name>: <scalar>}}`` and nothing else.
+
+        Params, agent and proxy fields are refused rather than dropped:
+        changing those mid-study is a different experiment, and the upload
+        path has no way to apply them.
+        """
+        if updates is None:
+            return []
+        if not isinstance(updates, dict):
+            return [f"{prefix}.updates: must be a mapping of preferences"]
+        errors: list[str] = []
+        for key, value in updates.items():
+            if key != "preferences":
+                errors.append(f"{prefix}.updates.{key}: only preferences can be updated")
+                continue
+            if not isinstance(value, dict):
+                errors.append(f"{prefix}.updates.preferences: must be a mapping of name -> value")
+                continue
+            for name, pref_value in value.items():
+                if isinstance(pref_value, (dict, list)):
+                    errors.append(f"{prefix}.updates.preferences.{name}: must be a scalar value")
+        return errors
 
     def _validate_schema(self, spec: dict[str, Any]) -> list[str]:
         """Validate against JSON Schema.
@@ -644,9 +784,12 @@ class SpecValidator:
         """Validate required fields are present."""
         errors = []
 
-        # Experiment name is required
-        if not spec.get("experiment", {}).get("name"):
+        # Experiment name is required -- except in a runs spec, where the
+        # experiment is the base lock's and an `experiment:` block is refused.
+        if not self.runs and not spec.get("experiment", {}).get("name"):
             errors.append("experiment.name is required")
+        if self.runs and not spec.get("runs_for"):
+            errors.append("runs_for is required: a runs spec names the fleet lock it adds to")
 
         # At least one crawler is required
         crawlers = spec.get("crawlers", [])

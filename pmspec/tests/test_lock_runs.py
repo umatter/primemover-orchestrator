@@ -282,3 +282,259 @@ def test_runs_crawlers_sharing_a_session_share_one_queue_part():
     d = lock.to_dict()
     assert len(d["parts"]["queues"]) == 1
     assert load_lock(dump_lock(lock)) == lock
+
+
+# --- compiling a runs spec against a fleet lock -----------------------------
+
+FLEET_SPEC = """
+version: "1.0"
+experiment:
+  name: Fleet Study
+  description: the randomization record
+design:
+  factors:
+    arm:
+      levels: [control, treated]
+      maps_to:
+        params.pi: {control: 0, treated: 1}
+crawlers:
+  - from_design: true
+    name: "bot_{arm}"
+    configuration:
+      preferences:
+        - {name: arm, value: "{arm}"}
+    agent:
+      location: US-IL-CHICAGO
+    session:
+      start: "+5m"
+      workflow:
+        - visit: https://example.com
+"""
+
+RUNS_SPEC = """
+version: "1.0"
+runs_for: fleet.lock.yaml
+crawlers:
+  - name: bot_control
+    session:
+      start: "2026-10-01T10:00:00"
+      workflow:
+        - visit: https://example.com/day1
+  - name: bot_treated
+    session:
+      start: "2026-10-01T10:00:00"
+      workflow:
+        - visit: https://example.com/day1
+    updates:
+      preferences:
+        ideology: "0.31"
+"""
+
+FROM_BASE_SPEC = """
+version: "1.0"
+runs_for: fleet.lock.yaml
+templates:
+  day:
+    - visit: "https://example.com/${arm}"
+crawlers:
+  - from_base: true
+    name: "{base.name}"
+    description: "{base.name} in {base.location}"
+    session:
+      start: "2026-10-01T10:00:00"
+      workflow:
+        - template: day
+          with: {arm: "{base.arm}"}
+"""
+
+
+@pytest.fixture
+def study(tmp_path):
+    """A compiled fleet lock on disk, for a runs spec to be compiled against."""
+    from pmspec.lock.build import compile_spec
+
+    (tmp_path / "fleet.yaml").write_text(FLEET_SPEC)
+    result = compile_spec(
+        FLEET_SPEC, base_dir=tmp_path, spec_path="fleet.yaml", seed=7, generator="test"
+    )
+    assert result.lock is not None, result.errors
+    (tmp_path / "fleet.lock.yaml").write_text(dump_lock(result.lock))
+    return tmp_path
+
+
+def compile_runs(study_dir, text=RUNS_SPEC, *, seed=11, name="day.yaml", **kw):
+    from pmspec.lock.build import compile_spec
+
+    (study_dir / name).write_text(text)
+    return compile_spec(text, base_dir=study_dir, spec_path=name, seed=seed, **kw)
+
+
+def test_a_runs_spec_compiles_to_a_runs_lock(study):
+    from pmspec.lock.io import sha256_text
+
+    result = compile_runs(study)
+    assert result.errors == []
+    lock = result.lock
+    assert lock is not None and lock.kind == "runs" and lock.is_runs
+    assert lock.provenance.base_lock_sha256 == sha256_text((study / "fleet.lock.yaml").read_text())
+    assert lock.provenance.base_spec_path == "fleet.yaml"
+    assert lock.experiment["name"] == "Fleet Study"
+    assert lock.experiment["description"] == "the randomization record"
+    assert [c["name"] for c in lock.crawlers] == ["bot_control", "bot_treated"]
+    for c in lock.crawlers:
+        assert set(c) <= {"name", "queues", "updates"}
+        assert len(c["queues"]) == 1 and c["queues"][0]["jobs"]
+
+
+def test_a_runs_lock_round_trips_through_the_schema(study):
+    lock = compile_runs(study).lock
+    assert load_lock(dump_lock(lock)) == lock
+
+
+def test_updates_reach_the_lock_as_strings(study):
+    lock = compile_runs(study).lock
+    assert "updates" not in lock.crawlers[0]
+    assert lock.crawlers[1]["updates"] == {"preferences": {"ideology": "0.31"}}
+
+
+def test_the_anchor_comes_from_the_runs_spec_not_the_base(study):
+    lock = compile_runs(study).lock
+    assert lock.schedule["anchor"] == "2026-10-01T10:00:00"
+
+
+def test_compiling_a_runs_spec_is_byte_deterministic(study):
+    a = compile_runs(study).lock
+    b = compile_runs(study).lock
+    assert dump_lock(a) == dump_lock(b)
+
+
+def test_from_base_writes_one_crawler_per_base_crawler(study):
+    result = compile_runs(study, FROM_BASE_SPEC)
+    assert result.errors == []
+    lock = result.lock
+    assert [c["name"] for c in lock.crawlers] == ["bot_control", "bot_treated"]
+    urls = [
+        b["value"]
+        for c in lock.crawlers
+        for q in c["queues"]
+        for j in q["jobs"]
+        for b in j["behaviors"]
+        if b["name"] == "url"
+    ]
+    assert urls == ["https://example.com/control", "https://example.com/treated"]
+
+
+def test_a_name_the_base_does_not_have_is_an_error(study):
+    text = RUNS_SPEC.replace("bot_control", "bot_ghost")
+    result = compile_runs(study, text)
+    assert result.lock is None
+    assert "runs spec names crawler 'bot_ghost' which the base lock does not have" in result.errors
+
+
+def test_runs_for_pointing_at_a_runs_lock_is_refused(study):
+    lock = compile_runs(study).lock
+    (study / "day.lock.yaml").write_text(dump_lock(lock))
+    result = compile_runs(
+        study, RUNS_SPEC.replace("fleet.lock.yaml", "day.lock.yaml"), name="d2.yaml"
+    )
+    assert result.lock is None
+    assert any("fleet lock" in e for e in result.errors)
+
+
+def test_runs_for_pointing_at_a_missing_file_is_refused(study):
+    result = compile_runs(study, RUNS_SPEC.replace("fleet.lock.yaml", "nope.lock.yaml"))
+    assert result.lock is None
+    assert any("nope.lock.yaml" in e for e in result.errors)
+
+
+# --- what a runs *spec* may not carry --------------------------------------
+
+
+def test_design_in_a_runs_spec_is_an_error(study):
+    text = RUNS_SPEC.replace(
+        "crawlers:", "design:\n  factors:\n    a:\n      levels: [x, y]\ncrawlers:"
+    )
+    result = compile_runs(study, text)
+    assert result.lock is None
+    assert any(e.startswith("design:") for e in result.errors)
+
+
+def test_experiment_in_a_runs_spec_is_an_error(study):
+    text = RUNS_SPEC.replace("crawlers:", "experiment:\n  name: Other\ncrawlers:")
+    result = compile_runs(study, text)
+    assert result.lock is None
+    assert any(e.startswith("experiment:") for e in result.errors)
+
+
+@pytest.mark.parametrize(
+    "block,key",
+    [
+        ("    agent:\n      location: DE-BE-BERLIN\n", "agent"),
+        ("    proxy:\n      type: http\n      hostname: h\n      port: 1\n", "proxy"),
+        ("    configuration:\n      params: {pi: 1}\n", "configuration"),
+    ],
+)
+def test_a_fleet_only_block_on_a_runs_crawler_is_an_error(study, block, key):
+    text = RUNS_SPEC.replace("  - name: bot_control\n", "  - name: bot_control\n" + block)
+    result = compile_runs(study, text)
+    assert result.lock is None
+    assert (
+        f"crawler[0].{key}: a runs spec adds sessions to existing bots; "
+        "agent/proxy/configuration live in the fleet spec"
+    ) in result.errors
+
+
+def test_updates_outside_preferences_is_an_error(study):
+    text = RUNS_SPEC.replace(
+        '    updates:\n      preferences:\n        ideology: "0.31"\n',
+        '    updates:\n      params:\n        pi: "1"\n',
+    )
+    result = compile_runs(study, text)
+    assert result.lock is None
+    assert "crawler[1].updates.params: only preferences can be updated" in result.errors
+
+
+def test_defaults_in_a_runs_spec_may_only_carry_session_keys(study):
+    text = RUNS_SPEC.replace(
+        "crawlers:", "defaults:\n  timezone: Europe/Zurich\n  location: DE-BE-BERLIN\ncrawlers:"
+    )
+    result = compile_runs(study, text)
+    assert result.lock is None
+    assert any(e.startswith("defaults.location:") for e in result.errors)
+
+
+def test_a_fleet_spec_still_treats_the_runs_keys_as_unknown(tmp_path):
+    from pmspec.lock.build import compile_spec
+
+    text = """
+version: "1.0"
+experiment:
+  name: Fleet
+crawlers:
+  - name: bot
+    updates: {preferences: {x: "1"}}
+    session:
+      start: "+5m"
+      workflow:
+        - visit: https://example.com
+"""
+    result = compile_spec(text, base_dir=tmp_path, spec_path="s.yaml", seed=1)
+    assert result.lock is None
+    assert any("crawler[0].updates" in e and "unknown key" in e for e in result.errors)
+
+
+def test_an_unknown_base_variable_is_a_drop(study):
+    # Not an error raised by the expansion: the converter's unresolved-variable
+    # scan is what sees the token in its final place, with a full path, after
+    # every other pass has had its chance to fill it.
+    text = FROM_BASE_SPEC.replace("{base.arm}", "{base.ghost}")
+    result = compile_runs(study, text)
+    assert result.lock is None
+    assert any("base.ghost" in e for e in result.errors)
+
+
+def test_a_bad_format_spec_on_a_base_variable_is_an_error(study):
+    text = FROM_BASE_SPEC.replace("{base.arm}", "{base.arm:.2f}")
+    result = compile_runs(study, text)
+    assert result.lock is None
+    assert any("base.arm" in e and "format" in e for e in result.errors)

@@ -28,14 +28,18 @@ _STANDARD_PARAM_KEYS = frozenset(
 
 # `${var}` is a template variable (never supplied via `with:`); `{var}` or
 # `{var:format}` is a design/format placeholder (no factor/parameter defines
-# it). `${secret:...}` is excluded -- that is a resolved runner-side secret
+# it); `{prefix.col}` is a *named* placeholder (substitute.py) -- `{base.x}`
+# from a runs spec's `from_base:`, and `{panelist.x}` from `assign:` -- whose
+# namespace supplied no such column. `${secret:...}` is excluded -- that is a resolved runner-side secret
 # reference, not an unresolved DSL variable. The second alternative needs its
 # own `(?<!\$)` guard: without it, a `${secret:x}` the first alternative
 # correctly declines to match (via its lookahead) still gets caught by the
 # second alternative matching the bare `{secret:x}` tail -- reported as a
 # fictitious drop on every proxy that carries one (test_lock_build.py's SPEC
 # does; caught by the full suite, not the brief's own test rows).
-_UNRESOLVED_RE = re.compile(r"\$\{(?!secret:)[^}]*\}|(?<!\$)\{[A-Za-z_][A-Za-z0-9_]*(?::[^}]*)?\}")
+_UNRESOLVED_RE = re.compile(
+    r"\$\{(?!secret:)[^}]*\}|(?<!\$)\{[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][\w-]*)?(?::[^}]*)?\}"
+)
 
 # A list index in a report path (`crawlers[12].queues[0].jobs[3]`), replaced by
 # `[*]` when grouping unresolved-variable reports across crawlers and jobs.
@@ -131,10 +135,20 @@ class SpecConverter:
     """
 
     def __init__(
-        self, *, seed: int | None = None, resolve_times: bool = True, lax: bool = False
+        self,
+        *,
+        seed: int | None = None,
+        resolve_times: bool = True,
+        lax: bool = False,
+        runs: bool = False,
     ) -> None:
         self.errors: list[str] = []
         self.warnings: list[str] = []
+        # A runs spec emits queues only: the configuration, proxy and agent of
+        # every bot belong to the fleet lock it is compiled against, and
+        # emitting a second, defaulted copy of them here is exactly the silent
+        # divergence the runs kind exists to prevent.
+        self.runs = runs
         # An explicit seed wins over design.seed so a compile can pin every draw
         # from one number; None keeps today's behaviour (design.seed or unseeded).
         self.seed = seed
@@ -313,6 +327,22 @@ class SpecConverter:
         Returns:
             API-compatible crawler dict
         """
+        if self.runs:
+            # Name, queues, and the opt-in preference updates. The parser fills
+            # a default configuration and agent onto every crawler it expands;
+            # in runs mode they are ignored rather than emitted.
+            runs_crawler: dict[str, Any] = {
+                "name": crawler.get("name", "Crawler"),
+                "queues": [self._convert_queue(q, defaults) for q in crawler.get("queues", [])],
+            }
+            updates = crawler.get("updates")
+            if isinstance(updates, dict):
+                preferences = updates.get("preferences") or {}
+                runs_crawler["updates"] = {
+                    "preferences": {str(k): str(v) for k, v in preferences.items()}
+                }
+            return runs_crawler
+
         api_crawler = {
             "name": crawler.get("name", "Crawler"),
             "description": crawler.get("description", "Generated crawler"),

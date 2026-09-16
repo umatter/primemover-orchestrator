@@ -5,7 +5,6 @@
   "description": "YAML/JSON schema for defining PrimeMover browser automation experiments",
   "type": "object",
   "required": [
-    "experiment",
     "crawlers"
   ],
   "properties": {
@@ -40,6 +39,10 @@
     },
     "experiment": {
       "$ref": "#/definitions/experiment"
+    },
+    "runs_for": {
+      "type": "string",
+      "description": "Path to the fleet lock this spec adds sessions to, relative to the spec. Its presence makes this a runs spec: no design, no experiment, and no agent/proxy/configuration on a crawler."
     },
     "strategy_schemas": {
       "type": "object",
@@ -296,7 +299,7 @@
     },
     "crawler": {
       "type": "object",
-      "description": "Crawler definition",
+      "description": "Crawler definition (a fleet spec's, or a runs spec's)",
       "properties": {
         "active": {
           "type": "boolean",
@@ -313,12 +316,18 @@
         "agent": {
           "$ref": "#/definitions/agent"
         },
+        "assign": {},
         "configuration": {
           "$ref": "#/definitions/configuration"
         },
         "description": {
           "type": "string",
           "description": "Crawler description"
+        },
+        "from_base": {
+          "type": "boolean",
+          "description": "Runs spec only: write one copy of this block per crawler of the base fleet lock, with {base.name} / {base.location} / {base.<preference>} substituted",
+          "default": false
         },
         "from_design": {
           "type": "boolean",
@@ -346,6 +355,24 @@
           "type": "boolean",
           "description": "Whether crawler is in testing mode",
           "default": false
+        },
+        "updates": {
+          "type": "object",
+          "description": "Runs spec only: preference values to change on the existing bot when this lock is uploaded",
+          "properties": {
+            "preferences": {
+              "type": "object",
+              "description": "Preference name -> new value",
+              "additionalProperties": {
+                "type": [
+                  "string",
+                  "number",
+                  "boolean"
+                ]
+              }
+            }
+          },
+          "additionalProperties": false
         }
       },
       "additionalProperties": false
