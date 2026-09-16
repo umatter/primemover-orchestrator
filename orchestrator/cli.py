@@ -3259,6 +3259,7 @@ def experiment_validate(
     try:
         import yaml as yaml_lib
 
+        from pmspec.lock.build import effective_seed
         from pmspec.spec import SpecConverter, SpecParser, SpecValidator
         from pmspec.spec.design_expander import DesignExpander
         from pmspec.spec.file_loader import (
@@ -3301,7 +3302,14 @@ def experiment_validate(
     parser = SpecParser(base_dir=base_dir, seed=seed)
     parsed = parser.parse(content)
 
-    converter = SpecConverter()
+    # `--seed` first, else the spec's own `design.seed`, through the helper
+    # `pmspec compile`/`validate` share: without it this command rejected an
+    # `assign:` spec that compiles, since an assignment refuses to draw
+    # unseeded. With no seed anywhere, it reports what compile reports.
+    # `resolve_times=False`, like `pmspec validate`: a seeded
+    # `start_at: {from, jitter}` is drawn after conversion, so a validating
+    # path must not resolve times or it rejects what `pmspec compile` accepts.
+    converter = SpecConverter(seed=effective_seed(raw_spec, False, seed), resolve_times=False)
     result = converter.convert(parsed)
 
     # Combine all errors and warnings
@@ -3507,7 +3515,11 @@ def experiment_generate(
             console.print(f"  [red]{error}[/red]")
         return
 
-    converter = SpecConverter()
+    # `--seed` wins; without it the converter falls back to `design.seed`
+    # itself -- the same resolution `effective_seed` spells out for callers
+    # that hold the raw spec. Unseeded, an `assign:` draw is refused here
+    # exactly as `pmspec compile` refuses it.
+    converter = SpecConverter(seed=seed)
     result = converter.convert(parsed)
 
     if result.errors:

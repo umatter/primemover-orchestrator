@@ -13,12 +13,14 @@ import re
 from dataclasses import dataclass, field
 from typing import Any
 
+from .assign import resolve_assignments
 from .data_pools import DataPoolManager, resolve_pool_references
 from .design_expander import DesignExpander
 from .draws import ANY_DRAW_TOKEN_RE, resolve_draws
 from .drops import Drops
 from .parser import ParsedSpec, SpecParser
 from .time_utils import parse_relative_time
+from .timing import ANY_WAIT_TOKEN_RE, resolve_start_jitter, resolve_wait_tokens
 
 # The params the API contract defines explicit columns for; everything else in a
 # spec's params block is passed through untouched (see _convert_configuration).
@@ -28,14 +30,18 @@ _STANDARD_PARAM_KEYS = frozenset(
 
 # `${var}` is a template variable (never supplied via `with:`); `{var}` or
 # `{var:format}` is a design/format placeholder (no factor/parameter defines
-# it). `${secret:...}` is excluded -- that is a resolved runner-side secret
+# it); `{prefix.col}` is a *named* placeholder (substitute.py) -- `{base.x}`
+# from a runs spec's `from_base:`, and `{panelist.x}` from `assign:` -- whose
+# namespace supplied no such column. `${secret:...}` is excluded -- that is a resolved runner-side secret
 # reference, not an unresolved DSL variable. The second alternative needs its
 # own `(?<!\$)` guard: without it, a `${secret:x}` the first alternative
 # correctly declines to match (via its lookahead) still gets caught by the
 # second alternative matching the bare `{secret:x}` tail -- reported as a
 # fictitious drop on every proxy that carries one (test_lock_build.py's SPEC
 # does; caught by the full suite, not the brief's own test rows).
-_UNRESOLVED_RE = re.compile(r"\$\{(?!secret:)[^}]*\}|(?<!\$)\{[A-Za-z_][A-Za-z0-9_]*(?::[^}]*)?\}")
+_UNRESOLVED_RE = re.compile(
+    r"\$\{(?!secret:)[^}]*\}|(?<!\$)\{[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][\w-]*)?(?::[^}]*)?\}"
+)
 
 # A list index in a report path (`crawlers[12].queues[0].jobs[3]`), replaced by
 # `[*]` when grouping unresolved-variable reports across crawlers and jobs.
@@ -65,7 +71,7 @@ class ConversionResult:
 
 
 # Default multilogin profile template
-DEFAULT_MULTILOGIN_PROFILE = {
+DEFAULT_MULTILOGIN_PROFILE: dict[str, Any] = {
     "name": "%%AGENTID%%",
     "browser_type": "mimic",
     "folder_id": "%%FOLDERID%%",
@@ -131,10 +137,20 @@ class SpecConverter:
     """
 
     def __init__(
-        self, *, seed: int | None = None, resolve_times: bool = True, lax: bool = False
+        self,
+        *,
+        seed: int | None = None,
+        resolve_times: bool = True,
+        lax: bool = False,
+        runs: bool = False,
     ) -> None:
         self.errors: list[str] = []
         self.warnings: list[str] = []
+        # A runs spec emits queues only: the configuration, proxy and agent of
+        # every bot belong to the fleet lock it is compiled against, and
+        # emitting a second, defaulted copy of them here is exactly the silent
+        # divergence the runs kind exists to prevent.
+        self.runs = runs
         # An explicit seed wins over design.seed so a compile can pin every draw
         # from one number; None keeps today's behaviour (design.seed or unseeded).
         self.seed = seed
@@ -146,6 +162,10 @@ class SpecConverter:
         # design.parameters names outside _STANDARD_PARAM_KEYS for the spec
         # being converted; set per convert() and read by _convert_configuration.
         self._sampled_substitution_params: frozenset[str] = frozenset()
+        # Whether the `generate`-path jitter refusal has already been reported
+        # for this conversion: it is one fact about the spec, not one per
+        # session, and a 500-bot fleet would otherwise repeat it 500 times.
+        self._jitter_refused = False
 
     def _runner_user_id(self, experiment: dict[str, Any]) -> int | None:
         """experiment.runner_user_id, validated; None when absent."""
@@ -172,6 +192,7 @@ class SpecConverter:
         self.errors = list(parsed.errors)  # Copy any parsing errors
         self.warnings = list(parsed.warnings)
         self.drops = Drops(self.lax)
+        self._jitter_refused = False
         runner_user_id = self._runner_user_id(parsed.experiment)
 
         if self.errors:
@@ -204,6 +225,37 @@ class SpecConverter:
             else:
                 all_crawlers.append(crawler_template)
 
+        # A crawler without its own proxy block inherits `defaults.proxy`. Copy it
+        # onto the crawler *before* the substitution passes and pool assignment
+        # below: before assignment, or a pooled default (`defaults: {proxy:
+        # {from_pool: true, ...}}`) reaches _convert_proxy as a raw dict with no
+        # hostname and every bot silently compiles to the 127.0.0.1:8080
+        # placeholder; before `resolve_assignments`, or an assigned value in the
+        # default (`hostname: "{endpoint.host}"`) is copied on after the only
+        # pass that could have resolved it and reaches the bot as the literal
+        # token. Non-dict defaults ("none"/"auto") keep the fallback in
+        # _convert_crawler.
+        default_proxy = parsed.defaults.get("proxy")
+        if isinstance(default_proxy, dict):
+            all_crawlers = [
+                {**c, "proxy": copy.deepcopy(default_proxy)} if c.get("proxy") is None else c
+                for c in all_crawlers
+            ]
+
+        # Give each `assign:` entry its row of a pool and substitute the row's
+        # columns as `{<name>.<column>}` throughout the crawler. First of the
+        # substitution passes on purpose: an assigned value may be what a pool
+        # scoring context, a template `with:` value or a proxy field reads, and
+        # `match_value: "{city}"` / `"{base.x}"` are already concrete by now
+        # (design expansion, and `from_base:` before the parse).
+        #
+        # `pool_rows_taken` is shared with `_assign_pool_proxies` below so a
+        # pool serving both cannot hand the same row to a proxy and a bot.
+        pool_rows_taken: dict[str, set[int]] = {}
+        self.errors.extend(
+            resolve_assignments(all_crawlers, parsed.pool_manager, effective_seed, pool_rows_taken)
+        )
+
         # Resolve data-pool references now that design expansion has fixed each
         # crawler's params (pi, kappa, alpha, ...) -- pool scoring expressions
         # read those from the crawler context.
@@ -232,23 +284,10 @@ class SpecConverter:
         # drop, so it can never reach a lock.
         self.errors.extend(resolve_draws(all_crawlers, parsed.pool_manager, effective_seed))
 
-        # A crawler without its own proxy block inherits `defaults.proxy`. Copy it
-        # onto the crawler *before* pool assignment, or a pooled default
-        # (`defaults: {proxy: {from_pool: true, ...}}`) reaches _convert_proxy as
-        # a raw dict with no hostname and every bot silently compiles to the
-        # 127.0.0.1:8080 placeholder. Non-dict defaults ("none"/"auto") keep the
-        # fallback in _convert_crawler.
-        default_proxy = parsed.defaults.get("proxy")
-        if isinstance(default_proxy, dict):
-            all_crawlers = [
-                {**c, "proxy": copy.deepcopy(default_proxy)} if c.get("proxy") is None else c
-                for c in all_crawlers
-            ]
-
         # Assign one pool row per `proxy: {from_pool: true}` crawler now that
         # design expansion and pool-reference resolution have fixed each
         # crawler's agent/location.
-        self._assign_pool_proxies(all_crawlers, parsed.pool_manager)
+        self._assign_pool_proxies(all_crawlers, parsed.pool_manager, pool_rows_taken)
 
         # Convert each crawler to API format
         api_crawlers = []
@@ -270,6 +309,14 @@ class SpecConverter:
 
             except Exception as e:
                 self.errors.append(f"Error converting crawler {i}: {e}")
+
+        # Draw every seeded time now that each crawler's queues and jobs are
+        # fixed: the session's start within its jitter window, then each wait
+        # range's number of seconds. Both must land *before* the lock derives
+        # its anchor (build.py reads `start_at` as a string) and before the
+        # strict scan, which reports a surviving wait token as a drop.
+        self.errors.extend(resolve_start_jitter(api_crawlers, effective_seed))
+        self.errors.extend(resolve_wait_tokens(api_crawlers, effective_seed))
 
         self._scan_unresolved(api_crawlers)
 
@@ -313,6 +360,22 @@ class SpecConverter:
         Returns:
             API-compatible crawler dict
         """
+        if self.runs:
+            # Name, queues, and the opt-in preference updates. The parser fills
+            # a default configuration and agent onto every crawler it expands;
+            # in runs mode they are ignored rather than emitted.
+            runs_crawler: dict[str, Any] = {
+                "name": crawler.get("name", "Crawler"),
+                "queues": [self._convert_queue(q, defaults) for q in crawler.get("queues", [])],
+            }
+            updates = crawler.get("updates")
+            if isinstance(updates, dict):
+                preferences = updates.get("preferences") or {}
+                runs_crawler["updates"] = {
+                    "preferences": {str(k): str(v) for k, v in preferences.items()}
+                }
+            return runs_crawler
+
         api_crawler = {
             "name": crawler.get("name", "Crawler"),
             "description": crawler.get("description", "Generated crawler"),
@@ -457,7 +520,10 @@ class SpecConverter:
         return str(value) if value is not None else ""
 
     def _assign_pool_proxies(
-        self, crawlers: list[dict[str, Any]], pool_manager: DataPoolManager | None
+        self,
+        crawlers: list[dict[str, Any]],
+        pool_manager: DataPoolManager | None,
+        used: dict[str, set[int]] | None = None,
     ) -> None:
         """Give each `proxy: {from_pool: true}` crawler its own row of the named pool.
 
@@ -465,11 +531,19 @@ class SpecConverter:
         detection signal and a confound across arms), so rows are handed out
         without replacement, in pool order, to crawlers in spec order; running
         out is an error, not a shared proxy.
+
+        `used` is the taken-row bookkeeping, shared with `resolve_assignments`
+        (`assign:`) so a pool serving both features hands each row out once in
+        total, not once per feature.
         """
-        used: dict[str, set[int]] = {}
+        used = {} if used is None else used
         # Pools already found to have no hostname/host column: reported once,
         # then every crawler drawing from them is skipped without repeating it.
         unusable: set[str] = set()
+        # Pools whose hostname/host column has been checked. Kept apart from
+        # `used`, which an `assign:` on the same pool may already have filled:
+        # keying the check on `used` would skip it for exactly those pools.
+        checked: set[str] = set()
         for i, crawler in enumerate(crawlers):
             proxy = crawler.get("proxy")
             if not (isinstance(proxy, dict) and proxy.get("from_pool") is True):
@@ -490,7 +564,8 @@ class SpecConverter:
             # An empty hostname is the runner's "no proxy" signal, so a pool whose
             # rows have no hostname/host column at all (`ip`, say) would turn
             # every bot into a direct connection. Checked once per pool.
-            if pool_name not in unusable and pool_name not in used:
+            if pool_name not in unusable and pool_name not in checked:
+                checked.add(pool_name)
                 if not any(("hostname" in row or "host" in row) for row in rows):
                     columns = sorted({str(k) for row in rows for k in row})
                     self.errors.append(
@@ -627,7 +702,18 @@ class SpecConverter:
         start_at = queue.get("start_at", queue.get("start"))
         if not start_at:
             start_at = "now"
-        if self.resolve_times:
+        if isinstance(start_at, dict):
+            # `{from, jitter}`: resolved after conversion, from the lock's seed
+            # (timing.resolve_start_jitter). `generate` records no seed at all
+            # -- it writes API JSON, not a lock -- so there is nothing to draw
+            # from and nothing that could be reproduced later.
+            if self.resolve_times:
+                if not self._jitter_refused:
+                    self.errors.append("start_at jitter needs a seed: use pmspec compile")
+                    self._jitter_refused = True
+                source = start_at.get("from")
+                start_at = parse_relative_time(source if isinstance(source, str) else "now")
+        elif self.resolve_times:
             start_at = parse_relative_time(start_at)
 
         api_queue = {
@@ -708,6 +794,11 @@ class SpecConverter:
         # loosely (ANY_DRAW_TOKEN_RE) on purpose: a token DRAW_TOKEN_RE cannot
         # parse is *more* certain to reach the bot as a literal, not less.
         draw_groups: dict[tuple[str, str], list[str]] = {}
+        # A surviving `%%pmspec-wait:...%%` token: the wait range could not be
+        # drawn (no seed -- already in self.errors) and the parser's token is
+        # still sitting in the job's `seconds` behaviour, where the runner
+        # would read a string where it expects a number.
+        wait_groups: dict[tuple[str, str], list[str]] = {}
 
         def walk(node: Any, path: str) -> None:
             if isinstance(node, str):
@@ -717,6 +808,9 @@ class SpecConverter:
                 for m in ANY_DRAW_TOKEN_RE.finditer(node):
                     generic = _INDEX_RE.sub("[*]", path)
                     draw_groups.setdefault((m.group(0), generic), []).append(path)
+                for m in ANY_WAIT_TOKEN_RE.finditer(node):
+                    generic = _INDEX_RE.sub("[*]", path)
+                    wait_groups.setdefault((m.group(0), generic), []).append(path)
             elif isinstance(node, dict):
                 for k, v in node.items():
                     if k == "multilogin_profile":
@@ -748,21 +842,34 @@ class SpecConverter:
                     fix,
                 )
 
-        draw_fix = "see the unknown-pool/missing-field/exhaustion error reported above"
-        for (token, generic), places in draw_groups.items():
-            if len(places) == 1:
-                self.drops.report(
-                    places[0],
-                    f"unresolved pool draw {token!r} would reach the bot as a literal",
-                    draw_fix,
-                )
-            else:
-                self.drops.report(
-                    generic,
-                    f"unresolved pool draw {token!r} would reach the bot as a literal in "
-                    f"{len(places)} place(s) (first: {places[0]})",
-                    draw_fix,
-                )
+        def report_tokens(
+            found: dict[tuple[str, str], list[str]], noun: str, token_fix: str
+        ) -> None:
+            for (token, generic), places in found.items():
+                if len(places) == 1:
+                    self.drops.report(
+                        places[0],
+                        f"unresolved {noun} {token!r} would reach the bot as a literal",
+                        token_fix,
+                    )
+                else:
+                    self.drops.report(
+                        generic,
+                        f"unresolved {noun} {token!r} would reach the bot as a literal in "
+                        f"{len(places)} place(s) (first: {places[0]})",
+                        token_fix,
+                    )
+
+        report_tokens(
+            draw_groups,
+            "pool draw",
+            "see the unknown-pool/missing-field/exhaustion error reported above",
+        )
+        report_tokens(
+            wait_groups,
+            "wait range",
+            "a wait range is drawn from the lock's seed: compile with `pmspec compile`",
+        )
 
     def _deep_merge(self, base: dict[str, Any], override: dict[str, Any]) -> None:
         """Deep merge override into base dict (in-place)."""

@@ -130,3 +130,49 @@ def test_with_a_lock_runs_verify(monkeypatch):
     monkeypatch.setattr(status_mod, "verify_lock", lambda *a, **k: V())
     s = experiment_status(FakeSession([], HEALTH), 181, lock_text="pmspec_lock: 1\n")
     assert s.verify is not None and not s.ok and "UNBOUND x" in s.render()
+
+
+# --- a runs upload ---------------------------------------------------------
+
+
+FLEET = {
+    "lock_sha256": "a" * 64,
+    "mode": "real",
+    "anchor": "2026-10-01T10:00:00+02:00",
+    "uploaded_at": "2026-10-01T10:00:00+02:00",
+}
+
+
+def test_a_runs_upload_shows_its_kind_and_base():
+    prefs = _prefs("upload 1", **FLEET) + _prefs(
+        "upload 2",
+        lock_sha256="b" * 64,
+        mode="real",
+        kind="runs",
+        base_lock_sha256="a" * 64,
+        updates='{"bot_01": {"preferences.ideology": ["0.10", "0.90"]}}',
+        uploaded_at="2026-10-02T09:00:00+02:00",
+    )
+    text = experiment_status(FakeSession(prefs, HEALTH), 181).render()
+    assert "kind=runs base=aaaaaaaaaaaa" in text
+    assert "updates=1" in text
+    assert "uploads: 1 fleet + 1 runs, last 2026-10-02T09:00:00+02:00" in text
+
+
+def test_a_fleet_only_experiment_counts_no_runs():
+    text = experiment_status(FakeSession(_prefs("upload 1", **FLEET), HEALTH), 181).render()
+    assert "uploads: 1 fleet, last 2026-10-01T10:00:00+02:00" in text
+    assert "kind=runs" not in text
+
+
+def test_the_clipped_updates_blob_renders_as_yes():
+    """Past 255 characters the upload records a pointer at the lock, not the
+    diff; the count is gone, so status says there were updates and no more."""
+    prefs = _prefs("upload 1", **FLEET) + _prefs(
+        "upload 2",
+        lock_sha256="b" * 64,
+        kind="runs",
+        base_lock_sha256="a" * 64,
+        updates="<40 crawlers updated; see lock>",
+    )
+    assert "updates=yes" in experiment_status(FakeSession(prefs, HEALTH), 181).render()

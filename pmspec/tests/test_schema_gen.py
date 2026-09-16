@@ -55,7 +55,6 @@ class TestKeySetsProduceTheContract:
             ("defaults", "_KEYS_DEFAULTS"),
             ("design", "_KEYS_DESIGN"),
             ("factor", "_KEYS_FACTOR"),
-            ("crawler", "_KEYS_CRAWLER"),
             ("configuration", "_KEYS_CONFIGURATION"),
             ("proxy", "_KEYS_PROXY"),
             ("agent", "_KEYS_AGENT"),
@@ -67,9 +66,29 @@ class TestKeySetsProduceTheContract:
         assert d["additionalProperties"] is False
         assert set(d["properties"].keys()) == getattr(SpecValidator, keys_attr)
 
-    def test_root_properties_match_keys_root(self):
+    def test_root_and_crawler_are_the_union_of_both_spec_kinds(self):
+        # One schema document describes a fleet spec and a runs spec, so these
+        # two property sets are the union of the two whitelists; which of them
+        # applies is `_validate_unknown_keys`'s decision, made per spec kind.
         assert self.SCHEMA["additionalProperties"] is False
-        assert set(self.SCHEMA["properties"].keys()) == SpecValidator._KEYS_ROOT
+        assert set(self.SCHEMA["properties"].keys()) == (
+            SpecValidator._KEYS_ROOT | SpecValidator._KEYS_ROOT_RUNS
+        )
+        crawler = self.SCHEMA["definitions"]["crawler"]
+        assert crawler["additionalProperties"] is False
+        assert set(crawler["properties"].keys()) == (
+            SpecValidator._KEYS_CRAWLER | SpecValidator._KEYS_CRAWLER_RUNS
+        )
+
+    def test_the_runs_only_keys_are_absent_from_the_fleet_whitelists(self):
+        # The schema is permissive by construction above; the whitelists are
+        # what actually refuse `updates:` on a fleet crawler (a drop) and
+        # `agent:` on a runs crawler (an error).
+        assert {"from_base", "updates"}.isdisjoint(SpecValidator._KEYS_CRAWLER)
+        assert "runs_for" not in SpecValidator._KEYS_ROOT
+        assert {"agent", "proxy", "configuration", "design"}.isdisjoint(
+            SpecValidator._KEYS_CRAWLER_RUNS | SpecValidator._KEYS_ROOT_RUNS
+        )
 
     def test_workflow_item_has_one_property_per_job_plus_control_keys(self):
         props = set(self.SCHEMA["definitions"]["workflowItem"]["properties"].keys())

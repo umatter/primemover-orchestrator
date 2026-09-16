@@ -26,7 +26,13 @@ from pmspec.lock.diff import diff_locks
 from pmspec.lock.io import LockError, dump_lock, is_lock_document, load_lock
 from pmspec.lock.secrets import InsecureSecretsFile, SecretStore, find_placeholders
 from pmspec.lock.status import experiment_status
-from pmspec.lock.upload import MODES, UploadOptions, UploadRefused, upload_lock
+from pmspec.lock.upload import (
+    MODES,
+    UploadOptions,
+    UploadRefused,
+    plan_runs_upload,
+    upload_lock,
+)
 from pmspec.lock.verify import redact_differences, verify_lock
 
 
@@ -681,6 +687,22 @@ class _McpSession:
 
     def __init__(self) -> None:
         self.base_url = get_settings().pm_api_base_url
+        self._pref_update: bool | None = None
+
+    def supports_preference_update(self, configuration: dict[str, Any]) -> bool:
+        """Does this API sync `preferences` on PUT configurations/{id}?
+
+        Probed once per session, exactly as ApiSession does it. The probe is a
+        PUT of the configuration's own current values plus an empty preferences
+        list -- it changes nothing under either API version, and the only
+        caller (upload_lock, for a runs lock carrying `updates:`) runs behind
+        _require_local_write_target().
+        """
+        if self._pref_update is None:
+            from pmspec.lock.upload import probe_preference_update
+
+            self._pref_update = probe_preference_update(self, configuration)
+        return self._pref_update
 
     def get(self, path: str, params: dict[str, Any] | None = None) -> Any:
         return _unwrap(_api_request("GET", path, params=params))
@@ -2227,9 +2249,18 @@ def compile_experiment_spec(
         git_commit: the spec repo's short HEAD, optionally suffixed "-dirty"
         spec_path: the spec's path relative to that repo's root
 
+    A **runs spec** (one carrying ``runs_for: <fleet lock path>``) compiles the
+    same way, and its base lock arrives the way a data pool does: put the fleet
+    lock's *text* in ``files`` under exactly the bare filename ``runs_for:``
+    names (``{"fleet.lock.yaml": "<lock text>"}``). Without it the compile is
+    refused with ``runs_for: cannot read <path>``. The result then reports
+    ``kind: "runs"`` and the ``base_lock_sha256`` the lock recorded -- the sha
+    ``upload_experiment`` checks against the experiment's first upload.
+
     Returns:
-        JSON: {"lock": <text>, "crawler_count", "seed", "anchor", "git_commit",
-        "spec_path", "warnings", "dropped"} or {"errors": [...], "warnings", "dropped"}
+        JSON: {"lock": <text>, "kind": "fleet"|"runs", "base_lock_sha256",
+        "crawler_count", "seed", "anchor", "git_commit", "spec_path",
+        "warnings", "dropped"} or {"errors": [...], "warnings", "dropped"}
     """
     if git_commit is not None and not _CLIENT_COMMIT_RE.fullmatch(git_commit):
         return json.dumps(
@@ -2263,6 +2294,8 @@ def compile_experiment_spec(
     return json.dumps(
         {
             "lock": dump_lock(result.lock),
+            "kind": result.lock.kind,
+            "base_lock_sha256": result.lock.provenance.base_lock_sha256,
             "crawler_count": len(result.lock.crawlers),
             "seed": result.lock.provenance.seed,
             "anchor": result.lock.schedule["anchor"],
@@ -2280,6 +2313,7 @@ def validate_experiment_spec(
     strict: bool = False,
     lax: bool = False,
     files: dict[str, str] | None = None,
+    seed: int | None = None,
 ) -> str:
     """
     Validate a YAML experiment specification, or a lock.
@@ -2289,12 +2323,26 @@ def validate_experiment_spec(
     structurally, semantically, and against the design, reported as
     ``{"valid", "kind": "spec", ...}``.
 
+    A **runs spec** (one carrying ``runs_for: <fleet lock path>``) is validated
+    as a runs spec, against its base fleet lock -- which arrives the way a data
+    pool does: put the fleet lock's *text* in ``files`` under exactly the bare
+    filename ``runs_for:`` names (``{"fleet.lock.yaml": "<lock text>"}``), as
+    ``compile_experiment_spec`` takes it. Without it the validation fails with
+    ``runs_for: cannot read <path>``. This is the same preparation
+    ``pmspec validate`` and ``compile_experiment_spec`` do, so this tool cannot
+    pass a spec the compile would refuse, or refuse one it would accept.
+
     Args:
         yaml_content: YAML spec content, or a lock
         strict: If True, treat warnings as errors (spec only)
         lax: If True, downgrade strict-contract errors (drops) to warnings (spec only)
         files: data-pool files by the bare filename the spec's `source:` names,
-            content as text -- materialised into a temp dir used as base_dir
+            content as text -- materialised into a temp dir used as base_dir;
+            also where a runs spec's base fleet lock goes
+        seed: the seed to validate under; defaults to the spec's own
+            (``design.seed``, or a runs spec's root ``seed:``). `assign:`
+            refuses to draw unseeded, so a spec with assignments and no seed
+            anywhere reports what the compile reports.
 
     Returns:
         JSON with validation results including errors, warnings, and summary
@@ -2320,65 +2368,81 @@ def validate_experiment_spec(
         )
 
     try:
-        import yaml as yaml_lib
-
-        from pmspec.lock.build import merge_reports
-        from pmspec.spec import SpecConverter, SpecParser, SpecValidator
-        from pmspec.spec.file_loader import (
-            create_file_tag_loader,
-            resolve_file_references,
-        )
+        from pmspec.lock.build import load_and_prepare, merge_reports, parse_and_convert
+        from pmspec.lock.runs import unknown_name_errors
+        from pmspec.spec import SpecValidator
     except ImportError as e:
         return json.dumps({"error": f"pmspec not available: {e}"})
 
     with _materialise_files(files) as tmp:
         base_dir = Path(tmp)
 
-        # Parse YAML with custom loader
-        # SECURITY: FileTagLoader inherits from yaml.SafeLoader, which prevents
-        # arbitrary code execution. The only custom tag is !file for loading
-        # external data files (CSV/JSON), which are parsed safely.
-        # base_dir anchors relative !file paths and data-pool `source:` files to
-        # the temp dir any `files` were materialised into.
-        FileTagLoader, file_loader = create_file_tag_loader(base_dir=base_dir)
-
-        try:
-            raw_spec = yaml_lib.load(yaml_content, Loader=FileTagLoader)
-            raw_spec = resolve_file_references(raw_spec, file_loader)
-        except yaml_lib.YAMLError as e:
+        # The one preparation every reader of a spec shares, exactly as `pmspec
+        # validate` and compile_spec use it: the YAML loaded under the seed a
+        # compile would run with (so a `!file {select: random}` is judged as the
+        # draw that would be compiled), the `!file` loader's own errors kept --
+        # nothing downstream re-reads them on the runs path -- and a `runs_for:`
+        # spec expanded against its base fleet lock.
+        # SECURITY: the loader behind this inherits from yaml.SafeLoader, which
+        # prevents arbitrary code execution. The only custom tag is !file for
+        # loading external data files (CSV/JSON), which are parsed safely.
+        # base_dir anchors relative !file paths, data-pool `source:` files and a
+        # runs spec's `runs_for:` lock to the temp dir `files` were written to.
+        prepared = load_and_prepare(yaml_content, base_dir=base_dir, seed=seed)
+        raw_spec, is_runs, base = prepared.raw, prepared.is_runs, prepared.base
+        prep_errors, prep_warnings = prepared.errors, prepared.warnings
+        if (raw_spec is None and prep_errors) or (is_runs and base is None):
             return json.dumps(
-                {
-                    "valid": False,
-                    "kind": "spec",
-                    "errors": [f"YAML parse error: {e}"],
-                    "warnings": [],
-                }
+                {"valid": False, "kind": "spec", "errors": prep_errors, "warnings": prep_warnings}
             )
 
         # Run validator
-        validator = SpecValidator(base_dir=base_dir, lax=lax)
-        validation_result = validator.validate(raw_spec)
+        validator = SpecValidator(base_dir=base_dir, lax=lax, runs=is_runs)
+        validation_result = validator.validate(raw_spec if isinstance(raw_spec, dict) else {})
 
         # Also parse and convert to catch additional errors. All three
         # components get `lax`, or a parser/converter drop stays an error under
         # lax=True; the validator has already named every unknown workflow
         # item, so the parser does not report it again.
-        parser = SpecParser(base_dir=base_dir, lax=lax, report_unknown_items=False)
-        parsed = parser.parse(yaml_content)
-
-        converter = SpecConverter(lax=lax)
-        result = converter.convert(parsed)
+        #
+        # Seeded with the number `raw_spec` was drawn under, so a spec that
+        # compiles cannot be rejected here for want of a seed (`assign:` refuses
+        # to draw unseeded). With no seed anywhere, this reports what compile
+        # reports. `resolve_times=False`, as `compile_spec` and `pmspec validate`
+        # pass it: a `start_at: {from, jitter}` is drawn after conversion from
+        # the lock's seed, so resolving here would reject a spec
+        # `compile_experiment_spec` accepts. Only `convert_spec_to_json`, which
+        # records no seed, resolves times -- and refuses a jitter.
+        parsed, result = parse_and_convert(
+            yaml_content,
+            base_dir=base_dir,
+            seed=prepared.run_seed,
+            lax=lax,
+            resolve_times=False,
+            report_unknown_items=False,
+            raw=raw_spec if is_runs else None,
+            runs=is_runs,
+        )
 
     # Combine all errors and warnings: de-duplicated, one drop-count line
     dropped = validation_result.dropped + parsed.dropped + result.dropped
+    # A name with no bot behind it is a session that would go nowhere, judged
+    # on the name that would actually be uploaded.
+    name_errors = (
+        unknown_name_errors([str(c.get("name", "")) for c in result.json_data], base)
+        if base is not None
+        else []
+    )
     all_errors, all_warnings = merge_reports(
         [
+            prep_errors,
             validation_result.errors,
             parsed.errors,
             result.errors,
             validator.validate_expanded(result.json_data),
+            name_errors,
         ],
-        [validation_result.warnings, parsed.warnings, result.warnings],
+        [prep_warnings, validation_result.warnings, parsed.warnings, result.warnings],
         dropped,
         lax,
     )
@@ -2395,7 +2459,13 @@ def validate_experiment_spec(
             "warnings": all_warnings,
             "dropped": dropped,
             "summary": {
-                "experiment_name": parsed.experiment.get("name", ""),
+                # A runs spec has no experiment of its own: the name is the
+                # base lock's, as `pmspec validate` reports it.
+                "experiment_name": (
+                    base.lock.experiment.get("name", "")
+                    if base is not None
+                    else parsed.experiment.get("name", "")
+                ),
                 "crawler_count": result.crawler_count,
                 "total_jobs": result.total_jobs,
                 "has_design": parsed.design is not None,
@@ -2519,13 +2589,21 @@ def upload_experiment(
         lock_content: a lock, not a spec -- call compile_experiment_spec first
         mode: 'test' -> VM runner, name becomes 'test-<name>-<date>', dirty commit
             allowed; 'real' -> as named in the lock, refused without a clean commit
-        experiment_id: append to this experiment instead of creating one
+        experiment_id: append to this experiment instead of creating one.
+            REQUIRED for a `kind: runs` lock, which adds queues to the crawlers
+            of the experiment its base fleet lock created.
         dry_run: preview only. Defaults to True; pass False to apply.
         deep_verify: also compare each queue's jobs/behaviours, not just schedule
         allow_dirty: 'real' mode only -- let a dirty-commit or commit-less lock
             through anyway. Never needed for 'test' mode, which already allows it.
         allow_past: let a schedule anchor that is already in the past through
             (the runner will never pick it up; use for backfilling a record).
+
+    A runs lock (`kind: runs`) appends queues to existing crawlers matched by
+    name, is idempotent (a queue already live at the same name and wall-clock
+    start is skipped), and applies `updates:` only on an API that syncs
+    preferences. Its dry run reports the plan -- crawlers, queues, would_skip,
+    updates -- after running every refusal against the live experiment.
 
     Secrets: ${secret:...} placeholders resolve from PMSPEC_SECRETS_FILE on this
     host. A dry run loads the same store (never printing a value) and reports
@@ -2547,6 +2625,43 @@ def upload_experiment(
         return json.dumps({"success": False, "error": "invalid lock", "errors": e.errors})
 
     needed = sorted(find_placeholders(lock.crawlers))
+    if dry_run and lock.is_runs:
+        # A runs lock's dry run is a conversation with the live experiment:
+        # the base-lock, mode and crawler-name checks are reads of it, and the
+        # preference-support probe is a PUT that changes no value. One of its
+        # requests is a write verb, so it runs behind the same guard as an
+        # apply rather than in the pure-local branch below.
+        guard = _require_local_write_target()
+        if guard:
+            return json.dumps({"success": False, "error": guard})
+        try:
+            plan = plan_runs_upload(
+                lock_content,
+                session=_McpSession(),
+                options=UploadOptions(
+                    mode=mode,
+                    experiment_id=experiment_id,
+                    contact="PrimeMover Orchestrator MCP",
+                    allow_dirty=allow_dirty,
+                    allow_past=allow_past,
+                ),
+            )
+        except (UploadRefused, LockError) as e:
+            return json.dumps({"success": False, "dry_run": True, "error": str(e)})
+        except Exception as e:
+            return json.dumps({"success": False, "dry_run": True, "error": f"Plan failed: {e}"})
+        return json.dumps(
+            {
+                "success": True,
+                "dry_run": True,
+                "mode": mode,
+                "experiment_name": lock.experiment["name"],
+                "git_commit": lock.provenance.git_commit,
+                "base_lock_sha256": lock.provenance.base_lock_sha256,
+                **plan,
+                "to_apply": "call again with dry_run=false",
+            }
+        )
     if dry_run:
         secrets_missing: list[str] = []
         secrets_store = "ok"
@@ -2624,7 +2739,15 @@ def upload_experiment(
         "lock_sha256": result.lock_sha256,
         "anchor": result.anchor,
         "record": result.record_line,
+        "kind": result.kind,
     }
+    if result.kind == "runs":
+        response["queues_posted"] = result.queue_count
+        response["queues_skipped_existing"] = result.skipped_existing
+        response["updates_applied"] = result.updates_applied
+        # and then falls through to the same verify: for a runs lock that
+        # compares the queues it appended and the preferences it updated,
+        # nothing of the fleet it appended them to.
 
     # Outside any earlier try: the upload itself already succeeded, and an
     # exception here (an httpx failure fetching the export under deep_verify,
@@ -3042,7 +3165,7 @@ design:
     mainstream_media_aversion:
       levels: [control, treated]
       maps_to:
-        params.pi:
+        configuration.params.pi:
           control: 0
           treated: 1
   replications: 3

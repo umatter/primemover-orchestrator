@@ -25,6 +25,7 @@ from .draws import is_draw, make_token, select_error
 from .drops import Drops
 from .file_loader import FileLoader, create_file_tag_loader, resolve_file_references
 from .job_registry import JobRegistry
+from .timing import parse_duration, wait_token
 
 
 @dataclass
@@ -84,6 +85,7 @@ class SpecParser:
         *,
         lax: bool = False,
         report_unknown_items: bool = True,
+        runs: bool = False,
     ):
         """
         Initialize the spec parser.
@@ -98,11 +100,15 @@ class SpecParser:
                 validator already names every such item with a precise path, and
                 the parser's ``crawler[?]`` report would double the message and
                 the drop count. A standalone parse keeps reporting.
+            runs: Parse a *runs* spec (one carrying ``runs_for:``). Its
+                experiment is the base lock's, so no ``experiment:`` block is
+                required -- or allowed (the validator refuses one).
         """
         self.base_dir = base_dir or Path.cwd()
         self.seed = seed
         self.lax = lax
         self.report_unknown_items = report_unknown_items
+        self.runs = runs
         self.errors: list[str] = []
         self.warnings: list[str] = []
         self.file_loader: FileLoader | None = None
@@ -162,6 +168,23 @@ class SpecParser:
         self.errors.extend(self.file_loader.errors)
         self.warnings.extend(self.file_loader.warnings)
 
+        return self._build(raw)
+
+    def parse_raw(self, raw: dict[str, Any]) -> ParsedSpec:
+        """Parse a spec mapping that is already loaded and already `!file`-resolved.
+
+        The runs path needs this: ``compile_spec`` loads the YAML itself (to
+        validate it, and to expand ``from_base:`` against the base lock), so
+        re-serialising that dict just to parse it back would be a round trip
+        with nothing to gain and canonicalisation to lose.
+        """
+        self.errors = []
+        self.warnings = []
+        self.drops = Drops(self.lax)
+        self.file_loader = None
+        return self._build(raw)
+
+    def _build(self, raw: dict[str, Any]) -> ParsedSpec:
         # Extract sections
         version = raw.get("version", "1.0")
         experiment = raw.get("experiment", {})
@@ -180,8 +203,9 @@ class SpecParser:
             self.pool_manager.errors = []
             self.pool_manager.warnings = []
 
-        # Validate required fields
-        if not experiment.get("name"):
+        # Validate required fields. A runs spec has no experiment of its own:
+        # the name comes from the base lock it is compiled against.
+        if not self.runs and not experiment.get("name"):
             self.errors.append("experiment.name is required")
 
         # Expand crawlers
@@ -321,11 +345,18 @@ class SpecParser:
 
         # PyYAML resolves an unquoted 2026-10-01T10:00:00 to a datetime; the
         # time helpers expect the ISO string the author wrote.
+        #
+        # `start_at: {from: ..., jitter: ...}` is kept as a dict on purpose:
+        # which second within the jitter window this session starts depends on
+        # the crawler index and the lock's seed, so the draw belongs to the
+        # converter (see ``timing.resolve_start_jitter``). Only its `from` is
+        # normalised here, for the same unquoted-timestamp reason.
         start = expanded.get("start_at")
-        if isinstance(start, datetime):
-            expanded["start_at"] = start.isoformat()
-        elif isinstance(start, date):
-            expanded["start_at"] = f"{start.isoformat()}T00:00:00"
+        if isinstance(start, dict):
+            if "from" in start:
+                start["from"] = self._iso_if_datetime(start["from"])
+        elif start is not None:
+            expanded["start_at"] = self._iso_if_datetime(start)
 
         # Expand workflow to jobs
         if "workflow" in expanded:
@@ -496,7 +527,7 @@ class SpecParser:
             )
 
         elif job_type == "wait":
-            seconds = self._parse_duration(value)
+            seconds = self._wait_seconds(value)
             job["behaviors"] = self._make_behaviors(
                 {"seconds": seconds, "captchaMode": defaults.get("captcha_mode", "never")}
             )
@@ -843,6 +874,42 @@ class SpecParser:
             "lambdasingleselectjob": "Lambda Select",
         }
         return name_map.get(job_type, job_type.replace("job", "").replace("_", " ").title())
+
+    @staticmethod
+    def _iso_if_datetime(value: Any) -> Any:
+        """An unquoted YAML timestamp back as the ISO string the author wrote."""
+        if isinstance(value, datetime):
+            return value.isoformat()
+        if isinstance(value, date):
+            return f"{value.isoformat()}T00:00:00"
+        return value
+
+    def _wait_seconds(self, value: Any) -> int | str:
+        """A wait's `seconds` behaviour: a number, or a deferred range token.
+
+        `wait: {min: 30s, max: 60s}` cannot be drawn here -- one workflow item
+        becomes a job on every crawler the design expands, and which number
+        each gets depends on the crawler index and the lock's seed, neither of
+        which exists yet. So the range leaves as a `%%pmspec-wait:...%%` token
+        the converter resolves per job (see ``timing.py``). A range that is not
+        usable is an error *and* a 0, so nothing downstream sees a half-formed
+        token: the error already fails the compile.
+        """
+        if not isinstance(value, dict):
+            return self._parse_duration(value)
+        low_raw, high_raw = value.get("min"), value.get("max")
+        if low_raw is None or high_raw is None:
+            self.errors.append("wait: needs both min and max")
+            return 0
+        low, high = parse_duration(low_raw), parse_duration(high_raw)
+        if low is None or high is None:
+            bad = low_raw if low is None else high_raw
+            self.errors.append(f"wait: {bad!r} is not a duration")
+            return 0
+        if low > high:
+            self.errors.append(f"wait: min ({low_raw}) exceeds max ({high_raw})")
+            return 0
+        return wait_token(low, high)
 
     def _parse_duration(self, value: str | int | float) -> int:
         """

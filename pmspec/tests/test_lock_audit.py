@@ -771,6 +771,9 @@ def test_live_queue_with_a_different_job_count_is_a_shape_finding_and_still_audi
     assert len(shapes) == 1, result.findings
     assert shapes[0].detail == "lock has 2 jobs, live has 3"
     assert shapes[0].job_id is None
+    # A fleet crawler's arm is a property of the bot, so the queue-level
+    # finding carries it exactly as every per-job finding does.
+    assert shapes[0].arm == TREATED_ARM
     # The ordinals that do line up are still audited on their own merits.
     assert _bot_t_finding(result).outcome == "ok"
     assert not result.ok(strict=False)
@@ -1008,3 +1011,197 @@ def test_unrecognised_status_code_is_unreported_not_unfinished():
 def test_legacy_running_alias_is_unfinished():
     result = audit_experiment(FakeSession({"status_code": "processing"}), EXPERIMENT_ID, LOCK_TEXT)
     assert _bot_t_finding(result).outcome == "unfinished"
+
+
+# --- a runs lock: no configuration, so the arm is the job's own treatment -----
+
+
+def _runs_queue(name: str, offset: str, lambda_behaviors: list[dict]) -> dict:
+    return {
+        "name": name,
+        "description": "d",
+        "start_offset": offset,
+        "timezone": "Europe/Zurich",
+        "timezone_utc_offset": "+02:00",
+        "active": True,
+        "jobs": [
+            _job("visit", "visitjob", [_behavior("url", "https://x")]),
+            _job("select", LAMBDA_TYPE, lambda_behaviors),
+        ],
+    }
+
+
+def make_runs_lock_text(lambda_behaviors: list[dict], *, queue_name: str = "day-1") -> str:
+    lock = Lock(
+        provenance=Provenance(
+            spec_path="design/day.yaml",
+            spec_sha256="ab" * 32,
+            generator=None,
+            git_commit=None,
+            pmspec_version="0.1.0",
+            seed=7,
+            base_lock_sha256="cd" * 32,
+            base_spec_path="design/fleet.yaml",
+        ),
+        experiment={"name": "Study", "description": "", "runner_user_id": None, "contact": None},
+        schedule={"anchor": "upload"},
+        crawlers=[{"name": "bot_t", "queues": [_runs_queue(queue_name, "+2h", lambda_behaviors)]}],
+        kind="runs",
+    )
+    return dump_lock(lock)
+
+
+class RunsAuditSession:
+    """One bot carrying two sessions, one from each of two runs uploads."""
+
+    base_url = "http://fake"
+
+    def __init__(self, job2: dict) -> None:
+        self.job2 = job2
+        self.queues_asked: list[int] = []
+
+    def get(self, path, params=None):
+        if path == f"experiments/{EXPERIMENT_ID}":
+            return {"id": EXPERIMENT_ID, "crawlers": [{"id": 30, "name": "bot_t"}]}
+        if path == f"experiments/{EXPERIMENT_ID}/queues-unprocessed":
+            if (params or {}).get("page", 1) > 1:
+                return []
+            return [
+                {"id": 500, "name": "day-1", "crawler_id": 30, "start_at": "2026-10-01 12:00:00"},
+                {"id": 600, "name": "day-2", "crawler_id": 30, "start_at": "2026-10-02 12:00:00"},
+            ]
+        if path == f"experiments/{EXPERIMENT_ID}/queues-processed":
+            return []
+        if path == "jobs":
+            queue_id = int((params or {})["filter[queue]"])
+            self.queues_asked.append(queue_id)
+            return [
+                {"id": queue_id * 10, "order": 1, "type": "visitjob", "status_code": "success"},
+                {"id": queue_id * 10 + 1, "order": 2, "type": LAMBDA_TYPE, **self.job2},
+            ]
+        raise AssertionError(path)
+
+
+def test_a_runs_lock_reads_the_arm_from_the_job_treatment():
+    """A runs crawler carries no configuration: `pi=...` can only come from the
+    treatment the job itself asks for."""
+    lock_text = make_runs_lock_text(
+        [_behavior("strategy", "youtube_v1"), _behavior("pi", 1), _behavior("kappa", 1)]
+    )
+    session = RunsAuditSession(_treated_job(["mainstream_media", "similar"]))
+    result = audit_experiment(session, EXPERIMENT_ID, lock_text)
+    assert [(f.outcome, f.arm) for f in result.findings] == [("ok", "pi=1,kappa=1")]
+
+
+def test_a_runs_lock_job_naming_reliability_and_lean_names_the_arm_that_way():
+    lock_text = make_runs_lock_text(
+        [
+            _behavior("strategy", "youtube_v1"),
+            _behavior("reliability", "green"),
+            _behavior("lean", "left"),
+            _behavior("pi", 1),
+        ]
+    )
+    session = RunsAuditSession(_treated_job(["mainstream_media"]))
+    result = audit_experiment(session, EXPERIMENT_ID, lock_text)
+    assert [f.arm for f in result.findings] == ["green/left"]
+
+
+def test_a_runs_lock_audits_only_the_queues_it_appended():
+    """The bot's other sessions came from another runs lock; auditing this one
+    must not report on -- or even fetch -- theirs."""
+    lock_text = make_runs_lock_text(
+        [_behavior("strategy", "youtube_v1"), _behavior("pi", 1)], queue_name="day-1"
+    )
+    session = RunsAuditSession(_treated_job(["mainstream_media"]))
+    result = audit_experiment(session, EXPERIMENT_ID, lock_text)
+    assert session.queues_asked == [500]
+    assert [(f.queue, f.job_id) for f in result.findings] == [("day-1", 5001)]
+
+
+def test_a_runs_lock_lambda_job_without_a_strategy_is_not_audited():
+    """The params fallback reads `configuration.params`, which a runs lock has
+    none of: the arm lives in its base fleet lock, so there is nothing to audit
+    against here rather than a control arm to assume."""
+    lock_text = make_runs_lock_text([_behavior("task", "select")])
+    session = RunsAuditSession(_treated_job(["mainstream_media"]))
+    result = audit_experiment(session, EXPERIMENT_ID, lock_text)
+    assert result.findings == []
+
+
+class TwoQueueRunsSession:
+    """One bot, two appended sessions, each live queue carrying one job more
+    than the lock describes -- so every queue earns its own ``shape`` finding."""
+
+    base_url = "http://fake"
+
+    def __init__(self, job2: dict) -> None:
+        self.job2 = job2
+
+    def get(self, path, params=None):
+        if path == f"experiments/{EXPERIMENT_ID}":
+            return {"id": EXPERIMENT_ID, "crawlers": [{"id": 30, "name": "bot_t"}]}
+        if path == f"experiments/{EXPERIMENT_ID}/queues-unprocessed":
+            if (params or {}).get("page", 1) > 1:
+                return []
+            return [
+                {"id": 500, "name": "day-1", "crawler_id": 30, "start_at": "2026-10-01 12:00:00"},
+                {"id": 600, "name": "day-2", "crawler_id": 30, "start_at": "2026-10-02 12:00:00"},
+            ]
+        if path == f"experiments/{EXPERIMENT_ID}/queues-processed":
+            return []
+        if path == "jobs":
+            queue_id = int((params or {})["filter[queue]"])
+            return [
+                {"id": queue_id * 10, "order": 1, "type": "visitjob", "status_code": "success"},
+                {"id": queue_id * 10 + 1, "order": 2, "type": LAMBDA_TYPE, **self.job2},
+                {"id": queue_id * 10 + 2, "order": 3, "type": "visitjob", "status_code": "success"},
+            ]
+        raise AssertionError(path)
+
+
+def _two_queue_runs_lock_text(*queues: dict) -> str:
+    lock = Lock(
+        provenance=Provenance(
+            spec_path="design/day.yaml",
+            spec_sha256="ab" * 32,
+            generator=None,
+            git_commit=None,
+            pmspec_version="0.1.0",
+            seed=7,
+            base_lock_sha256="cd" * 32,
+            base_spec_path="design/fleet.yaml",
+        ),
+        experiment={"name": "Study", "description": "", "runner_user_id": None, "contact": None},
+        schedule={"anchor": "upload"},
+        crawlers=[{"name": "bot_t", "queues": list(queues)}],
+        kind="runs",
+    )
+    return dump_lock(lock)
+
+
+def test_each_queues_shape_finding_carries_its_own_queues_arm():
+    """A runs lock's arm is per job, so a queue-level finding takes it from that
+    queue's own first auditable job -- never from whatever the previous queue's
+    last job happened to leave behind."""
+    lock_text = _two_queue_runs_lock_text(
+        _runs_queue("day-1", "+2h", [_behavior("strategy", "youtube_v1"), _behavior("pi", 1)]),
+        _runs_queue("day-2", "+26h", [_behavior("strategy", "youtube_v1"), _behavior("kappa", 1)]),
+    )
+    result = audit_experiment(
+        TwoQueueRunsSession(_treated_job(["mainstream_media", "similar"])), EXPERIMENT_ID, lock_text
+    )
+    shapes = [f for f in result.findings if f.outcome == "shape"]
+    assert [(f.queue, f.arm) for f in shapes] == [("day-1", "pi=1"), ("day-2", "kappa=1")]
+
+
+def test_a_queue_with_nothing_auditable_in_it_has_no_arm_to_report():
+    """No job in the queue names a treatment, so the shape finding says `-`
+    rather than borrowing an arm from somewhere else in the lock."""
+    lock_text = _two_queue_runs_lock_text(
+        _runs_queue("day-1", "+2h", [_behavior("task", "select")])
+    )
+    result = audit_experiment(
+        TwoQueueRunsSession(_treated_job(["mainstream_media"])), EXPERIMENT_ID, lock_text
+    )
+    assert [(f.queue, f.outcome, f.arm) for f in result.findings] == [("day-1", "shape", "-")]

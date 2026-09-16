@@ -2,19 +2,18 @@
 
 from __future__ import annotations
 
-import re
 from datetime import datetime, timedelta
 
 from pmspec.spec.time_utils import (
     API_TIMEZONE,
+    OFFSET_RE,
+    UNIT_SECONDS,
     _to_api_wall_clock,
     format_iso8601,
     is_relative_time,
 )
 
 UPLOAD_ANCHOR = "upload"
-_OFFSET_RE = re.compile(r"^([+-])(\d+)([smhd])$")
-_UNIT_SECONDS = {"s": 1, "m": 60, "h": 3600, "d": 86400}
 
 
 class AnchorError(ValueError):
@@ -22,11 +21,11 @@ class AnchorError(ValueError):
 
 
 def parse_offset(text: str) -> timedelta:
-    m = _OFFSET_RE.match(text.strip().lower())
+    m = OFFSET_RE.match(text.strip().lower())
     if not m:
         raise ValueError(f"not an offset: {text!r}")
     sign, amount, unit = m.groups()
-    seconds = int(amount) * _UNIT_SECONDS[unit]
+    seconds = int(amount) * UNIT_SECONDS[unit]
     return timedelta(seconds=-seconds if sign == "-" else seconds)
 
 
@@ -35,8 +34,8 @@ def format_offset(delta: timedelta) -> str:
     sign = "-" if total < 0 else "+"
     total = abs(total)
     for unit in ("d", "h", "m"):
-        if total and total % _UNIT_SECONDS[unit] == 0:
-            return f"{sign}{total // _UNIT_SECONDS[unit]}{unit}"
+        if total and total % UNIT_SECONDS[unit] == 0:
+            return f"{sign}{total // UNIT_SECONDS[unit]}{unit}"
     return f"{sign}{total}s"
 
 

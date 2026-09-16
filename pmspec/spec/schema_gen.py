@@ -29,6 +29,7 @@ import json
 from pathlib import Path
 from typing import Any
 
+from .assign import ASSIGN_SELECTS
 from .distributions import DistributionFactory
 from .job_registry import JobRegistry
 from .validator import SpecValidator
@@ -226,6 +227,22 @@ def build_schema() -> dict[str, Any]:
             "items": {"$ref": "#/definitions/crawler"},
             "minItems": 1,
         },
+        "seed": {
+            "type": "integer",
+            "description": (
+                "Runs spec only: the seed every draw derives from, when --seed is not passed "
+                "(a runs spec has no design: block to hold design.seed). Never inherited from "
+                "the base lock."
+            ),
+        },
+        "runs_for": {
+            "type": "string",
+            "description": (
+                "Path to the fleet lock this spec adds sessions to, relative to the spec. "
+                "Its presence makes this a runs spec: no design, no experiment, and no "
+                "agent/proxy/configuration on a crawler."
+            ),
+        },
     }
 
     experiment_fragments = {
@@ -356,14 +373,18 @@ def build_schema() -> dict[str, Any]:
         "name": {"type": "string", "description": "Session name"},
         "description": {"type": "string", "description": "Session description"},
         "start": {
-            "type": "string",
-            "description": "Start time: 'now', relative offset (+5m, +1h, +1d), or ISO 8601 timestamp",
+            "oneOf": [{"type": "string"}, {"$ref": "#/definitions/startJitter"}],
+            "description": (
+                "Start time: 'now', relative offset (+5m, +1h, +1d), ISO 8601 timestamp, "
+                "or {from, jitter} for a seeded start within a window"
+            ),
             "examples": ["now", "+5m", "+1h", "+1d", "2025-02-01T10:00:00Z"],
         },
         "start_at": {
-            "type": "string",
+            "oneOf": [{"type": "string"}, {"$ref": "#/definitions/startJitter"}],
             "description": (
-                "Alias for start: 'now', relative offset (+5m, +1h, +1d), or ISO 8601 timestamp"
+                "Alias for start: 'now', relative offset (+5m, +1h, +1d), ISO 8601 timestamp, "
+                "or {from, jitter} for a seeded start within a window"
             ),
             "examples": ["now", "+5m", "+1h", "+1d", "2025-02-01T10:00:00Z"],
         },
@@ -413,6 +434,60 @@ def build_schema() -> dict[str, Any]:
             "type": "array",
             "description": "Queue definitions (alternative to session/additional_sessions)",
             "items": {"$ref": "#/definitions/session"},
+        },
+        "from_base": {
+            "type": "boolean",
+            "description": (
+                "Runs spec only: write one copy of this block per crawler of the base "
+                "fleet lock, with {base.name} / {base.location} / {base.<preference>} "
+                "substituted"
+            ),
+            "default": False,
+        },
+        "assign": {
+            "type": "object",
+            "description": (
+                "Per-crawler pool draws: each name takes one row of a pool, without "
+                "replacement across crawlers, and exposes its columns as "
+                "{name.column} placeholders anywhere in this crawler"
+            ),
+            "additionalProperties": {"$ref": "#/definitions/assignment"},
+        },
+        "updates": {
+            "type": "object",
+            "description": (
+                "Runs spec only: preference values to change on the existing bot when "
+                "this lock is uploaded"
+            ),
+            "properties": {
+                "preferences": {
+                    "type": "object",
+                    "description": "Preference name -> new value",
+                    "additionalProperties": {"type": ["string", "number", "boolean"]},
+                }
+            },
+            "additionalProperties": False,
+        },
+    }
+
+    assignment_fragments = {
+        "from_pool": {"type": "string", "description": "Name of a declared data pool"},
+        "match_field": {
+            "type": "string",
+            "description": (
+                "Pool column compared with the crawler's agent.location (or with "
+                "match_value); omit to draw from any row"
+            ),
+        },
+        "match_value": {
+            "type": "string",
+            "description": "What match_field is compared with, instead of agent.location",
+        },
+        "select": {
+            "type": "string",
+            "description": "How a row is chosen among the free matching ones",
+            "enum": sorted(ASSIGN_SELECTS),
+            "default": "random",
         },
     }
 
@@ -496,7 +571,17 @@ def build_schema() -> dict[str, Any]:
             factor_fragments,
             required=["levels"],
         ),
-        "crawler": _object(sv._KEYS_CRAWLER, "Crawler definition", crawler_fragments),
+        "crawler": _object(
+            sv._KEYS_CRAWLER | sv._KEYS_CRAWLER_RUNS,
+            "Crawler definition (a fleet spec's, or a runs spec's)",
+            crawler_fragments,
+        ),
+        "assignment": _object(
+            sv._KEYS_ASSIGN,
+            "One pool row drawn for this crawler, substitutable as {name.column}",
+            assignment_fragments,
+            required=["from_pool"],
+        ),
         "configuration": _object(
             sv._KEYS_CONFIGURATION, "Crawler configuration", configuration_fragments
         ),
@@ -519,6 +604,21 @@ def build_schema() -> dict[str, Any]:
         "proxy": _object(sv._KEYS_PROXY, "Proxy configuration", proxy_fragments),
         "agent": _object(sv._KEYS_AGENT, "Browser agent configuration", agent_fragments),
         "session": _object(sv._KEYS_SESSION, "Session/queue definition", session_fragments),
+        "startJitter": _object(
+            sv._KEYS_START_AT,
+            "A session start drawn from the lock's seed: from + U(0, jitter)",
+            {
+                "from": {
+                    "type": "string",
+                    "description": "The earliest start: 'now', a relative offset, or ISO 8601",
+                },
+                "jitter": {
+                    "type": "string",
+                    "description": "Width of the window the start is drawn from (e.g. '6h')",
+                },
+            },
+            required=["from", "jitter"],
+        ),
         "dataPool": {
             "type": "object",
             "description": "A data pool loaded from an external file (CSV/JSON/YAML)",
@@ -586,8 +686,23 @@ def build_schema() -> dict[str, Any]:
                     "oneOf": [
                         {"type": ["integer", "number"]},
                         {"type": "string", "pattern": r"^\d+(\.\d+)?\s*[a-z]*$"},
+                        _shorthand_options(
+                            "wait",
+                            "A wait drawn from the lock's seed: U(min, max) seconds",
+                            {
+                                "min": {
+                                    "type": ["integer", "number", "string"],
+                                    "description": "Shortest wait (e.g. '30s')",
+                                },
+                                "max": {
+                                    "type": ["integer", "number", "string"],
+                                    "description": "Longest wait (e.g. '60s')",
+                                },
+                            },
+                            required=["min", "max"],
+                        ),
                     ],
-                    "description": "Wait duration (e.g., 10, '10s', '5m')",
+                    "description": "Wait duration (e.g., 10, '10s', '5m') or a {min, max} range",
                 },
                 "click": {
                     "oneOf": [
@@ -911,8 +1026,20 @@ def build_schema() -> dict[str, Any]:
         "title": "PrimeMover Experiment Specification",
         "description": "YAML/JSON schema for defining PrimeMover browser automation experiments",
         "type": "object",
-        "required": ["experiment", "crawlers"],
-        "properties": {key: root_fragments[key] for key in sorted(sv._KEYS_ROOT)},
+        # `experiment` is NOT required here, though a fleet spec must carry
+        # one: a *runs* spec (`runs_for:`) takes its experiment from the base
+        # lock and is refused if it declares one. Which of the two is required
+        # therefore depends on the spec kind, which jsonschema would express
+        # only as an `anyOf` whose failure message names neither. The
+        # lax-aware Python check says it precisely instead
+        # (`_validate_required_fields`), as it already did for `experiment.name`.
+        "required": ["crawlers"],
+        # One schema documents both spec kinds; the per-kind whitelists in
+        # `_validate_unknown_keys` are what actually refuses a key in the wrong
+        # one. Same reason `crawler` below is the union of the two key sets.
+        "properties": {
+            key: root_fragments[key] for key in sorted(sv._KEYS_ROOT | sv._KEYS_ROOT_RUNS)
+        },
         "additionalProperties": False,
         "definitions": definitions,
     }

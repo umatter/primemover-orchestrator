@@ -7,9 +7,12 @@ from typing import Any
 import pytest
 
 from orchestrator.mcp_server import server as s
-from pmspec.lock.io import dump_lock
+from pmspec.lock.io import dump_lock, load_lock, sha256_text
 from pmspec.lock.model import LOCK_FORMAT_VERSION
 from pmspec.tests.test_lock_io import make_lock
+from pmspec.tests.test_lock_runs import FLEET_SPEC, RUNS_SPEC
+from pmspec.tests.test_lock_runs_upload import RunsSession, make_runs_lock
+from pmspec.tests.test_timing import JITTER_SPEC
 
 SPEC = """
 version: "1.0"
@@ -340,3 +343,167 @@ def test_verify_experiment_redacts_secret_valued_differences(monkeypatch: pytest
             "actual": "<redacted>",
         }
     ]
+
+
+# --- a runs lock over the MCP ---------------------------------------------
+
+
+def test_runs_lock_without_an_experiment_id_is_an_error(monkeypatch: pytest.MonkeyPatch):
+    """A runs lock names no experiment: it appends to the one its base created."""
+    session = RunsSession()
+    monkeypatch.setattr(s, "_McpSession", lambda: session)
+    out = json.loads(s.upload_experiment(dump_lock(make_runs_lock()), mode="real"))
+    assert out["success"] is False
+    assert "pass -e <id>" in out["error"]
+    assert session.calls == []
+
+
+def test_runs_lock_dry_run_returns_the_plan_and_writes_nothing(monkeypatch: pytest.MonkeyPatch):
+    session = RunsSession()
+    monkeypatch.setattr(s, "_McpSession", lambda: session)
+    out = json.loads(
+        s.upload_experiment(dump_lock(make_runs_lock()), mode="real", experiment_id=181)
+    )
+    assert out["success"] is True and out["dry_run"] is True
+    assert out["kind"] == "runs" and out["experiment_id"] == 181
+    assert out["crawlers"] == 2 and out["queues"] == 2 and out["queues_in_lock"] == 2
+    assert out["would_skip"] == 0 and out["updates"] == 0
+    assert out["base_ok"] is True and out["preference_update_supported"] is False
+    assert session.experiment_puts == [] and session.crawler_uploads == {}
+
+
+def test_runs_lock_apply_reports_the_counts_and_verifies_its_queues(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    session = RunsSession()
+    monkeypatch.setattr(s, "_McpSession", lambda: session)
+    out = json.loads(
+        s.upload_experiment(
+            dump_lock(make_runs_lock()), mode="real", experiment_id=181, dry_run=False
+        )
+    )
+    assert out["success"] is True and out["kind"] == "runs"
+    assert out["queues_posted"] == 2 and out["queues_skipped_existing"] == 0
+    assert out["verify"]["ok"] is True and out["verify"]["bound"] is True
+    assert out["verify"]["differences"] == []
+    assert sorted(session.crawler_uploads) == [10, 11]
+
+
+def _fleet_lock_text(tmp_path) -> str:
+    """A compiled fleet lock, as a runs spec's `runs_for:` target arrives over MCP:
+    as text, under the bare filename the spec names."""
+    from pmspec.lock.build import compile_spec
+
+    result = compile_spec(
+        FLEET_SPEC, base_dir=tmp_path, spec_path="fleet.yaml", seed=7, generator="test"
+    )
+    assert result.lock is not None, result.errors
+    return dump_lock(result.lock)
+
+
+def test_compile_a_runs_spec_with_the_base_lock_passed_as_a_file(tmp_path):
+    """`files=` is how a fleet lock reaches a content-only caller: `_materialise_files`
+    writes it under the name `runs_for:` names, so the compile resolves it there."""
+    fleet = _fleet_lock_text(tmp_path)
+    out = json.loads(
+        s.compile_experiment_spec(
+            RUNS_SPEC, files={"fleet.lock.yaml": fleet}, seed=11, git_commit="a2024c9"
+        )
+    )
+    assert "lock" in out, out
+    assert out["kind"] == "runs"
+    assert out["base_lock_sha256"] == sha256_text(fleet)
+    lock = load_lock(out["lock"])
+    assert lock.is_runs and lock.provenance.base_lock_sha256 == sha256_text(fleet)
+    assert sorted(c["name"] for c in lock.crawlers) == ["bot_control", "bot_treated"]
+
+
+def test_compile_of_a_fleet_spec_reports_the_fleet_kind_and_no_base(tmp_path):
+    out = json.loads(s.compile_experiment_spec(SPEC, files=FILES, seed=5))
+    assert out["kind"] == "fleet" and out["base_lock_sha256"] is None
+
+
+def test_compile_of_a_runs_spec_without_its_base_names_the_file_it_cannot_read():
+    """The one new failure mode of a content-only runs compile: the caller forgot
+    to put the fleet lock in `files=`."""
+    out = json.loads(s.compile_experiment_spec(RUNS_SPEC, seed=11))
+    assert "lock" not in out
+    assert any("runs_for: cannot read fleet.lock.yaml" in e for e in out["errors"]), out
+
+
+def test_the_upload_docstring_says_a_runs_lock_needs_an_experiment_id():
+    """The tool's own description is the only place an MCP caller can learn this
+    before the refusal; `experiment_id` defaults to None for the fleet path."""
+    doc = s.upload_experiment.__doc__ or ""
+    assert "REQUIRED for a `kind: runs` lock" in doc
+
+
+def test_validate_accepts_a_seeded_jitter_spec():
+    """The MCP validator must accept exactly what compile_experiment_spec
+    accepts: the start is drawn after conversion, from the lock's seed."""
+    out = json.loads(s.validate_experiment_spec(JITTER_SPEC))
+    assert out["valid"] is True, out
+    assert not any("jitter needs a seed" in e for e in out.get("errors", [])), out
+    assert "lock" in json.loads(s.compile_experiment_spec(JITTER_SPEC, seed=7))
+
+
+def test_convert_spec_to_json_still_refuses_a_jitter():
+    """`convert_spec_to_json` records no seed, so a drawn start could never be
+    reproduced from its output -- it resolves times, and refuses."""
+    out = json.loads(s.convert_spec_to_json(JITTER_SPEC))
+    assert any("start_at jitter needs a seed" in e for e in out["errors"]), out
+
+
+def test_validate_a_runs_spec_with_the_base_lock_passed_as_a_file(tmp_path):
+    """Validation mirrors `pmspec validate`: a runs spec is prepared against its
+    base lock, which arrives in `files=` exactly as it does for a compile."""
+    out = json.loads(
+        s.validate_experiment_spec(RUNS_SPEC, files={"fleet.lock.yaml": _fleet_lock_text(tmp_path)})
+    )
+    assert out["valid"] is True, out
+    assert out["errors"] == []
+    assert out["summary"]["crawler_count"] == 2
+
+
+def test_validate_of_a_runs_spec_reports_a_name_the_base_does_not_have(tmp_path):
+    out = json.loads(
+        s.validate_experiment_spec(
+            RUNS_SPEC.replace("bot_control", "bot_ghost"),
+            files={"fleet.lock.yaml": _fleet_lock_text(tmp_path)},
+        )
+    )
+    assert out["valid"] is False
+    assert any(
+        "runs spec names crawler 'bot_ghost' which the base lock does not have" in e
+        for e in out["errors"]
+    ), out
+
+
+def test_validate_of_a_runs_spec_without_its_base_names_the_file_it_cannot_read():
+    out = json.loads(s.validate_experiment_spec(RUNS_SPEC))
+    assert out["valid"] is False
+    assert any("runs_for: cannot read fleet.lock.yaml" in e for e in out["errors"]), out
+
+
+def test_the_validate_docstring_says_where_a_runs_spec_base_lock_goes():
+    doc = s.validate_experiment_spec.__doc__ or ""
+    assert "runs_for" in doc and "files" in doc
+
+
+def test_validate_sees_the_draw_the_compile_would_see(tmp_path):
+    """Both load the spec under its own `seed:`, so a `!file {select: random}`
+    workflow is judged here as the one `compile_experiment_spec` would build."""
+    from pmspec.lock.build import compile_spec
+    from pmspec.tests.test_lock_runs import DRAWN_UNKNOWN_RUNS_SPEC, UNKNOWN_STEPS
+
+    files = {"fleet.lock.yaml": _fleet_lock_text(tmp_path), "unknown_steps.yaml": UNKNOWN_STEPS}
+    (tmp_path / "unknown_steps.yaml").write_text(UNKNOWN_STEPS)
+    (tmp_path / "fleet.lock.yaml").write_text(files["fleet.lock.yaml"])
+    for _ in range(5):
+        out = json.loads(s.validate_experiment_spec(DRAWN_UNKNOWN_RUNS_SPEC, files=files))
+        compiled = compile_spec(
+            DRAWN_UNKNOWN_RUNS_SPEC, base_dir=tmp_path, spec_path="day.yaml", seed=None
+        )
+        assert any("frobnicate" in e for e in out["errors"]) == any(
+            "frobnicate" in e for e in compiled.errors
+        ), (out, compiled.errors)

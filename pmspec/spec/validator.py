@@ -10,6 +10,7 @@ Performs:
 import json
 import os
 import re
+from collections.abc import Set as AbstractSet
 from dataclasses import dataclass, field
 from datetime import date, datetime
 from pathlib import Path
@@ -22,10 +23,21 @@ try:
 except ImportError:
     HAS_JSONSCHEMA = False
 
+from .assign import ASSIGN_KEYS, ASSIGN_SELECTS
+from .converter import DEFAULT_MULTILOGIN_PROFILE
 from .draws import is_draw, is_valid_name, select_error
 from .drops import Drops
 from .job_registry import JobRegistry
 from .time_utils import is_relative_time
+from .timing import parse_duration
+
+# The 17 flags DEFAULT_MULTILOGIN_PROFILE actually sets. Multilogin ignores an
+# unknown flag key silently at profile creation, so a `parameters.flags.<key>`
+# outside this set -- via `maps_to` or an explicit crawler agent block -- is a
+# drop. Values are not checked here: the repo holds no authoritative
+# per-flag vocabulary, and Multilogin rejects a bad value at profile creation,
+# which the runner reports as a failed job rather than silently (spec §4).
+_MLX_FLAGS: frozenset[str] = frozenset(DEFAULT_MULTILOGIN_PROFILE["parameters"]["flags"])
 
 _TEMPLATE_VAR_RE = re.compile(r"\$\{(?!secret:)[^}]*\}|\{[A-Za-z_][A-Za-z0-9_]*(?::[^}]*)?\}")
 _INDEX_RE = re.compile(r"\[\d+\]")
@@ -143,8 +155,76 @@ class SpecValidator:
             "session",
             "additional_sessions",
             "queues",
+            "assign",
         }
     )
+    # The keys one `assign: {<name>: {...}}` entry may carry (see
+    # spec/assign.py, which owns the set so the drawing code and this
+    # whitelist cannot drift).
+    _KEYS_ASSIGN: frozenset[str] = ASSIGN_KEYS
+    # A *runs* spec (one that names a fleet lock with `runs_for:`) has its own
+    # whitelists. It adds sessions to bots the base lock already randomized, so
+    # everything that describes a bot is absent here -- and absent as an
+    # *error*, not a drop: an author who wrote `agent:` on a runs crawler meant
+    # to write a fleet spec, and silently dropping it would upload sessions
+    # against a bot configured differently than the spec says.
+    _KEYS_ROOT_RUNS: frozenset[str] = frozenset(
+        {
+            "version",
+            "runs_for",
+            "seed",
+            "defaults",
+            "templates",
+            "data_pools",
+            "strategy_schemas",
+            "crawlers",
+        }
+    )
+    # No `description`: a runs lock carries name, queues and updates and
+    # nothing else, so a description written here would be accepted and then
+    # discarded -- exactly the silent loss the strict contract exists to end.
+    # It is an unknown-key drop, and a session's own `description:` is where a
+    # per-session note belongs.
+    _KEYS_CRAWLER_RUNS: frozenset[str] = frozenset(
+        {
+            "from_base",
+            "name",
+            "session",
+            "additional_sessions",
+            "queues",
+            "updates",
+            "assign",
+        }
+    )
+    # A runs spec's `defaults:` may only carry what a *session* reads; a
+    # `location:` or `proxy:` there would describe bots it does not own.
+    _KEYS_DEFAULTS_RUNS: frozenset[str] = frozenset(
+        {
+            "timezone",
+            "timezone_utc_offset",
+            "captcha_mode",
+            "typing_mode",
+            "selection_type",
+            "active",
+        }
+    )
+    # Root blocks a runs spec refuses outright, with why.
+    _RUNS_ROOT_REFUSALS: dict[str, str] = {
+        "design": (
+            "a runs spec adds sessions to a fleet the base lock already randomized; "
+            "design lives in the fleet spec"
+        ),
+        "experiment": (
+            "a runs spec takes its experiment from the base lock; remove the experiment block"
+        ),
+    }
+    _RUNS_CRAWLER_REFUSALS: tuple[str, ...] = ("agent", "proxy", "configuration")
+
+    #: The seeded form of a session start: `start_at: {from: "+1h", jitter: "6h"}`.
+    #: Both required -- a `from` alone is the string form written the long way,
+    #: and a `jitter` alone has nothing to jitter.
+    _KEYS_START_AT: frozenset[str] = frozenset({"from", "jitter"})
+
     _KEYS_SESSION: frozenset[str] = frozenset(
         {
             "name",
@@ -235,13 +315,13 @@ class SpecValidator:
     # and by _validate_job_options to report an option key outside this set as
     # a drop ("the runner never sees it").
     #
-    # visit/wait have no dict form at all today: _expand_shorthand uses the
-    # scalar value directly (visit) or only accepts int/float/str
-    # (wait/_parse_duration), so a dict value here is silently mishandled, not
-    # read key-by-key.
+    # visit has no dict form at all: _expand_shorthand uses the scalar value
+    # directly, so a dict value there is silently mishandled, not read
+    # key-by-key. `wait` has exactly one: the seeded range `{min, max}`
+    # (timing.py), whose bounds are durations like the scalar form's.
     _OPTION_KEYS: dict[str, frozenset[str]] = {
         "visit": frozenset(),
-        "wait": frozenset(),
+        "wait": frozenset({"min", "max"}),
         "click": frozenset({"selector", "selection_type", "captcha_mode", "task", "flag"}),
         "try_click": frozenset({"selector", "selection_type", "captcha_mode", "task", "flag"}),
         "type": frozenset(
@@ -273,6 +353,7 @@ class SpecValidator:
         *,
         lax: bool = False,
         base_dir: Path | None = None,
+        runs: bool = False,
     ):
         """
         Initialize validator.
@@ -283,12 +364,19 @@ class SpecValidator:
             base_dir: Directory a spec-relative ``strategy_schemas`` path is resolved
                 against (the spec's own directory for the CLI, a materialised temp
                 dir for the MCP). Defaults to the current working directory.
+            runs: Validate as a *runs* spec (one carrying ``runs_for:``) -- the
+                runs key sets above, and the refusals that go with them.
         """
         self.schema = None
         self.lax = lax
         self.base_dir = base_dir
+        self.runs = runs
         self.drops = Drops(lax)
         self._strategy_schemas: dict[str, Any] = {}
+        # Pool name -> its column names, loaded on first `assign.match_field`
+        # check and reset per validate(); None until then, so a spec with no
+        # `assign:` never reads a pool file.
+        self._pool_columns_cache: dict[str, list[str]] | None = None
         self._load_schema(schema_path)
 
     def _load_schema(self, schema_path: str | None = None) -> None:
@@ -326,6 +414,7 @@ class SpecValidator:
         info: dict[str, Any] = {}
         self.drops = Drops(self.lax)
         self._strategy_schemas = spec.get("strategy_schemas") or {}
+        self._pool_columns_cache = None
 
         # 0. Unknown keys (first, so the message a reader sees first names the typo)
         self._validate_unknown_keys(spec)
@@ -347,6 +436,10 @@ class SpecValidator:
             info["design_info"] = self._get_design_info(spec["design"])
         else:
             info["has_design"] = False
+
+        # 3b. Runs-spec refusals (a construct that belongs to the fleet spec)
+        if self.runs:
+            errors.extend(self._validate_runs(spec))
 
         # 4. Crawler validation
         crawler_errors, crawler_warnings = self._validate_crawlers(spec)
@@ -424,6 +517,16 @@ class SpecValidator:
                         f"'{leaf}' is not carried by the API/runner/decision-function pipeline",
                         "route it through a template `with:` variable or a lambda_select "
                         "`strategy` + `treatment` block",
+                    )
+                elif (
+                    parts[:4] == ["agent", "multilogin_profile", "parameters", "flags"]
+                    and len(parts) == 5
+                    and leaf not in _MLX_FLAGS
+                ):
+                    self.drops.report(
+                        f"design.factors.{fname}.maps_to.{path}",
+                        "unknown Multilogin flag; the profile ignores it",
+                        "one of: " + ", ".join(sorted(_MLX_FLAGS)),
                     )
 
         # A sampled parameter (design.parameters.<name>) is written by
@@ -562,7 +665,7 @@ class SpecValidator:
         cost more than the rare typo they would catch.
         """
 
-        def check(obj: Any, allowed: frozenset[str], path: str) -> None:
+        def check(obj: Any, allowed: AbstractSet[str], path: str) -> None:
             if not isinstance(obj, dict):
                 return
             for key in obj:
@@ -573,16 +676,37 @@ class SpecValidator:
                         "remove it or fix the spelling",
                     )
 
-        check(spec, self._KEYS_ROOT, "")
+        root_keys: AbstractSet[str]
+        crawler_keys: AbstractSet[str]
+        defaults_keys: AbstractSet[str]
+        if self.runs:
+            # The refused blocks are named by `_validate_runs` as errors; they
+            # must not also be reported here as drops.
+            root_keys = self._KEYS_ROOT_RUNS | set(self._RUNS_ROOT_REFUSALS)
+            crawler_keys = self._KEYS_CRAWLER_RUNS | set(self._RUNS_CRAWLER_REFUSALS)
+            defaults_keys = self._KEYS_DEFAULTS_RUNS
+        else:
+            root_keys = self._KEYS_ROOT
+            crawler_keys = self._KEYS_CRAWLER
+            defaults_keys = self._KEYS_DEFAULTS
+
+        check(spec, root_keys, "")
         check(spec.get("experiment"), self._KEYS_EXPERIMENT, "experiment")
-        check(spec.get("defaults"), self._KEYS_DEFAULTS, "defaults")
+        if not self.runs:
+            # In runs mode a defaults key outside the session-level set is an
+            # error (`_validate_runs`), not a drop.
+            check(spec.get("defaults"), defaults_keys, "defaults")
         check(spec.get("design"), self._KEYS_DESIGN, "design")
         check((spec.get("defaults") or {}).get("proxy"), self._KEYS_PROXY, "defaults.proxy")
         for i, crawler in enumerate(spec.get("crawlers") or []):
             prefix = f"crawler[{i}]"
-            check(crawler, self._KEYS_CRAWLER, prefix)
+            check(crawler, crawler_keys, prefix)
             if not isinstance(crawler, dict):
                 continue
+            assign = crawler.get("assign")
+            if isinstance(assign, dict):
+                for name, entry in assign.items():
+                    check(entry, self._KEYS_ASSIGN, f"{prefix}.assign.{name}")
             check(crawler.get("configuration"), self._KEYS_CONFIGURATION, f"{prefix}.configuration")
             check(crawler.get("proxy"), self._KEYS_PROXY, f"{prefix}.proxy")
             check(crawler.get("agent"), self._KEYS_AGENT, f"{prefix}.agent")
@@ -591,6 +715,75 @@ class SpecValidator:
                 check(extra, self._KEYS_SESSION, f"{prefix}.additional_sessions[{j}]")
             for j, queue in enumerate(crawler.get("queues") or []):
                 check(queue, self._KEYS_SESSION, f"{prefix}.queues[{j}]")
+
+    def _validate_runs(self, spec: dict[str, Any]) -> list[str]:
+        """Refusals that only apply to a runs spec.
+
+        Errors, never drops. Each names a construct that belongs to the fleet
+        spec: dropping it would leave a spec that compiles and means something
+        other than what its author wrote.
+        """
+        errors: list[str] = []
+
+        for key, why in self._RUNS_ROOT_REFUSALS.items():
+            if key in spec:
+                errors.append(f"{key}: {why}")
+
+        # `design.seed` has nowhere to live in a runs spec (`design:` is
+        # refused), so the seed it draws waits and pool rows from is a root
+        # key. It is never inherited from the base lock: the base's seed
+        # belongs to the randomization, and reusing it would make two
+        # different questions share one number.
+        if "seed" in spec and (isinstance(spec["seed"], bool) or not isinstance(spec["seed"], int)):
+            errors.append(f"seed: must be an integer, got {spec['seed']!r}")
+
+        defaults = spec.get("defaults")
+        if isinstance(defaults, dict):
+            allowed = ", ".join(sorted(self._KEYS_DEFAULTS_RUNS))
+            for key in defaults:
+                if key not in self._KEYS_DEFAULTS_RUNS:
+                    errors.append(
+                        f"defaults.{key}: a runs spec's defaults may only carry session-level "
+                        f"keys ({allowed})"
+                    )
+
+        for i, crawler in enumerate(spec.get("crawlers") or []):
+            if not isinstance(crawler, dict):
+                continue
+            prefix = f"crawler[{i}]"
+            for key in self._RUNS_CRAWLER_REFUSALS:
+                if key in crawler:
+                    errors.append(
+                        f"{prefix}.{key}: a runs spec adds sessions to existing bots; "
+                        "agent/proxy/configuration live in the fleet spec"
+                    )
+            errors.extend(self._validate_updates(crawler.get("updates"), prefix))
+
+        return errors
+
+    def _validate_updates(self, updates: Any, prefix: str) -> list[str]:
+        """``updates: {preferences: {<name>: <scalar>}}`` and nothing else.
+
+        Params, agent and proxy fields are refused rather than dropped:
+        changing those mid-study is a different experiment, and the upload
+        path has no way to apply them.
+        """
+        if updates is None:
+            return []
+        if not isinstance(updates, dict):
+            return [f"{prefix}.updates: must be a mapping of preferences"]
+        errors: list[str] = []
+        for key, value in updates.items():
+            if key != "preferences":
+                errors.append(f"{prefix}.updates.{key}: only preferences can be updated")
+                continue
+            if not isinstance(value, dict):
+                errors.append(f"{prefix}.updates.preferences: must be a mapping of name -> value")
+                continue
+            for name, pref_value in value.items():
+                if isinstance(pref_value, (dict, list)):
+                    errors.append(f"{prefix}.updates.preferences.{name}: must be a scalar value")
+        return errors
 
     def _validate_schema(self, spec: dict[str, Any]) -> list[str]:
         """Validate against JSON Schema.
@@ -644,9 +837,12 @@ class SpecValidator:
         """Validate required fields are present."""
         errors = []
 
-        # Experiment name is required
-        if not spec.get("experiment", {}).get("name"):
+        # Experiment name is required -- except in a runs spec, where the
+        # experiment is the base lock's and an `experiment:` block is refused.
+        if not self.runs and not spec.get("experiment", {}).get("name"):
             errors.append("experiment.name is required")
+        if self.runs and not spec.get("runs_for"):
+            errors.append("runs_for is required: a runs spec names the fleet lock it adds to")
 
         # At least one crawler is required
         crawlers = spec.get("crawlers", [])
@@ -770,6 +966,25 @@ class SpecValidator:
             if crawler.get("from_design") and not design:
                 errors.append(f"{prefix}: from_design=true but no design is defined")
 
+            self._validate_assign(crawler, prefix, spec, errors)
+
+            # An explicit agent.multilogin_profile.parameters.flags.<key> the
+            # converter's deep-merge would carry straight through to the API --
+            # same unknown-flag-is-a-drop rule as the maps_to path above (§4).
+            agent = crawler.get("agent")
+            if isinstance(agent, dict):
+                profile = agent.get("multilogin_profile")
+                if isinstance(profile, dict):
+                    flags = (profile.get("parameters") or {}).get("flags")
+                    if isinstance(flags, dict):
+                        for key in flags:
+                            if key not in _MLX_FLAGS:
+                                self.drops.report(
+                                    f"{prefix}.agent.multilogin_profile.parameters.flags.{key}",
+                                    "unknown Multilogin flag; the profile ignores it",
+                                    "one of: " + ", ".join(sorted(_MLX_FLAGS)),
+                                )
+
             # Validate proxy if defined.
             #
             # A warning, not a drop: nothing the author wrote is discarded; the
@@ -805,6 +1020,103 @@ class SpecValidator:
 
         return errors, warnings
 
+    _ASSIGN_NAME_RE = re.compile(r"[A-Za-z_]\w*")
+
+    def _pool_columns(self, spec: dict[str, Any], name: str) -> list[str] | None:
+        """The column names of a declared data pool, or None when they cannot
+        be read here (no such pool, or the file is missing/unreadable -- the
+        parser reports that, and a second message from a *column* check would
+        only bury it).
+
+        Loaded lazily and cached per validate() call: only a spec carrying
+        `assign:` pays for it.
+        """
+        if self._pool_columns_cache is None:
+            from .data_pools import DataPoolManager
+
+            manager = DataPoolManager(base_dir=self.base_dir)
+            pools = spec.get("data_pools")
+            if isinstance(pools, dict):
+                manager.load_pools_from_spec(pools)
+            self._pool_columns_cache = {
+                pool: sorted({str(k) for row in (rows or []) for k in row})
+                for pool, rows in manager.pools.items()
+            }
+        return self._pool_columns_cache.get(name)
+
+    def _validate_assign(
+        self, crawler: Any, prefix: str, spec: dict[str, Any], errors: list[str]
+    ) -> None:
+        """`assign: {<name>: {from_pool, match_field, match_value, select}}`.
+
+        Every rule here is an error, not a drop: an assignment the converter
+        cannot draw leaves `{<name>.<column>}` in the crawler, and while the
+        unresolved scan does catch that, it names the placeholder rather than
+        the mistake. Saying "pool 'panelists' has no column 'county'" once is
+        worth more than one drop per place the row was referenced.
+        """
+        if not isinstance(crawler, dict):
+            return
+        assignments = crawler.get("assign")
+        if assignments is None:
+            return
+        if not isinstance(assignments, dict):
+            errors.append(f"{prefix}.assign: must be a mapping of <name> to a pool draw")
+            return
+
+        declared = spec.get("data_pools")
+        declared_names = set(declared) if isinstance(declared, dict) else set()
+        design = spec.get("design") or {}
+        # `base` is taken by a runs spec's `{base.<var>}`; a factor or sampled
+        # parameter already owns its bare `{name}`, and an assignment of the
+        # same name would make `{name.x}` and `{name}` two different things.
+        reserved = {"base"}
+        for key in ("factors", "parameters"):
+            block = design.get(key)
+            if isinstance(block, dict):
+                reserved |= set(block)
+
+        for raw_name, entry in assignments.items():
+            name = str(raw_name)
+            where = f"{prefix}.assign.{name}"
+            if not self._ASSIGN_NAME_RE.fullmatch(name):
+                # `{pan-elist.col}` matches neither the substitution regex nor
+                # the unresolved scan, so it would reach the bot as a literal
+                # with nothing reported anywhere.
+                errors.append(
+                    f"{where}: an assignment name must be a letter or underscore followed by "
+                    "letters, digits or underscores (it becomes a {name.column} placeholder)"
+                )
+                continue
+            if name in reserved:
+                errors.append(f"{where}: collides with a design variable")
+                continue
+            if not isinstance(entry, dict):
+                errors.append(f"{where}: must be a mapping with `from_pool:`")
+                continue
+
+            pool = entry.get("from_pool")
+            if not pool or not isinstance(pool, str):
+                errors.append(f"{where}: from_pool is required (the pool to draw a row from)")
+                continue
+            if pool not in declared_names:
+                errors.append(f"{where}: unknown pool '{pool}' (define it under data_pools)")
+                continue
+
+            select = entry.get("select")
+            if select is not None and select not in ASSIGN_SELECTS:
+                errors.append(f"{where}: select must be random or first, got {select!r}")
+
+            field = entry.get("match_field")
+            if field is None:
+                continue
+            columns = self._pool_columns(spec, pool)
+            if columns is not None and str(field) not in columns:
+                errors.append(
+                    f"{where}: match_field {str(field)!r} is not a column of pool "
+                    f"'{pool}' (columns: {columns})"
+                )
+
     def _validate_session(
         self,
         session: dict[str, Any],
@@ -820,6 +1132,8 @@ class SpecValidator:
             self.drops.report(
                 prefix, "no start time", "every session needs start: now | +5m | <ISO wall clock>"
             )
+        elif isinstance(start, dict):
+            self._validate_start_jitter(start, prefix, errors)
         else:
             # Validate timestamp format
             if not self._is_valid_timestamp(start):
@@ -832,6 +1146,45 @@ class SpecValidator:
         workflow = session.get("workflow", [])
         for i, item in enumerate(workflow):
             self._validate_workflow_item(item, f"{prefix}.workflow[{i}]", errors, warnings, spec)
+
+    def _validate_wait_range(self, value: dict[str, Any], prefix: str, errors: list[str]) -> None:
+        """`wait: {min, max}`: two durations, in order.
+
+        The number itself is drawn in the converter from the lock's seed
+        (``timing.resolve_wait_tokens``), so all that can be checked here is
+        that there is a range to draw from.
+        """
+        low_raw, high_raw = value.get("min"), value.get("max")
+        if low_raw is None or high_raw is None:
+            errors.append(f"{prefix}.wait: needs both min and max")
+            return
+        low, high = parse_duration(low_raw), parse_duration(high_raw)
+        for name, raw, parsed in (("min", low_raw, low), ("max", high_raw, high)):
+            if parsed is None:
+                errors.append(f"{prefix}.wait.{name}: {raw!r} is not a duration")
+        if low is not None and high is not None and low > high:
+            errors.append(f"{prefix}.wait: min ({low_raw}) exceeds max ({high_raw})")
+
+    def _validate_start_jitter(self, value: dict[str, Any], prefix: str, errors: list[str]) -> None:
+        """`start_at: {from, jitter}`: a start the seed moves later by U(0, jitter)."""
+        for key in value:
+            if key not in self._KEYS_START_AT:
+                self.drops.report(
+                    f"{prefix}.start_at.{key}",
+                    "key not read by a session start",
+                    "a jittered start has only from and jitter",
+                )
+        source, jitter = value.get("from"), value.get("jitter")
+        if source is None or jitter is None:
+            errors.append(f"{prefix}.start_at: needs both from and jitter")
+            return
+        if not self._is_valid_timestamp(source):
+            errors.append(
+                f"{prefix}.start_at.from: invalid start time format '{source}'. "
+                "Use 'now', relative offset (+5m, +1h, +1d), or ISO 8601 timestamp"
+            )
+        if parse_duration(jitter) is None:
+            errors.append(f"{prefix}.start_at.jitter: {jitter!r} is not a duration")
 
     def _is_valid_timestamp(self, value: Any) -> bool:
         """
@@ -1203,14 +1556,14 @@ class SpecValidator:
         `_expand_shorthand` reads the mapping form of each shorthand with
         `value.get(<key>)` for a fixed set of keys (`_OPTION_KEYS`) and never
         looks at the rest, so `click: {selector: x, sped: fast}` silently loses
-        `sped` -- the runner never sees it. visit/wait have no dict form at all
-        (`_OPTION_KEYS` is empty for both): a dict value there is already
-        rejected by `_validate_job_shorthand`, so it is skipped here rather
-        than reported a second time key-by-key. Only the top level is checked:
-        lambda_select's `treatment` sub-keys are the strategy schema's business
+        `sped` -- the runner never sees it. visit has no dict form at all
+        (`_OPTION_KEYS` is empty): a dict value there is already rejected by
+        `_validate_job_shorthand`, so it is skipped here rather than reported a
+        second time key-by-key. Only the top level is checked: lambda_select's
+        `treatment` sub-keys are the strategy schema's business
         (`_validate_lambda_select_treatment`), not option keys.
         """
-        if not isinstance(value, dict) or job_type in ("visit", "wait"):
+        if not isinstance(value, dict) or job_type == "visit":
             return
         allowed = self._OPTION_KEYS.get(job_type)
         if allowed is None:  # unreachable: callers pass only registered shorthands
@@ -1240,8 +1593,12 @@ class SpecValidator:
                 errors.append(f"{prefix}.visit: URL is required")
 
         elif job_type == "wait":
-            if not isinstance(value, (int, float, str)):
-                errors.append(f"{prefix}.wait: duration must be a number or string")
+            if isinstance(value, dict):
+                self._validate_wait_range(value, prefix, errors)
+            elif not isinstance(value, (int, float, str)):
+                errors.append(
+                    f"{prefix}.wait: duration must be a number, a string, or {{min, max}}"
+                )
 
         elif job_type in ["type", "try_type"]:
             if isinstance(value, dict):
@@ -1271,7 +1628,10 @@ class SpecValidator:
         # handle_alert action="accept", empty selectors), so erroring here would
         # reject specs that validate now. Skipped when the hardcoded checks above
         # already rejected this item, so their messages are not duplicated.
-        if isinstance(value, dict) and len(errors) == errors_before:
+        # `wait: {min, max}` is the one dict form that is not an option object:
+        # its keys *are* the required `seconds` behaviour, drawn later, so the
+        # completeness check would warn about a value that is on its way.
+        if isinstance(value, dict) and job_type != "wait" and len(errors) == errors_before:
             aliases = self._BEHAVIOR_KEYS.get(job_type, {})
             for behavior in (b.name for b in schema.behaviors if b.required):
                 keys = aliases.get(behavior, (behavior,))

@@ -285,6 +285,19 @@ class TestExperimentCommand:
 
         assert result.exit_code == 0
 
+    def test_experiment_validate_accepts_a_seeded_jitter_spec(self, cli_runner, tmp_path):
+        """Validation may never reject what `pmspec compile` accepts: a
+        `start_at: {from, jitter}` is drawn after conversion, from the lock's
+        seed, so a validating path must not resolve times."""
+        from pmspec.tests.test_timing import JITTER_SPEC
+
+        spec = tmp_path / "study.yaml"
+        spec.write_text(JITTER_SPEC)
+        result = cli_runner.invoke(cli, ["experiment", "validate", str(spec)])
+
+        assert "jitter needs a seed" not in result.output, result.output
+        assert result.exit_code == 0, result.output
+
 
 class TestSetupCommand:
     """Tests for setup command."""

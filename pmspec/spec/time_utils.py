@@ -26,6 +26,15 @@ from zoneinfo import ZoneInfo
 #: scheme rested on every client happening to share it.
 API_TIMEZONE = ZoneInfo("Europe/Zurich")
 
+#: A relative start: ``+5m``, ``-1h``, ``+30s``, ``+1d``. One declaration, read
+#: by :func:`is_relative_time` here, by ``pmspec.lock.anchor`` (which parses a
+#: lock's ``start_offset``) and by ``pmspec.spec.timing`` (which shifts a
+#: jittered ``from``) -- three copies of it used to have to agree.
+OFFSET_RE = re.compile(r"^([+-])(\d+)([smhd])$")
+
+#: Seconds in each unit ``OFFSET_RE`` (and a duration) may carry.
+UNIT_SECONDS = {"s": 1, "m": 60, "h": 3600, "d": 86400}
+
 
 def parse_relative_time(value: str, base_time: datetime | None = None) -> str:
     """
@@ -167,6 +176,4 @@ def is_relative_time(value: str) -> bool:
     value = value.strip().lower()
     if value == "now":
         return True
-    if re.match(r"^[+-]\d+[smhd]$", value):
-        return True
-    return False
+    return bool(OFFSET_RE.match(value))

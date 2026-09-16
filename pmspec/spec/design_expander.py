@@ -112,7 +112,7 @@ class DesignExpander:
               levels: [left, center, right]
               maps_to:
                 preference_political_videos: {left: 1, center: 0, right: -1}
-                params.pi: {left: -0.5, center: 0, right: 0.5}
+                configuration.params.pi: {left: -0.5, center: 0, right: 0.5}
             content:
               levels: [news, entertainment]
               maps_to:

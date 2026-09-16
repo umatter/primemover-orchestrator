@@ -335,6 +335,14 @@ def _mutating_tools() -> dict[str, bool]:
             if isinstance(sub.func, ast.Name) and sub.func.id == "upload_lock":
                 mutates = True
 
+            # plan_runs_upload(...): a runs lock's dry run. It is read-only in
+            # effect, but not in method -- the preference-support probe is a
+            # PUT (of the configuration's own current values, so nothing
+            # changes). A request with a write verb belongs behind the guard,
+            # and the scan has to see it to say so.
+            if isinstance(sub.func, ast.Name) and sub.func.id == "plan_runs_upload":
+                mutates = True
+
             # delete_experiments(...): pm_cleanup_test_experiments's own deletion loop
             # lives in pmspec.lock.cleanup, not in this module's source, so
             # without this line it is exactly as invisible to the scan as upload_lock was.
@@ -444,6 +452,12 @@ class TestUploadExperimentIsGuarded:
 
         return dump_lock(make_lock())
 
+    def _runs_lock(self) -> str:
+        from pmspec.lock.io import dump_lock
+        from pmspec.tests.test_lock_runs_upload import make_runs_lock
+
+        return dump_lock(make_runs_lock())
+
     def test_defaults_to_a_preview_and_uploads_nothing(self, monkeypatch):
         """Called with no dry_run argument at all, it must not upload."""
         _point_api_at(monkeypatch, "http://localhost:8090/api/v1")
@@ -484,6 +498,24 @@ class TestUploadExperimentIsGuarded:
 
         assert out["success"] is True
         assert out["dry_run"] is True
+
+    def test_a_runs_lock_preview_is_refused_against_a_remote_target(self, monkeypatch):
+        """A runs lock's dry run is not local validation: it reads the live
+        experiment and probes preference support with a PUT. So it runs behind
+        the same guard as an apply, unlike a fleet lock's preview above."""
+        _point_api_at(monkeypatch, "https://pm-api.example.org/api/v1")
+
+        def _explode(*args, **kwargs):
+            raise AssertionError("a runs-lock preview reached the network for a remote target")
+
+        monkeypatch.setattr(s, "_api_request", _explode)
+
+        out = json.loads(
+            s.upload_experiment(self._runs_lock(), mode="real", experiment_id=181, dry_run=True)
+        )
+
+        assert out["success"] is False
+        assert "refusing to mutate" in out["error"]
 
     def test_invalid_spec_is_rejected_before_any_guard_or_upload(self, monkeypatch):
         _point_api_at(monkeypatch, "http://localhost:8090/api/v1")

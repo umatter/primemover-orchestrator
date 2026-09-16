@@ -5,7 +5,6 @@
   "description": "YAML/JSON schema for defining PrimeMover browser automation experiments",
   "type": "object",
   "required": [
-    "experiment",
     "crawlers"
   ],
   "properties": {
@@ -40,6 +39,14 @@
     },
     "experiment": {
       "$ref": "#/definitions/experiment"
+    },
+    "runs_for": {
+      "type": "string",
+      "description": "Path to the fleet lock this spec adds sessions to, relative to the spec. Its presence makes this a runs spec: no design, no experiment, and no agent/proxy/configuration on a crawler."
+    },
+    "seed": {
+      "type": "integer",
+      "description": "Runs spec only: the seed every draw derives from, when --seed is not passed (a runs spec has no design: block to hold design.seed). Never inherited from the base lock."
     },
     "strategy_schemas": {
       "type": "object",
@@ -296,7 +303,7 @@
     },
     "crawler": {
       "type": "object",
-      "description": "Crawler definition",
+      "description": "Crawler definition (a fleet spec's, or a runs spec's)",
       "properties": {
         "active": {
           "type": "boolean",
@@ -313,12 +320,24 @@
         "agent": {
           "$ref": "#/definitions/agent"
         },
+        "assign": {
+          "type": "object",
+          "description": "Per-crawler pool draws: each name takes one row of a pool, without replacement across crawlers, and exposes its columns as {name.column} placeholders anywhere in this crawler",
+          "additionalProperties": {
+            "$ref": "#/definitions/assignment"
+          }
+        },
         "configuration": {
           "$ref": "#/definitions/configuration"
         },
         "description": {
           "type": "string",
           "description": "Crawler description"
+        },
+        "from_base": {
+          "type": "boolean",
+          "description": "Runs spec only: write one copy of this block per crawler of the base fleet lock, with {base.name} / {base.location} / {base.<preference>} substituted",
+          "default": false
         },
         "from_design": {
           "type": "boolean",
@@ -346,9 +365,58 @@
           "type": "boolean",
           "description": "Whether crawler is in testing mode",
           "default": false
+        },
+        "updates": {
+          "type": "object",
+          "description": "Runs spec only: preference values to change on the existing bot when this lock is uploaded",
+          "properties": {
+            "preferences": {
+              "type": "object",
+              "description": "Preference name -> new value",
+              "additionalProperties": {
+                "type": [
+                  "string",
+                  "number",
+                  "boolean"
+                ]
+              }
+            }
+          },
+          "additionalProperties": false
         }
       },
       "additionalProperties": false
+    },
+    "assignment": {
+      "type": "object",
+      "description": "One pool row drawn for this crawler, substitutable as {name.column}",
+      "properties": {
+        "from_pool": {
+          "type": "string",
+          "description": "Name of a declared data pool"
+        },
+        "match_field": {
+          "type": "string",
+          "description": "Pool column compared with the crawler's agent.location (or with match_value); omit to draw from any row"
+        },
+        "match_value": {
+          "type": "string",
+          "description": "What match_field is compared with, instead of agent.location"
+        },
+        "select": {
+          "type": "string",
+          "description": "How a row is chosen among the free matching ones",
+          "enum": [
+            "first",
+            "random"
+          ],
+          "default": "random"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "from_pool"
+      ]
     },
     "configuration": {
       "type": "object",
@@ -625,8 +693,15 @@
           "description": "Session name"
         },
         "start": {
-          "type": "string",
-          "description": "Start time: 'now', relative offset (+5m, +1h, +1d), or ISO 8601 timestamp",
+          "oneOf": [
+            {
+              "type": "string"
+            },
+            {
+              "$ref": "#/definitions/startJitter"
+            }
+          ],
+          "description": "Start time: 'now', relative offset (+5m, +1h, +1d), ISO 8601 timestamp, or {from, jitter} for a seeded start within a window",
           "examples": [
             "now",
             "+5m",
@@ -636,8 +711,15 @@
           ]
         },
         "start_at": {
-          "type": "string",
-          "description": "Alias for start: 'now', relative offset (+5m, +1h, +1d), or ISO 8601 timestamp",
+          "oneOf": [
+            {
+              "type": "string"
+            },
+            {
+              "$ref": "#/definitions/startJitter"
+            }
+          ],
+          "description": "Alias for start: 'now', relative offset (+5m, +1h, +1d), ISO 8601 timestamp, or {from, jitter} for a seeded start within a window",
           "examples": [
             "now",
             "+5m",
@@ -663,6 +745,25 @@
         }
       },
       "additionalProperties": false
+    },
+    "startJitter": {
+      "type": "object",
+      "description": "A session start drawn from the lock's seed: from + U(0, jitter)",
+      "properties": {
+        "from": {
+          "type": "string",
+          "description": "The earliest start: 'now', a relative offset, or ISO 8601"
+        },
+        "jitter": {
+          "type": "string",
+          "description": "Width of the window the start is drawn from (e.g. '6h')"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "from",
+        "jitter"
+      ]
     },
     "dataPool": {
       "type": "object",
@@ -750,9 +851,36 @@
             {
               "type": "string",
               "pattern": "^\\d+(\\.\\d+)?\\s*[a-z]*$"
+            },
+            {
+              "type": "object",
+              "description": "A wait drawn from the lock's seed: U(min, max) seconds",
+              "properties": {
+                "max": {
+                  "type": [
+                    "integer",
+                    "number",
+                    "string"
+                  ],
+                  "description": "Longest wait (e.g. '60s')"
+                },
+                "min": {
+                  "type": [
+                    "integer",
+                    "number",
+                    "string"
+                  ],
+                  "description": "Shortest wait (e.g. '30s')"
+                }
+              },
+              "additionalProperties": true,
+              "required": [
+                "min",
+                "max"
+              ]
             }
           ],
-          "description": "Wait duration (e.g., 10, '10s', '5m')"
+          "description": "Wait duration (e.g., 10, '10s', '5m') or a {min, max} range"
         },
         "click": {
           "oneOf": [

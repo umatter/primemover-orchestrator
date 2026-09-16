@@ -3,6 +3,7 @@ given a lock -- whether the two still agree (verify)."""
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -11,10 +12,29 @@ from .verify import VerifyResult, verify_lock
 _HEALTH_KEYS = ("bad_runs", "bad_jobs", "treatment_lost_jobs", "degraded_jobs")
 
 
+def _updates_count(blob: str) -> str:
+    """How many crawlers an upload's ``pmspec.updates`` names.
+
+    The value is the JSON diff the upload recorded -- unless it was longer than
+    a preference can hold, in which case it is a pointer at the lock and the
+    count is not in it. Then the honest answer is that there were updates."""
+    try:
+        parsed = json.loads(blob)
+    except ValueError:
+        return "yes"
+    return str(len(parsed)) if isinstance(parsed, dict) else "yes"
+
+
 @dataclass
 class ProvenanceUpload:
     label: str
     values: dict[str, str] = field(default_factory=dict)
+
+    @property
+    def kind(self) -> str:
+        """``fleet`` unless the upload said otherwise: ``pmspec.kind`` is
+        written only by a runs upload, so its absence means fleet."""
+        return self.values.get("kind") or "fleet"
 
 
 @dataclass
@@ -47,13 +67,26 @@ class ExperimentStatus:
         for u in self.uploads:
             v = u.values
             sha = v.get("lock_sha256", "")[:12]
+            extra = ""
+            if u.kind == "runs":
+                # Which fleet these sessions were appended to is the first
+                # question a runs upload raises, and only the base sha answers it.
+                extra += f" kind=runs base={v.get('base_lock_sha256', '')[:12] or '?'}"
+            if "updates" in v:
+                extra += f" updates={_updates_count(v['updates'])}"
             lines.append(
                 f"{u.label}: mode={v.get('mode', '?')} lock={sha or '?'} "
                 f"commit={v.get('git_commit') or 'none'} generator={v.get('generator') or '-'} "
                 f"seed={v.get('seed', '?')} anchor={v.get('anchor', '?')} "
                 f"uploaded={v.get('uploaded_at', '?')} by {v.get('uploaded_by', '?')}"
                 + (" lax" if v.get("lax") == "true" else "")
+                + extra
             )
+        if self.uploads:
+            runs = sum(1 for u in self.uploads if u.kind == "runs")
+            counted = f"{len(self.uploads) - runs} fleet" + (f" + {runs} runs" if runs else "")
+            last = self.uploads[-1].values.get("uploaded_at") or "?"
+            lines.append(f"uploads: {counted}, last {last}")
         hours = self.health.get("window_hours", "?")
         counts = " ".join(f"{k}={self.health.get(k, 'unknown')}" for k in _HEALTH_KEYS)
         lines.append(

@@ -58,7 +58,10 @@ act on. Never guess an id — read it.
   path, then write the returned lock into that repo and commit it →
   `upload_experiment(lock, mode='test', dry_run=true)` then `dry_run=false`;
   `verify_experiment(id, lock)` afterwards. Never upload a spec; `real` mode refuses a lock with
-  no commit. The DSL, and the treatment-param traps
+  no commit. A **runs** lock (`kind: runs`, adding sessions to an existing fleet) needs
+  `upload_experiment(lock, mode=…, experiment_id=<id>)` — without `experiment_id` it is refused,
+  since it appends to the experiment its base fleet lock created; pass the fleet lock's text in
+  `compile_experiment_spec(files={"<name runs_for: uses>": <lock text>})` to compile one. The DSL, and the treatment-param traps
   (pi/psi/kappa/tau are **0/1 switches**), are in the `doc://pmspec` and
   `doc://treatment-params` MCP resources.
 
