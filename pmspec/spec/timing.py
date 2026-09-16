@@ -142,28 +142,39 @@ def resolve_start_jitter(crawlers: list[dict[str, Any]], seed: int | None) -> li
     back as ``+<total seconds>s`` and an absolute one as the ISO wall clock it
     shifts to, which is exactly what ``derive_anchor`` reads next.
 
-    Returns the errors found. **Every** path replaces the dict with a string,
-    an unresolvable one with the unjittered `from` (or `now`): the errors are
-    what fails the compile, and a caller that reads `start_at` before checking
-    them -- `derive_anchor`, `parse_relative_time` -- must never meet a dict.
+    Returns the errors found, one per distinct mistake rather than one per
+    session: a spec whose 500 crawlers share a bad `jitter:` says so once, with
+    the count and the first concrete place. **Every** path replaces the dict
+    with a string, an unresolvable one with the unjittered `from` (or `now`):
+    the errors are what fails the compile, and a caller that reads `start_at`
+    before checking them -- `derive_anchor`, `parse_relative_time` -- must never
+    meet a dict.
     """
     errors: list[str] = []
     unseeded = False
+    # One mistake in one spec is one message, however many sessions carry it:
+    # every crawler of a 500-bot spec has the same `start_at:` block, so a bad
+    # jitter used to print 500 lines differing only in the index and bury
+    # whatever else went wrong. Grouped by message the way
+    # `converter._scan_unresolved` groups: `[*]` in place of the indices, the
+    # count, and the first concrete place. A group of one keeps its own path,
+    # which is strictly more useful than a `[*]`.
+    grouped: dict[str, list[str]] = {}
 
     for i, crawler in enumerate(crawlers):
         for j, queue in enumerate(crawler.get("queues", [])):
             start_at = queue.get("start_at")
             if not isinstance(start_at, dict):
                 continue
-            where = f"crawlers[{i}].queues[{j}].start_at"
+            where = f"crawlers[{i}].queues[{j}]"
             source, jitter = start_at.get("from"), start_at.get("jitter")
             queue["start_at"] = source if isinstance(source, str) else "now"
             if source is None or jitter is None:
-                errors.append(f"{where}: needs both from and jitter")
+                grouped.setdefault("needs both from and jitter", []).append(where)
                 continue
             span = parse_duration(jitter)
             if span is None:
-                errors.append(f"{where}: jitter {jitter!r} is not a duration")
+                grouped.setdefault(f"jitter {jitter!r} is not a duration", []).append(where)
                 continue
             if seed is None:
                 unseeded = True
@@ -171,9 +182,18 @@ def resolve_start_jitter(crawlers: list[dict[str, Any]], seed: int | None) -> li
             drawn = random.Random(f"{seed}:start:{i}:{j}").randint(0, span)
             resolved = _shift(str(source), drawn)
             if resolved is None:
-                errors.append(f"{where}: cannot parse start time {source!r}")
+                grouped.setdefault(f"cannot parse start time {source!r}", []).append(where)
                 continue
             queue["start_at"] = resolved
+
+    for what, places in grouped.items():
+        if len(places) == 1:
+            errors.append(f"{places[0]}.start_at: {what}")
+        else:
+            errors.append(
+                f"crawlers[*].queues[*].start_at: {what} "
+                f"({len(places)} occurrence(s); first at {places[0]})"
+            )
 
     # One message for the spec, not one per session: a spec with no seed has
     # every jittered session in the same position, and 500 copies of it buries
