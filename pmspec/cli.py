@@ -82,6 +82,28 @@ from .spec.job_registry import JobRegistry
 from .spec.validator import SpecValidator
 
 
+def _refuse_non_mapping_root(raw: Any, *, as_json: bool = False) -> None:
+    """Exit 1 on a spec whose YAML document root is not a mapping.
+
+    An empty file, a bare list or a bare scalar is a file somebody meant to be a
+    spec, and every reader of one starts with ``spec.get(...)``. `validate` used
+    to hand such a document straight to ``SpecValidator.validate`` and answer
+    with ``AttributeError: 'list' object has no attribute 'get'`` -- a stack
+    trace where a one-line refusal belongs. ``compile_spec`` and the MCP
+    ``validate_experiment_spec`` have guarded with ``isinstance(raw, dict)`` all
+    along; this is the same guard, said out loud, for the CLI readers.
+    """
+    if isinstance(raw, dict):
+        return
+    message = f"spec must be a YAML mapping (got {type(raw).__name__})"
+    if as_json:
+        click.echo(json.dumps({"valid": False, "errors": [message], "warnings": []}))
+    else:
+        click.secho("Validation FAILED", fg="red", bold=True)
+        click.secho(f"  ERROR: {message}", fg="red")
+    sys.exit(1)
+
+
 @click.group()
 @click.version_option(version="0.1.0", prog_name="pmspec")
 def cli():
@@ -150,6 +172,8 @@ def validate(file: str, format: str, strict: bool, lax: bool, seed: int | None):
             for error in prep_errors:
                 click.secho(f"  ERROR: {error}", fg="red")
         sys.exit(1)
+
+    _refuse_non_mapping_root(raw_spec, as_json=format == "json")
 
     # `assign:` refuses to draw unseeded, so validate handing its converter
     # nothing but `--seed` made `pmspec validate` reject specs `pmspec compile`
@@ -1147,6 +1171,8 @@ def preview(file: str, seed: int | None):
         for error in prep_errors:
             click.secho(f"  {error}", fg="red")
         sys.exit(1)
+
+    _refuse_non_mapping_root(raw_spec)
 
     parsed, result = parse_and_convert(
         content,
