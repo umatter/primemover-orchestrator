@@ -183,6 +183,20 @@ class TestValidatorDropRules:
             "design.parameters.foo",
             id="non-standard-sampled-param-unused",
         ),
+        pytest.param(
+            BASE + "design:\n  factors:\n    arm:\n      levels: [control, treatment]\n"
+            "      maps_to:\n        params.pi: {control: 0, treatment: 1}\n  replications: 1\n",
+            "design.factors.arm.maps_to.params.pi: 'params' is not a crawler field",
+            id="maps_to-path-without-a-crawler-prefix",
+        ),
+        pytest.param(
+            BASE + "design:\n  factors:\n    arm:\n      levels: [control, treatment]\n"
+            "      maps_to:\n        preferences.usage_type: {control: a, treatment: b}\n"
+            "  replications: 1\n",
+            "design.factors.arm.maps_to.preferences.usage_type: 'preferences' is not a "
+            "crawler field",
+            id="maps_to-bare-preferences-path",
+        ),
     ]
 
     @pytest.mark.parametrize("yaml_text,needle", ROWS)
@@ -199,6 +213,56 @@ class TestValidatorDropRules:
         assert any(needle in w for w in r.warnings), r.warnings
         assert any("would have been dropped (lax mode)" in w for w in r.warnings)
         assert r.dropped >= 1
+
+
+class TestMapsToPrefixRule:
+    """A `maps_to:` path is written onto the crawler dict by
+    DesignExpander._set_nested_value, so its first segment has to be a key
+    SpecConverter._convert_crawler reads. `params.pi` lands at
+    crawler["params"]["pi"], which nothing reads -- the treated arm silently
+    becomes a control."""
+
+    @staticmethod
+    def _spec(path: str, level_map: str) -> str:
+        return (
+            BASE + "design:\n  factors:\n    arm:\n      levels: [control, treatment]\n"
+            f"      maps_to:\n        {path}: {level_map}\n  replications: 1\n"
+        )
+
+    @pytest.mark.parametrize(
+        "path,level_map",
+        [
+            ("configuration.params.pi", "{control: 0, treatment: 1}"),
+            ("configuration.preferences.usage_type", "{control: a, treatment: b}"),
+            ("agent.location", "{control: US-IL-CHICAGO, treatment: US-GA-ATLANTA}"),
+            ("proxy.pool", "{control: pool_a, treatment: pool_b}"),
+            ("name", "{control: a, treatment: b}"),
+            ("description", "{control: a, treatment: b}"),
+        ],
+    )
+    def test_a_converter_read_prefix_is_clean(self, path, level_map):
+        r = _validate(self._spec(path, level_map))
+        assert r.valid, r.errors
+        assert not any("is not a crawler field" in w for w in r.warnings), r.warnings
+
+    def test_a_substitution_variable_is_not_a_drop(self):
+        """`maps_to: {reliability: ...}` with `{reliability}` used under crawlers
+        reaches the spec by substitution, exactly as a non-standard
+        design.parameters name does -- the dead crawler["reliability"] write is
+        beside the point."""
+        text = self._spec("reliability", "{control: none, treatment: red}").replace(
+            "        - visit: https://example.com\n",
+            "        - visit: https://example.com/{reliability}\n",
+        )
+        r = _validate(text)
+        assert r.valid, r.errors
+
+    def test_the_drop_names_the_first_segment_and_the_fix(self):
+        r = _validate(self._spec("params.pi", "{control: 0, treatment: 1}"))
+        assert not r.valid
+        msg = next(e for e in r.errors if "maps_to.params.pi" in e)
+        assert "'params' is not a crawler field the pipeline reads" in msg
+        assert "configuration.params.<x>" in msg
 
 
 class TestValidatorKeepsWarnings:

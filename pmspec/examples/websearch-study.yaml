@@ -93,7 +93,7 @@ design:
         - id: searches_and_visits
           proportion: 0.50
       maps_to:
-        preferences.usage_type:
+        configuration.preferences.usage_type:
           only_visits: only_visits
           only_searches: only_search
           searches_and_visits: searches_and_visits

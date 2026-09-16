@@ -15,7 +15,7 @@ design:
     arm:
       levels: [control, treated]
       maps_to:
-        params.pi: {control: 0, treated: 1}
+        configuration.params.pi: {control: 0, treated: 1}
   parameters:
     alpha:
       distribution: uniform

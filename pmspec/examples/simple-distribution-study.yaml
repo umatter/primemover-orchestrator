@@ -56,7 +56,7 @@ design:
     condition:
       levels: [control, treatment]
       maps_to:
-        preferences.experiment_group:
+        configuration.preferences.experiment_group:
           control: "A"
           treatment: "B"
 

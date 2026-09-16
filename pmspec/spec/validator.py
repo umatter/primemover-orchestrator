@@ -101,6 +101,21 @@ class SpecValidator:
     # arm. See CLAUDE.md and docs/integration-contract.md.
     _SWITCH_PARAMS: tuple[str, ...] = ("pi", "psi", "kappa", "tau")
 
+    # The crawler keys SpecConverter._convert_crawler reads. A `maps_to:` path
+    # is written onto the crawler dict verbatim by
+    # DesignExpander._set_nested_value, so a path whose first segment is not one
+    # of these lands somewhere nothing reads: `params.pi` becomes
+    # crawler["params"]["pi"] while the converter only ever looks at
+    # crawler["configuration"]["params"], and the treated arm ships as a second
+    # control. (`preferences.<x>` bare is the same trap: the expander's
+    # preferences special case builds the array at whatever level the path names,
+    # so a bare path builds crawler["preferences"], not
+    # crawler["configuration"]["preferences"] -- verified against the converted
+    # JSON, where the default value survives untouched.)
+    _CRAWLER_FIELDS: frozenset[str] = frozenset(
+        {"configuration", "agent", "proxy", "name", "description"}
+    )
+
     # Params the current converter/API/runner/decision-function pipeline actually
     # carries. Anything else survives the DSL but is dropped downstream today, so
     # it is reported as a drop rather than silently lost. (Making this channel
@@ -494,13 +509,33 @@ class SpecValidator:
         warnings: list[str] = []
 
         design = spec.get("design") or {}
-        for fname, fdef in (design.get("factors") or {}).items():
+        factors = design.get("factors") or {}
+        # A maps_to value also resolves as a `{leaf}` / `{full.path}`
+        # substitution variable (DesignExpander._general_substitute), and that
+        # happens whether or not the write lands anywhere. So a referenced path
+        # has done its work and is not a drop -- the same escape hatch a
+        # non-standard design.parameters name gets below. A factor's own name is
+        # not that escape: _general_substitute resolves `{name}` from
+        # cell.factor_values *first*, so `{usage_type}` next to a factor called
+        # usage_type is the level id, and the maps_to write still reaches nobody.
+        referenced = (self._referenced_placeholders(spec) - set(factors)) if factors else set()
+        for fname, fdef in factors.items():
             if not isinstance(fdef, dict):
                 continue  # _validate_design has already reported it as an error
             for path, level_map in (fdef.get("maps_to") or {}).items():
                 parts = str(path).split(".")
                 leaf = parts[-1]
                 if not isinstance(level_map, dict):
+                    continue
+                if parts[0] not in self._CRAWLER_FIELDS and not (
+                    leaf in referenced or str(path) in referenced
+                ):
+                    self.drops.report(
+                        f"design.factors.{fname}.maps_to.{path}",
+                        f"'{parts[0]}' is not a crawler field the pipeline reads",
+                        "use configuration.params.<x>, configuration.preferences.<x>, "
+                        "agent.<x> or proxy.<x>",
+                    )
                     continue
                 if leaf in self._SWITCH_PARAMS:
                     for level, value in level_map.items():
