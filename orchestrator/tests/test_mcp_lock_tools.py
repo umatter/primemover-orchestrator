@@ -12,6 +12,7 @@ from pmspec.lock.model import LOCK_FORMAT_VERSION
 from pmspec.tests.test_lock_io import make_lock
 from pmspec.tests.test_lock_runs import FLEET_SPEC, RUNS_SPEC
 from pmspec.tests.test_lock_runs_upload import RunsSession, make_runs_lock
+from pmspec.tests.test_timing import JITTER_SPEC
 
 SPEC = """
 version: "1.0"
@@ -435,3 +436,19 @@ def test_the_upload_docstring_says_a_runs_lock_needs_an_experiment_id():
     before the refusal; `experiment_id` defaults to None for the fleet path."""
     doc = s.upload_experiment.__doc__ or ""
     assert "REQUIRED for a `kind: runs` lock" in doc
+
+
+def test_validate_accepts_a_seeded_jitter_spec():
+    """The MCP validator must accept exactly what compile_experiment_spec
+    accepts: the start is drawn after conversion, from the lock's seed."""
+    out = json.loads(s.validate_experiment_spec(JITTER_SPEC))
+    assert out["valid"] is True, out
+    assert not any("jitter needs a seed" in e for e in out.get("errors", [])), out
+    assert "lock" in json.loads(s.compile_experiment_spec(JITTER_SPEC, seed=7))
+
+
+def test_convert_spec_to_json_still_refuses_a_jitter():
+    """`convert_spec_to_json` records no seed, so a drawn start could never be
+    reproduced from its output -- it resolves times, and refuses."""
+    out = json.loads(s.convert_spec_to_json(JITTER_SPEC))
+    assert any("start_at jitter needs a seed" in e for e in out["errors"]), out

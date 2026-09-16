@@ -357,3 +357,47 @@ def test_the_generate_jitter_refusal_is_reported_once(tmp_path):
     assert [e for e in result.errors if "start_at jitter" in e] == [
         "start_at jitter needs a seed: use pmspec compile"
     ], result.errors
+
+
+# --- validate must accept exactly what compile accepts -----------------------
+
+
+def _cli(args):
+    from click.testing import CliRunner
+
+    from pmspec.cli import cli
+
+    return CliRunner().invoke(cli, args)
+
+
+def test_validate_accepts_a_seeded_jitter_spec(tmp_path):
+    """`validate` may never reject a spec `compile` accepts. Jitter is drawn
+    after conversion, from the lock's seed; only a *time-resolving* path (the
+    provenance-less `generate`) has nothing to draw from, so validate must not
+    resolve times either."""
+    spec = tmp_path / "study.yaml"
+    spec.write_text(JITTER_SPEC)
+    out = _cli(["validate", str(spec)])
+    assert out.exit_code == 0, out.output
+    assert "jitter needs a seed" not in out.output, out.output
+    assert _compile(tmp_path, JITTER_SPEC).lock is not None
+
+
+def test_preview_and_summary_accept_a_seeded_jitter_spec(tmp_path):
+    spec = tmp_path / "study.yaml"
+    spec.write_text(JITTER_SPEC)
+    for args in (["preview", str(spec)], ["summary", str(spec)]):
+        out = _cli(args)
+        assert out.exit_code == 0, (args, out.output)
+        assert "jitter needs a seed" not in out.output, (args, out.output)
+
+
+def test_generate_still_refuses_a_jitter_it_cannot_reproduce(tmp_path):
+    """`orchestrator experiment generate` and MCP `convert_spec_to_json` write
+    API JSON with no seed recorded, so a drawn start could never be reproduced.
+    That path keeps resolving times, and keeps refusing."""
+    parsed = SpecParser(base_dir=tmp_path, seed=8).parse(JITTER_SPEC)
+    result = SpecConverter(seed=7, resolve_times=True).convert(parsed)
+    assert any(
+        "start_at jitter needs a seed: use pmspec compile" in e for e in result.errors
+    ), result.errors

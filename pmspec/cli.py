@@ -174,12 +174,18 @@ def validate(file: str, format: str, strict: bool, lax: bool, seed: int | None):
     # Also parse and convert to catch additional errors. All three components
     # get `lax`, or a parser/converter drop stays an error under --lax; the
     # validator has already named every unknown workflow item, so the parser
-    # does not report it again. Seeded the way compile_spec seeds.
+    # does not report it again. Seeded the way compile_spec seeds, and
+    # `resolve_times=False` for the same reason compile_spec passes it: a
+    # `start_at: {from, jitter}` is drawn after conversion from the lock's
+    # seed, and only a *time-resolving* path (`generate`, which records no
+    # seed) has nothing to draw from. Resolving here would reject a spec this
+    # very seed compiles.
     parsed, result = parse_and_convert(
         content,
         base_dir=base_dir,
         seed=run_seed,
         lax=lax,
+        resolve_times=False,
         report_unknown_items=False,
         raw=raw_spec if is_runs else None,
         runs=is_runs,
@@ -1162,6 +1168,7 @@ def preview(file: str, seed: int | None):
         content,
         base_dir=base_dir,
         seed=effective_seed(raw_spec, is_runs, seed),
+        resolve_times=False,  # previewing is not generating -- see `validate`
         raw=raw_spec if is_runs else None,
         runs=is_runs,
     )

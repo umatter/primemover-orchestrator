@@ -2403,7 +2403,14 @@ def validate_experiment_spec(
         # and `pmspec validate` share, so a spec that compiles cannot be
         # rejected here for want of a seed (`assign:` refuses to draw
         # unseeded). With no seed anywhere, this reports what compile reports.
-        converter = SpecConverter(lax=lax, seed=effective_seed(raw_spec, False))
+        # `resolve_times=False`, as `compile_spec` and `pmspec validate` pass
+        # it: a `start_at: {from, jitter}` is drawn after conversion from the
+        # lock's seed, so resolving here would reject a spec
+        # `compile_experiment_spec` accepts. Only `convert_spec_to_json`, which
+        # records no seed, resolves times -- and refuses a jitter.
+        converter = SpecConverter(
+            lax=lax, seed=effective_seed(raw_spec, False), resolve_times=False
+        )
         result = converter.convert(parsed)
 
     # Combine all errors and warnings: de-duplicated, one drop-count line

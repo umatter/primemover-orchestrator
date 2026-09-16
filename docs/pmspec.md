@@ -375,7 +375,12 @@ crawlers:
   of that pool's columns, and `select` is `random` or `first`; any other key inside an entry is a
   drop. The lock records the drawn values where they were substituted — it *is* the assignment
   record — and `provenance.pools` already hashes the pool file.
-- Runs specs (above) may use `assign:` under the same rules, seeded by the runs lock's own seed.
+- Runs specs (above) may use `assign:` under the same rules, seeded by the runs lock's own
+  seed — with one consequence of the kind: a runs crawler has **no `agent:` block**, so there
+  is no `agent.location` for `match_field` to fall back on and it must be paired with an
+  explicit `match_value`. Typically a base variable — today's Comscore session drawn per bot
+  from a `sessions` pool with `match_value: "{base.comscore_person_id}"`, or
+  `match_value: "{base.location}"` for the fleet's own geography.
 
 ### Multilogin profile flags
 

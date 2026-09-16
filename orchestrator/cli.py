@@ -3306,7 +3306,10 @@ def experiment_validate(
     # `pmspec compile`/`validate` share: without it this command rejected an
     # `assign:` spec that compiles, since an assignment refuses to draw
     # unseeded. With no seed anywhere, it reports what compile reports.
-    converter = SpecConverter(seed=effective_seed(raw_spec, False, seed))
+    # `resolve_times=False`, like `pmspec validate`: a seeded
+    # `start_at: {from, jitter}` is drawn after conversion, so a validating
+    # path must not resolve times or it rejects what `pmspec compile` accepts.
+    converter = SpecConverter(seed=effective_seed(raw_spec, False, seed), resolve_times=False)
     result = converter.convert(parsed)
 
     # Combine all errors and warnings

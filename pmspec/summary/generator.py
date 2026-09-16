@@ -94,6 +94,10 @@ class SummaryGenerator:
             yaml_content,
             base_dir=base_dir,
             seed=build.effective_seed(raw, is_runs, seed),
+            # Summarising is not generating: times stay unresolved, exactly as
+            # compile_spec leaves them, so a seeded `start_at: {from, jitter}`
+            # is summarised rather than refused.
+            resolve_times=False,
             raw=raw if is_runs else None,
             runs=is_runs,
         )
