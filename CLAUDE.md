@@ -864,6 +864,17 @@ hashed, bound to the experiment via `pmspec.*` preferences, checked by `pmspec v
 `compile` writes) factors each distinct queue/agent body once under `parts`, keyed by its own
 content hash, instead of repeating it per crawler; `validate` still accepts format 1.
 
+A lock has two **kinds**. A *fleet* lock is the randomization record, uploaded once. A **runs
+lock** (`kind: runs`, from a spec carrying `runs_for: <fleet lock>`) appends *queues* to that
+fleet's crawlers, matched by name — the way a longitudinal study adds a session per bot-day
+without making crawler ≠ bot; it records the base lock's sha256, needs `-e <experiment id>` on
+upload (`experiment_id` over MCP), skips a queue already live at the same name and wall-clock
+start, and may change a preference only through an opt-in `updates:` block that records old→new.
+`verify`/`audit` on one are scoped to the queues it wrote. Orthogonally, **`assign:`** draws one
+data-pool row per crawler (`{panelist.person_id}`), without replacement and sharing that
+bookkeeping with `proxy: {from_pool: …}`, which is how per-bot data — a panelist, an outlet list —
+gets into a spec at all. `docs/pmspec.md` §§ "Longitudinal studies", "Per-crawler assignment".
+
 **Where each step runs.** Design, `validate`, `preview` and `compile` are the CLI *in the research
 repo* — that is where the provenance a lock records (`git_commit`, `spec_path`, pool sha256s) is
 read from, and where pools resolve; commit the lock there. Upload, verify, status, audit and

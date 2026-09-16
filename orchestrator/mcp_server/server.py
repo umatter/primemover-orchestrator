@@ -2249,9 +2249,18 @@ def compile_experiment_spec(
         git_commit: the spec repo's short HEAD, optionally suffixed "-dirty"
         spec_path: the spec's path relative to that repo's root
 
+    A **runs spec** (one carrying ``runs_for: <fleet lock path>``) compiles the
+    same way, and its base lock arrives the way a data pool does: put the fleet
+    lock's *text* in ``files`` under exactly the bare filename ``runs_for:``
+    names (``{"fleet.lock.yaml": "<lock text>"}``). Without it the compile is
+    refused with ``runs_for: cannot read <path>``. The result then reports
+    ``kind: "runs"`` and the ``base_lock_sha256`` the lock recorded -- the sha
+    ``upload_experiment`` checks against the experiment's first upload.
+
     Returns:
-        JSON: {"lock": <text>, "crawler_count", "seed", "anchor", "git_commit",
-        "spec_path", "warnings", "dropped"} or {"errors": [...], "warnings", "dropped"}
+        JSON: {"lock": <text>, "kind": "fleet"|"runs", "base_lock_sha256",
+        "crawler_count", "seed", "anchor", "git_commit", "spec_path",
+        "warnings", "dropped"} or {"errors": [...], "warnings", "dropped"}
     """
     if git_commit is not None and not _CLIENT_COMMIT_RE.fullmatch(git_commit):
         return json.dumps(
@@ -2285,6 +2294,8 @@ def compile_experiment_spec(
     return json.dumps(
         {
             "lock": dump_lock(result.lock),
+            "kind": result.lock.kind,
+            "base_lock_sha256": result.lock.provenance.base_lock_sha256,
             "crawler_count": len(result.lock.crawlers),
             "seed": result.lock.provenance.seed,
             "anchor": result.lock.schedule["anchor"],

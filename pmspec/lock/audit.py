@@ -331,6 +331,23 @@ def _arm_label(crawler: dict[str, Any], treatment: dict[str, Any] | None = None)
     )
 
 
+def _queue_arm(crawler: dict[str, Any], lock_jobs: list[dict[str, Any]]) -> str:
+    """The arm a *queue-level* finding reports.
+
+    A fleet crawler's arm is a property of the bot, so :func:`_arm_label` answers
+    without looking at a job at all. A runs crawler has no configuration and its
+    arm is per job, so the queue is labelled by its own first auditable job --
+    not by whatever job was labelled last, which is a different queue's and, on a
+    lock whose sessions differ, a different arm. Nothing auditable in the queue
+    is ``-``.
+    """
+    for job in lock_jobs:
+        resolved = _job_treatment(crawler, job)
+        if resolved is not None:
+            return _arm_label(crawler, resolved[1])
+    return _arm_label(crawler, None)
+
+
 def _behaviors(job: dict[str, Any]) -> dict[str, Any]:
     return {b["name"]: b.get("value") for b in job.get("behaviors", [])}
 
@@ -537,9 +554,6 @@ def audit_experiment(
         name = crawler["name"]
         if name not in chosen:
             continue
-        # A fleet crawler's arm is a property of the bot; a runs crawler has no
-        # configuration, so its arm is whatever each job's treatment asks for.
-        arm = _arm_label(crawler)
         live_crawler = live_by_name.get(name)
         if live_crawler is None:
             # Wrong experiment id, or a partial upload that never created this
@@ -627,7 +641,7 @@ def audit_experiment(
                         qname,
                         0,
                         None,
-                        arm,
+                        _queue_arm(crawler, lock_jobs),
                         "shape",
                         f"lock has {len(lock_jobs)} jobs, live has {len(live_jobs)}",
                     )
@@ -638,11 +652,11 @@ def audit_experiment(
                 if resolved is None:
                     continue
                 strategy, treatment = resolved
-                arm = _arm_label(crawler, treatment)
+                job_arm = _arm_label(crawler, treatment)
 
                 if ordinal >= len(live_jobs):
                     findings.append(
-                        JobFinding(name, qname, ordinal, None, arm, "missing", "no live job")
+                        JobFinding(name, qname, ordinal, None, job_arm, "missing", "no live job")
                     )
                     continue
 
@@ -670,7 +684,7 @@ def audit_experiment(
                             qname,
                             ordinal,
                             job_id,
-                            arm,
+                            job_arm,
                             "shape",
                             f"lock {lock_type} vs live {live_type} at ordinal {ordinal}",
                         )
@@ -681,7 +695,13 @@ def audit_experiment(
                 if status_mod.is_running(code):
                     findings.append(
                         JobFinding(
-                            name, qname, ordinal, job_id, arm, "unfinished", f"status_code={code}"
+                            name,
+                            qname,
+                            ordinal,
+                            job_id,
+                            job_arm,
+                            "unfinished",
+                            f"status_code={code}",
                         )
                     )
                     continue
@@ -694,7 +714,7 @@ def audit_experiment(
                             qname,
                             ordinal,
                             job_id,
-                            arm,
+                            job_arm,
                             "unreported",
                             f"status_code={code!r} is not a known state",
                         )
@@ -704,7 +724,13 @@ def audit_experiment(
                 if not status_mod.job_decision_reported(live_job):
                     findings.append(
                         JobFinding(
-                            name, qname, ordinal, job_id, arm, "unreported", "no decision_report"
+                            name,
+                            qname,
+                            ordinal,
+                            job_id,
+                            job_arm,
+                            "unreported",
+                            "no decision_report",
                         )
                     )
                     continue
@@ -718,7 +744,7 @@ def audit_experiment(
                             qname,
                             ordinal,
                             job_id,
-                            arm,
+                            job_arm,
                             "unreported",
                             "decision_report has neither requested/applied nor filters",
                         )
@@ -736,7 +762,7 @@ def audit_experiment(
                             qname,
                             ordinal,
                             job_id,
-                            arm,
+                            job_arm,
                             "mismatch",
                             f"expected {sorted(expected)}, requested {sorted(requested)}",
                         )
@@ -749,7 +775,9 @@ def audit_experiment(
                     detail = "treatment_lost"
                     if verdict.degraded:
                         detail += "; degraded"
-                    findings.append(JobFinding(name, qname, ordinal, job_id, arm, "lost", detail))
+                    findings.append(
+                        JobFinding(name, qname, ordinal, job_id, job_arm, "lost", detail)
+                    )
                     continue
 
                 if not requested <= applied:
@@ -757,12 +785,12 @@ def audit_experiment(
                     if verdict.degraded:
                         detail += "; degraded"
                     findings.append(
-                        JobFinding(name, qname, ordinal, job_id, arm, "degraded", detail)
+                        JobFinding(name, qname, ordinal, job_id, job_arm, "degraded", detail)
                     )
                     continue
 
                 detail = "degraded" if verdict.degraded else ""
-                findings.append(JobFinding(name, qname, ordinal, job_id, arm, "ok", detail))
+                findings.append(JobFinding(name, qname, ordinal, job_id, job_arm, "ok", detail))
 
     return AuditResult(
         experiment_id=experiment_id, hours=hours, sampled=sampled, total=total, findings=findings

@@ -771,6 +771,9 @@ def test_live_queue_with_a_different_job_count_is_a_shape_finding_and_still_audi
     assert len(shapes) == 1, result.findings
     assert shapes[0].detail == "lock has 2 jobs, live has 3"
     assert shapes[0].job_id is None
+    # A fleet crawler's arm is a property of the bot, so the queue-level
+    # finding carries it exactly as every per-job finding does.
+    assert shapes[0].arm == TREATED_ARM
     # The ordinals that do line up are still audited on their own merits.
     assert _bot_t_finding(result).outcome == "ok"
     assert not result.ok(strict=False)
@@ -1124,3 +1127,81 @@ def test_a_runs_lock_lambda_job_without_a_strategy_is_not_audited():
     session = RunsAuditSession(_treated_job(["mainstream_media"]))
     result = audit_experiment(session, EXPERIMENT_ID, lock_text)
     assert result.findings == []
+
+
+class TwoQueueRunsSession:
+    """One bot, two appended sessions, each live queue carrying one job more
+    than the lock describes -- so every queue earns its own ``shape`` finding."""
+
+    base_url = "http://fake"
+
+    def __init__(self, job2: dict) -> None:
+        self.job2 = job2
+
+    def get(self, path, params=None):
+        if path == f"experiments/{EXPERIMENT_ID}":
+            return {"id": EXPERIMENT_ID, "crawlers": [{"id": 30, "name": "bot_t"}]}
+        if path == f"experiments/{EXPERIMENT_ID}/queues-unprocessed":
+            if (params or {}).get("page", 1) > 1:
+                return []
+            return [
+                {"id": 500, "name": "day-1", "crawler_id": 30, "start_at": "2026-10-01 12:00:00"},
+                {"id": 600, "name": "day-2", "crawler_id": 30, "start_at": "2026-10-02 12:00:00"},
+            ]
+        if path == f"experiments/{EXPERIMENT_ID}/queues-processed":
+            return []
+        if path == "jobs":
+            queue_id = int((params or {})["filter[queue]"])
+            return [
+                {"id": queue_id * 10, "order": 1, "type": "visitjob", "status_code": "success"},
+                {"id": queue_id * 10 + 1, "order": 2, "type": LAMBDA_TYPE, **self.job2},
+                {"id": queue_id * 10 + 2, "order": 3, "type": "visitjob", "status_code": "success"},
+            ]
+        raise AssertionError(path)
+
+
+def _two_queue_runs_lock_text(*queues: dict) -> str:
+    lock = Lock(
+        provenance=Provenance(
+            spec_path="design/day.yaml",
+            spec_sha256="ab" * 32,
+            generator=None,
+            git_commit=None,
+            pmspec_version="0.1.0",
+            seed=7,
+            base_lock_sha256="cd" * 32,
+            base_spec_path="design/fleet.yaml",
+        ),
+        experiment={"name": "Study", "description": "", "runner_user_id": None, "contact": None},
+        schedule={"anchor": "upload"},
+        crawlers=[{"name": "bot_t", "queues": list(queues)}],
+        kind="runs",
+    )
+    return dump_lock(lock)
+
+
+def test_each_queues_shape_finding_carries_its_own_queues_arm():
+    """A runs lock's arm is per job, so a queue-level finding takes it from that
+    queue's own first auditable job -- never from whatever the previous queue's
+    last job happened to leave behind."""
+    lock_text = _two_queue_runs_lock_text(
+        _runs_queue("day-1", "+2h", [_behavior("strategy", "youtube_v1"), _behavior("pi", 1)]),
+        _runs_queue("day-2", "+26h", [_behavior("strategy", "youtube_v1"), _behavior("kappa", 1)]),
+    )
+    result = audit_experiment(
+        TwoQueueRunsSession(_treated_job(["mainstream_media", "similar"])), EXPERIMENT_ID, lock_text
+    )
+    shapes = [f for f in result.findings if f.outcome == "shape"]
+    assert [(f.queue, f.arm) for f in shapes] == [("day-1", "pi=1"), ("day-2", "kappa=1")]
+
+
+def test_a_queue_with_nothing_auditable_in_it_has_no_arm_to_report():
+    """No job in the queue names a treatment, so the shape finding says `-`
+    rather than borrowing an arm from somewhere else in the lock."""
+    lock_text = _two_queue_runs_lock_text(
+        _runs_queue("day-1", "+2h", [_behavior("task", "select")])
+    )
+    result = audit_experiment(
+        TwoQueueRunsSession(_treated_job(["mainstream_media"])), EXPERIMENT_ID, lock_text
+    )
+    assert [(f.queue, f.outcome, f.arm) for f in result.findings] == [("day-1", "shape", "-")]

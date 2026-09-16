@@ -325,6 +325,72 @@ signal, so such a row would quietly compile to a direct connection. The same blo
 `defaults: {proxy: {from_pool: true, ...}}` for every crawler without its own `proxy:`. See
 `pmspec/tests/test_proxy_pools.py` for the exact CSV shape.
 
+### Per-crawler assignment (`assign:`)
+
+`assign:` is the proxy-pool rule generalised to any data: one pool **row per crawler**, whose
+columns become substitution variables for that crawler alone. It is how "bot 17 replays panelist
+510121845" or "bot 17 gets its own outlet list" is expressed — something factors (shared levels)
+and sampled parameters (scalars) cannot say.
+
+```yaml
+crawlers:
+  - from_design: true
+    name: "wsp3_{cell_index:03d}"
+    assign:
+      panelist: {from_pool: panelists, match_field: region, select: random}
+      outlets:  {from_pool: outlet_sets, select: first}
+    configuration:
+      preferences:
+        - {name: comscore_person_id, value: "{panelist.person_id}"}
+        - {name: outlet_list, value: "{outlets.urls}"}
+```
+
+- **Without replacement across crawlers**, per pool: each named assignment takes a row no crawler
+  has taken yet. Running out is a compile **error** naming the crawler, the pool, the match and how
+  many rows were already taken — never a silent reuse. `proxy: {from_pool: …}` shares the same
+  bookkeeping, so one pool feeding both an `assign:` and the proxies can never hand a row out
+  twice.
+- `match_field: <column>` compares that column with the crawler's `agent.location`;
+  `match_value: "<value>"` (a literal, or anything already substituted — `"{city}"`,
+  `"{base.comscore_person_id}"`) overrides what it is compared with. With neither, any row
+  matches; `match_field` with no `agent.location` and no `match_value` is an error.
+- `select: random` (the default) draws among the free matching rows from the lock's seed;
+  `select: first` takes them in pool order — with no `match_field` that is "row *i* to bot *i*"
+  for a pre-built table. Both need a seed: an unseeded draw is not a randomization record.
+- Every column of the drawn row is `{<assignment>.<column>}` (and `{…:fmt}`), substituted
+  anywhere in that crawler: its name, preferences, agent and proxy fields, template `with:`
+  values, treatment blocks. A column nothing references is not a drop — the row is data. A
+  **leftover** `{panelist.…}` (a misspelt column, an unknown pool) is a drop, so it can never
+  reach a bot as a literal.
+- **Values keep their CSV types.** A numeric column is drawn as a number, so `{panelist.zip:>10}`
+  formats an int and `{panelist.region:.2f}` on a text column is a compile error; a blank cell is
+  the empty string `""`, not a missing value. This is the opposite of `{base.…}` (above), whose
+  values are always strings because a preference is a string on the wire — `{base.ideology:.2f}`
+  therefore always fails.
+- An assignment **name must be an identifier** — a letter or underscore followed by letters,
+  digits or underscores — because it becomes a `{name.column}` placeholder; `pan-elist` would
+  match no placeholder pattern and reach the bot verbatim with nothing reported. A name equal to a
+  factor, a `design.parameters` name, or `base` is an error too (`{x}` would be ambiguous).
+- The validator checks `from_pool` is present and names a declared pool, `match_field` names one
+  of that pool's columns, and `select` is `random` or `first`; any other key inside an entry is a
+  drop. The lock records the drawn values where they were substituted — it *is* the assignment
+  record — and `provenance.pools` already hashes the pool file.
+- Runs specs (above) may use `assign:` under the same rules, seeded by the runs lock's own seed.
+
+### Multilogin profile flags
+
+A factor can reach the Multilogin profile itself:
+`maps_to: {agent.multilogin_profile.parameters.flags.<flag>: {control: mask, treated: natural}}`,
+and an explicit `agent: {multilogin_profile: {parameters: {flags: {…}}}}` on a crawler works the
+same way — both are deep-merged over the default profile and land in the API's agent JSON. A
+`<flag>` that is not one of the default profile's own flags is a **drop** (Multilogin ignores an
+unknown flag silently, so the treatment would simply not exist). Flag *values* are not checked:
+this repo holds no authoritative vocabulary per flag, and Multilogin rejects a bad one at profile
+creation, which the runner reports as a failed job rather than losing quietly. Note the drop rule
+only sees the leaf — a typo one level up (`parameter.flags`, `flag`) is an unknown key on
+`multilogin_profile`, which is deep-merged through unexamined, so check the spelling of the path
+as well as of the flag.
+
 ### Strategy schemas
 
 A `lambda_select` job's behaviours-channel `treatment` (see "Treatment via the decision strategy"
@@ -344,6 +410,159 @@ more queues to the same bot — for example a "diet" session followed by a later
 session. It requires a `session` to add to (an error otherwise) and cannot be combined with a
 bare `queues:` list on the same crawler. Each entry is checked exactly like `session` itself
 (unknown keys, missing start time, …).
+
+### Longitudinal studies: fleet lock + runs locks
+
+A study that gives its bots a fresh session every day for six months cannot be one lock. The
+only other way to add sessions after upload is to append *crawlers* with `upload -e`, which
+makes crawler ≠ bot, 500 rows a day, and `verify`/`audit` per-day affairs by accident. So there
+are two lock **kinds**:
+
+- a **fleet lock** — everything else in this document: crawlers with their configuration, agent,
+  proxy and first queues. It is the randomization record, compiled once and uploaded once;
+- a **runs lock** (`kind: runs`) — *queues* added to the crawlers that fleet already created,
+  matched by name. No `configuration`, `agent` or `proxy`, no `${secret:…}`, and bound to exactly
+  one base: `provenance.base_lock_sha256` is the sha256 of the fleet lock **file** it was
+  compiled against. A study that re-randomizes is a new fleet and a new experiment.
+
+A static repeating schedule needs none of this — a fleet crawler with N queues at daily offsets
+is already one lock (the standing treatment canary is exactly that). Runs locks are for the case
+where today's content depends on state pmspec does not have: yesterday's measured ideology, this
+week's trending terms, today's panelist session.
+
+#### The runs spec
+
+A spec is a runs spec **iff** its root carries `runs_for:`, a path to a fleet lock relative to
+the spec:
+
+```yaml
+version: "1.0"
+runs_for: design/fleet.lock.yaml     # its sha256 goes into the lock
+seed: 20261001                       # a runs spec's own seed (below)
+templates: {day: [...]}
+crawlers:
+  - name: wsp3_017                   # must exist in the base lock
+    session: {name: "2026-10-01", start_at: "2026-10-01T10:00:00", workflow: [...]}
+    additional_sessions: [...]
+    updates: {preferences: {ideology: "0.31"}}     # optional, opt-in (below)
+
+  - from_base: true                  # ... or one block for every base crawler
+    name: "{base.name}"
+    session:
+      name: "{base.name} in {base.location}"
+      start_at: {from: "2026-10-01T06:00:00", jitter: 6h}
+      workflow:
+        - template: day
+          with: {pi: "{base.ideology}"}
+```
+
+`from_base: true` expands to one crawler block per base crawler, **in base order**, substituting
+into every string of the block:
+
+| variable | value |
+|---|---|
+| `{base.name}` | the crawler's name |
+| `{base.location}` | the **agent's** location — a bot's geography, never shadowed by a preference of the same name |
+| `{base.<preference>}` | every `configuration.preferences` entry of that crawler |
+
+`{base.x:fmt}` formats as elsewhere, and a `{base.…}` naming nothing is a drop rather than a
+literal that reaches the bot. **Base values are strings** — a preference is a string on the wire
+— so a numeric format spec such as `{base.ideology:.2f}` is a compile error, not a rounded
+number. (Assignment values, below, keep their CSV types and behave the opposite way.)
+
+A runs spec may carry `templates`, `data_pools`, `strategy_schemas`, `assign:` (below) and
+`defaults` restricted to session-level keys (`timezone`, `timezone_utc_offset`, `captcha_mode`,
+`typing_mode`, `selection_type`, `active`). It refuses, as **errors** rather than drops:
+
+| construct | why |
+|---|---|
+| root `design:` | the randomization happened in the base; a runs spec adds sessions to a fleet already randomized |
+| root `experiment:` | the experiment comes from the base lock |
+| a crawler's `agent:`, `proxy:` or `configuration:` | those live in the fleet spec |
+| `updates:` outside `preferences`, or a non-scalar value | only `preferences.<name>` may be updated |
+| a crawler name the base lock does not have | one error per name, judged on the name that would upload |
+| `runs_for:` naming a runs lock, or a file it cannot read | a runs lock is bound to one base; chaining them would make "which fleet was this bot randomized into" unanswerable |
+
+**The seed.** `design:` is refused, so `design.seed` has nowhere to live: a runs spec declares
+`seed: N` at its root, or takes `--seed N`, and the flag wins. The base lock's seed is **never**
+inherited — each night's draws are that night's — and, as everywhere, a lock is never unseeded.
+
+#### The nightly loop
+
+Ordinary pmspec, with one required flag:
+
+```bash
+# in the study repo, beside the committed fleet lock
+pmspec compile design/2026-10-01.yaml -o locks/2026-10-01.lock.yaml --seed 20261001
+git add locks/2026-10-01.lock.yaml && git commit -m "runs 2026-10-01"
+pmspec upload locks/2026-10-01.lock.yaml --mode real -e 181 --dry-run   # the plan, writes nothing
+pmspec upload locks/2026-10-01.lock.yaml --mode real -e 181             # apply, then verify
+pmspec audit 181 locks/2026-10-01.lock.yaml --hours 24                  # next morning
+```
+
+`-e` is **required** for a runs lock (`a runs lock appends to an experiment: pass -e <id>`), and
+so is `experiment_id` in MCP `upload_experiment`. Compile in the study repo: that is where the
+provenance the lock records (`git_commit`, `spec_path`, pool hashes) is read from and where
+`runs_for:` resolves. Over MCP, `compile_experiment_spec` takes the fleet lock's **text** in
+`files=` under the bare filename `runs_for:` names (`{"fleet.lock.yaml": "<lock text>"}`) and
+reports `kind` and `base_lock_sha256` back.
+
+Before anything is written, the upload asks the live experiment — stopping at the first refusal:
+
+1. the experiment's **first** upload must carry a `pmspec.lock_sha256` equal to this lock's
+   `base_lock_sha256` (else: *created from lock X, this runs lock is based on Y*) and the same
+   `pmspec.mode`;
+2. every lock crawler name must match exactly one live crawler; missing or duplicated is an error
+   naming it;
+3. secrets, anchor (`--allow-past`) and the dirty-commit rules are a fleet upload's.
+
+Then, per crawler in lock order, one `POST crawlers/{id}/upload` carrying only the queues not
+already live — **a queue whose (wall-clock start, name) already exists on that crawler is
+skipped**, so re-running the same lock after a half-finished upload adds nothing twice — then
+that crawler's `updates:`, and finally the provenance preferences as "upload N", which for a runs
+upload add `pmspec.kind = runs`, `pmspec.base_lock_sha256` and, when updates were applied,
+`pmspec.updates` (a JSON blob of `{<crawler>: {"preferences.<name>": [old, new]}}`). A failure
+leaves provenance untouched and prints the last crawler completed. The dry run performs every one
+of those checks and reports crawlers, queues to append, queues already live and updates.
+
+#### `updates:` — changing a preference mid-study
+
+`updates: {preferences: {<name>: <value>}}` is the only mutation a runs lock may make, opt-in per
+field. Params, agent and proxy fields are refused at validation: changing those mid-study is a
+different experiment. The old value is read first and recorded beside the new one, so the fleet
+lock stays the randomization record and provenance says how the live state departed from it.
+
+This needs an API that syncs preferences on `PUT configurations/{id}`. The upload probes **once**,
+before any write, and refuses outright when it does not:
+
+```
+this API cannot update preferences (PUT configurations/{id} strips them);
+deploy primemover_api with preferences sync, or drop `updates:`
+```
+
+A lock with no `updates:` never probes and never needs the newer API.
+
+#### What verify, status, audit and diff say about a runs lock
+
+- **`verify`** compares only what this lock uploaded: per crawler, the live queues whose
+  (wall-clock start, name) it asked for, plus the live value of exactly the preference names its
+  `updates:` set. Queues another upload appended to the same bot are not differences; a lock queue
+  with no live match surfaces as `crawlers.<bot>.queues.length`. Two sessions on the same day share
+  a name, so the start is what tells them apart. The bot's params, proxy and location are the fleet
+  lock's claim: neither compared nor even fetched. `--deep` compares jobs and behaviours as usual,
+  and binding checks this runs lock's own sha against its own "upload N" preference. `pmspec upload`
+  runs the same verify after applying, and its verdict decides the exit code.
+- **`status`** labels each upload with its kind and base — `kind=runs base=<sha12> updates=<n>` —
+  and ends with a line like `uploads: 1 fleet + 12 runs, last 2026-10-12T05:02:11`.
+- **`audit`** takes a runs lock as it takes a fleet lock, matching by (crawler name, queue name,
+  job ordinal); the bot's other sessions are not in the lock and are neither reported nor fetched.
+  One difference: a runs crawler has no `configuration`, so the params fallback has nothing to
+  read — a `lambdasingleselectjob` **without** a `strategy` behaviour is not audited at all, rather
+  than audited against an assumed control arm — and each finding's arm comes from the job's own
+  treatment (`pi=1,kappa=1`, or `reliability/lean` when the job names both).
+- **`diff`** between two runs locks compares crawler names, queues and `updates`, and prints
+  `base: <sha12> vs <sha12>` when they were compiled against different fleets. A runs lock against
+  a fleet lock is refused.
 
 ### Generated JSON Schema
 
@@ -943,7 +1162,7 @@ crawlers:
 |---------|-------------|
 | `validate <file> [--seed N] [--strict] [--lax]` | Validate a spec or a lock |
 | `compile <file> [-o out] --seed N [--anchor] [--generator] [--lax]` | Compile a spec into a committable lock |
-| `upload <lock> --mode real\|test [-e ID] [--dry-run] [--record] [--allow-dirty] [--allow-past] [--deep] [--secrets] [--seed N]` | Upload a lock (or compile a spec, then upload) and verify |
+| `upload <lock> --mode real\|test [-e ID] [--dry-run] [--record] [--allow-dirty] [--allow-past] [--deep] [--secrets] [--seed N]` | Upload a lock (or compile a spec, then upload) and verify. `-e` appends to an existing experiment, and is **required** for a runs lock |
 | `verify <experiment_id> <lock> [--deep]` | Check a live experiment is bound to, and identical to, a lock |
 | `status <experiment_id> [lock] [--hours N] [--deep]` | Provenance + health of a live experiment; with a lock, also verify |
 | `diff <lock_a> <lock_b>` | Diff two locks: provenance, anchor, crawler-level structural differences |
@@ -960,6 +1179,9 @@ crawlers:
 
 **Options:**
 - `--seed N` / `-s N` - Random seed for reproducible randomization (distributions, file selections)
+
+Every command that takes a spec or a lock takes a **runs** spec or lock too (see "Longitudinal
+studies" above); only `upload` changes shape, in requiring `-e <experiment id>` for one.
 
 ## Laravel Commands
 
@@ -1013,6 +1235,7 @@ Session start times support relative timestamps for easier experiment scheduling
 | `+Nh` | N hours from now | `start: +2h` |
 | `+Nd` | N days from now | `start: +1d` |
 | ISO 8601 | Fixed timestamp | `start: "2025-02-01T10:00:00-06:00"` |
+| `{from, jitter}` | Drawn from the seed: `from` + U(0, `jitter`) — see "Seeded timing" | `start_at: {from: "+1h", jitter: 6h}` |
 
 **Example: Staggered bot starts**
 
@@ -1040,7 +1263,7 @@ Relative timestamps are resolved to ISO 8601 format with local timezone offset d
 | Shorthand | Example | Description |
 |-----------|---------|-------------|
 | `visit` | `visit: https://example.com` | Navigate to URL |
-| `wait` | `wait: 10s` | Wait (supports s/m/h) |
+| `wait` | `wait: 10s` | Wait (supports s/m/h); `{min, max}` draws one from the seed |
 | `click` | `click: "//button"` | Click element |
 | `try_click` | `try_click: "//button"` | Click, continue on fail |
 | `type` | `type: {text: "...", selector: "..."}` | Enter text |
@@ -1079,6 +1302,51 @@ the same literal:
   generate`, the MCP), not shipped to the bot as an unresolvable token.
 - A `repeat:`+`template:` item draws again on every repetition, still without replacement within
   that crawler.
+
+### Seeded timing
+
+Two places where a study wants a *drawn* number rather than a fixed one, so the generator does not
+have to draw it itself and keep the seed outside the lock.
+
+**Wait ranges.** `wait: {min: 30s, max: 60s}` beside the existing `wait: 45s` / `wait: 45`:
+
+```yaml
+workflow:
+  - visit: https://example.com
+  - wait: {min: 30s, max: 60s}      # both required, durations, min <= max (equal is fine)
+```
+
+The parser emits a deferred token (templates expand before the design does), and the converter
+resolves it per **(crawler i, queue j, job k)** with `random.Random(f"{seed}:wait:{i}:{j}:{k}")`,
+uniform over whole seconds, inclusive of both bounds. The **lock stores the number**, so
+`verify`, `diff` and the runner see an ordinary `wait`. A surviving token is a drop: a wait range
+can never reach a bot as `%%pmspec-wait:30:60%%`.
+
+**Start jitter.** `start_at: {from: "+1h", jitter: "6h"}` — `from` is anything `start_at` accepts
+today (`now`, a relative offset, an ISO timestamp), `jitter` a duration. The session starts at
+`from + U(0, jitter)`, drawn per **(crawler i, session j)** with
+`random.Random(f"{seed}:start:{i}:{j}")` and stored as a concrete `start_offset` under the usual
+anchor, so verify and audit need nothing new. The same form works in `additional_sessions` (each
+session has its own index) and in runs specs.
+
+Both streams are their own namespaces — independent of each other, of the design expander's
+stream and of pool draws — so the whole lock stays byte-deterministic for a given seed, and two
+bots jitter independently. The indices are positions in the crawler list, so inserting a crawler
+or a replication in the middle reshuffles every later bot's draws: treat a recompile after such an
+edit as a new draw, not a preserved one.
+
+Both need a seed, and both refuse rather than silently falling back:
+
+```
+wait range needs a seed: use pmspec compile, or set design.seed
+start jitter needs a seed: use pmspec compile, or set design.seed
+```
+
+`pmspec generate` (and MCP `convert_spec_to_json`) records no seed at all — it writes API JSON,
+not a lock — so a jitter there is refused outright (`start_at jitter needs a seed: use pmspec
+compile`) and the JSON falls back to `from`; a wait range leaves its token in place and is
+reported as a drop. Anything drawn belongs in a lock, which is the only artifact that can
+reproduce it.
 
 ## Treatment via the decision strategy (behaviours channel)
 

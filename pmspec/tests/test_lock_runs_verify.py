@@ -17,7 +17,7 @@ from typing import Any
 from pmspec.lock.io import dump_lock, sha256_text
 from pmspec.lock.verify import Difference, verify_lock
 
-from .test_lock_runs_upload import BASE_SHA, make_runs_lock
+from .test_lock_runs_upload import BASE_SHA, _queue, make_runs_lock
 
 EXPERIMENT_ID = 181
 ANCHOR = "2026-10-01T10:00:00+02:00"
@@ -28,10 +28,10 @@ QUEUE_ID = {"bot_01": 500, "bot_02": 501}
 
 
 def _queue_row(
-    bot: str, *, name: str = "2026-10-01", start_at: str | None = None
+    bot: str, *, name: str = "2026-10-01", start_at: str | None = None, queue_id: int | None = None
 ) -> dict[str, Any]:
     return {
-        "id": QUEUE_ID[bot],
+        "id": QUEUE_ID[bot] if queue_id is None else queue_id,
         "crawler_id": CRAWLER_ID[bot],
         "name": name,
         "start_at": start_at or LOCK_START[bot],
@@ -231,3 +231,43 @@ def test_deep_reports_a_behaviour_difference_in_an_appended_queue(monkeypatch):
     monkeypatch.setattr(session, "get_bytes", lambda *a, **k: _export_zip(url="https://other"))
     r = _verify(session, text, deep=True)
     assert any(d.path.endswith("behaviors.url") for d in r.differences), r.differences
+
+
+# --- same-name queues: the start time is what tells them apart ---------------
+
+
+def _two_a_day_lock():
+    """bot_01 gets two sessions the same day, both named for the day. Only their
+    start times distinguish them -- which is the case the (start, name) match
+    exists for."""
+    lock = make_runs_lock()
+    lock.crawlers[0]["queues"].append(_queue("2026-10-01", "+4h"))
+    return lock
+
+
+#: A queue of the same name on the same bot that this lock never asked for --
+#: another runs upload's session for the same day.
+FOREIGN = _queue_row("bot_01", start_at="2026-10-01 16:00:00", queue_id=700)
+
+
+def test_two_same_name_queues_at_different_starts_both_match_their_own():
+    text = dump_lock(_two_a_day_lock())
+    live = [
+        _queue_row("bot_01"),
+        _queue_row("bot_01", start_at="2026-10-01 14:00:00", queue_id=502),
+        FOREIGN,
+        _queue_row("bot_02"),
+    ]
+    r = _verify(RunsVerifySession(text, queues=live), text)
+    assert r.differences == [], r.differences
+    assert r.ok
+
+
+def test_one_of_two_same_name_queues_missing_is_a_length_difference():
+    """The foreign queue shares the name, so only the start keeps it from
+    standing in for the one that never landed."""
+    text = dump_lock(_two_a_day_lock())
+    live = [_queue_row("bot_01"), FOREIGN, _queue_row("bot_02")]
+    r = _verify(RunsVerifySession(text, queues=live), text)
+    assert Difference("crawlers.bot_01.queues.length", 2, 1) in r.differences
+    assert not r.ok
