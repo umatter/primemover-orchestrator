@@ -803,6 +803,15 @@ This creates:
 - 25 crawlers with `usage_type: only_searches`
 - 50 crawlers with `usage_type: searches_and_visits`
 
+The counts are exact per factor. Each proportional factor's level sequence is shuffled with
+the design seed, independently of every other factor, so two proportional factors cross at
+random (a stratified random assignment: exact marginals, randomised joint distribution).
+Until 2026-09-16 the expander handed every bot the *first* level with a count remaining of
+each proportional factor, so two such factors were perfectly confounded — bots 1..k carried
+level A of both — with no warning; a lock compiled before that date from a design with two
+or more proportional factors under `total_crawlers` should be recompiled and the assignment
+checked. Factors without proportions are cycled through their full cross, as before.
+
 ### Data Pools with Scoring
 
 Define data pools and select records based on scoring expressions:

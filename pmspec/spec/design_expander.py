@@ -400,23 +400,33 @@ class DesignExpander:
         else:
             factorial_combos = [{}]
 
+        # One level sequence per proportional factor, with the exact counts
+        # above, shuffled with the design seed -- independently per factor.
+        # Until 2026-09-16 each bot took the *first* level with a count
+        # remaining of every proportional factor, so two proportional factors
+        # were perfectly confounded (bots 1..k: level A of both; the rest:
+        # level B of both), deterministically and without a warning. Marginals
+        # are exact; the joint distribution is randomised, as in a stratified
+        # random assignment.
+        level_sequences: dict[str, list[str]] = {}
+        for factor_name, factor in proportion_factors.items():
+            sequence = [
+                level.id
+                for level in factor.levels
+                for _ in range(level_counts[factor_name][level.id])
+            ]
+            self.rng.shuffle(sequence)
+            level_sequences[factor_name] = sequence
+
         # Generate cells with proportional sampling
         cell_index = 0
         replica_counters: dict[str, int] = {}
 
         for _ in range(total_crawlers):
-            # Select factor levels (proportioned ones based on remaining counts)
             factor_values = {}
 
-            # For proportioned factors, select based on remaining counts
-            for factor_name, factor in proportion_factors.items():
-                counts = level_counts[factor_name]
-                # Select a level with remaining count
-                for level in factor.levels:
-                    if counts.get(level.id, 0) > 0:
-                        factor_values[factor_name] = level.id
-                        counts[level.id] -= 1
-                        break
+            for factor_name in proportion_factors:
+                factor_values[factor_name] = level_sequences[factor_name][cell_index]
 
             # For factorial factors, cycle through combinations
             if factorial_combos:
