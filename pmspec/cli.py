@@ -136,13 +136,15 @@ def validate(file: str, format: str, strict: bool, lax: bool, seed: int | None):
         sys.exit(0)
 
     # Parse the YAML first (!file tags resolved), exactly as compile_spec does.
-    raw_spec, yaml_errors = load_spec_raw(content, base_dir=base_dir, seed=seed)
-    if yaml_errors:
+    # A `!file` the loader could not read is an error here too, not a silently
+    # empty list: on the runs path nothing downstream re-reads it.
+    raw_spec, load_errors, load_warnings = load_spec_raw(content, base_dir=base_dir, seed=seed)
+    if raw_spec is None and load_errors:
         if format == "json":
-            click.echo(json.dumps({"valid": False, "errors": yaml_errors, "warnings": []}))
+            click.echo(json.dumps({"valid": False, "errors": load_errors, "warnings": []}))
         else:
             click.secho("Validation FAILED", fg="red", bold=True)
-            for error in yaml_errors:
+            for error in load_errors:
                 click.secho(f"  {error}", fg="red")
         sys.exit(1)
 
@@ -152,11 +154,12 @@ def validate(file: str, format: str, strict: bool, lax: bool, seed: int | None):
     raw_spec, base, runs_errors = prepare_runs_spec(raw_spec, base_dir=base_dir)
     is_runs = isinstance(raw_spec, dict) and "runs_for" in raw_spec
     if is_runs and base is None:
+        prep_errors = load_errors + [e for e in runs_errors if e not in load_errors]
         if format == "json":
-            click.echo(json.dumps({"valid": False, "errors": runs_errors, "warnings": []}))
+            click.echo(json.dumps({"valid": False, "errors": prep_errors, "warnings": []}))
         else:
             click.secho("Validation FAILED", fg="red", bold=True)
-            for error in runs_errors:
+            for error in prep_errors:
                 click.secho(f"  ERROR: {error}", fg="red")
         sys.exit(1)
 
@@ -200,6 +203,7 @@ def validate(file: str, format: str, strict: bool, lax: bool, seed: int | None):
     )
     all_errors, all_warnings = merge_reports(
         [
+            load_errors,
             validation_result.errors,
             parsed.errors,
             result.errors,
@@ -207,7 +211,7 @@ def validate(file: str, format: str, strict: bool, lax: bool, seed: int | None):
             runs_errors,
             name_errors,
         ],
-        [validation_result.warnings, parsed.warnings, result.warnings],
+        [load_warnings, validation_result.warnings, parsed.warnings, result.warnings],
         dropped,
         lax,
     )
@@ -1150,17 +1154,17 @@ def preview(file: str, seed: int | None):
 
     # The same preparation `validate` and `compile` do, so a runs spec previews
     # as what it would compile to rather than as an unnamed spec with no bots.
-    raw_spec, yaml_errors = load_spec_raw(content, base_dir=base_dir, seed=seed)
-    if yaml_errors:
+    raw_spec, load_errors, _load_warnings = load_spec_raw(content, base_dir=base_dir, seed=seed)
+    if raw_spec is None and load_errors:
         click.secho("Parse errors:", fg="red")
-        for error in yaml_errors:
+        for error in load_errors:
             click.secho(f"  {error}", fg="red")
         sys.exit(1)
     raw_spec, base, runs_errors = prepare_runs_spec(raw_spec, base_dir=base_dir)
     is_runs = isinstance(raw_spec, dict) and "runs_for" in raw_spec
     if is_runs and base is None:
         click.secho("Parse errors:", fg="red")
-        for error in runs_errors:
+        for error in load_errors + [e for e in runs_errors if e not in load_errors]:
             click.secho(f"  {error}", fg="red")
         sys.exit(1)
 
@@ -1173,9 +1177,12 @@ def preview(file: str, seed: int | None):
         runs=is_runs,
     )
 
-    if parsed.errors or runs_errors:
+    # `load_errors` first: a `!file` the loader could not read is what every
+    # emptiness below would otherwise be blamed on.
+    preview_errors = merge_reports([load_errors, runs_errors, list(parsed.errors)], [], 0, False)[0]
+    if preview_errors:
         click.secho("Parse errors:", fg="red")
-        for error in runs_errors + list(parsed.errors):
+        for error in preview_errors:
             click.secho(f"  {error}", fg="red")
         sys.exit(1)
 

@@ -921,7 +921,7 @@ design:
     condition:
       levels: [control, treatment]
       maps_to:
-        params.pi: {control: 0, treatment: 1}
+        configuration.params.pi: {control: 0, treatment: 1}
   replications: 5
 crawlers:
   - from_design: true

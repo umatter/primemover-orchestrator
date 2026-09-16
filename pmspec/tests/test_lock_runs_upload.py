@@ -557,3 +557,25 @@ def test_a_session_without_the_method_is_probed_through_put():
     session = RunsSession(preference_update_supported=True)
     assert supports_preference_update(session, session.crawlers[0]["configuration"]) is True
     assert len(session.configuration_puts) == 1
+
+
+def test_a_crawler_without_a_configuration_is_refused_before_the_probe():
+    # A live crawler with no configuration has nothing to update; the probe
+    # would otherwise index `configuration['id']` and raise a bare KeyError.
+    lock = make_runs_lock(updates={"bot_01": {"ideology": "0.31"}})
+    session = RunsSession(preference_update_supported=True)
+    session.crawlers[0]["configuration"] = None
+    with pytest.raises(UploadRefused) as e:
+        upload_lock(dump_lock(lock), session=session, store=None, options=_opts())
+    assert str(e.value) == "crawler 'bot_01' has no configuration to update"
+    assert not [c for c in session.calls if c[0] == "POST_FILE"]
+    assert session.configuration_puts == []
+
+
+def test_a_crawler_without_a_configuration_is_refused_when_its_updates_are_applied():
+    lock = make_runs_lock(updates={"bot_01": {"ideology": "0.31"}, "bot_02": {"ideology": "0.70"}})
+    session = RunsSession(preference_update_supported=True)
+    session.crawlers[1]["configuration"] = None
+    with pytest.raises(UploadRefused) as e:
+        upload_lock(dump_lock(lock), session=session, store=None, options=_opts())
+    assert "crawler 'bot_02' has no configuration to update" in str(e.value)

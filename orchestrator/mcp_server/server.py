@@ -2313,6 +2313,7 @@ def validate_experiment_spec(
     strict: bool = False,
     lax: bool = False,
     files: dict[str, str] | None = None,
+    seed: int | None = None,
 ) -> str:
     """
     Validate a YAML experiment specification, or a lock.
@@ -2322,12 +2323,26 @@ def validate_experiment_spec(
     structurally, semantically, and against the design, reported as
     ``{"valid", "kind": "spec", ...}``.
 
+    A **runs spec** (one carrying ``runs_for: <fleet lock path>``) is validated
+    as a runs spec, against its base fleet lock -- which arrives the way a data
+    pool does: put the fleet lock's *text* in ``files`` under exactly the bare
+    filename ``runs_for:`` names (``{"fleet.lock.yaml": "<lock text>"}``), as
+    ``compile_experiment_spec`` takes it. Without it the validation fails with
+    ``runs_for: cannot read <path>``. This is the same preparation
+    ``pmspec validate`` and ``compile_experiment_spec`` do, so this tool cannot
+    pass a spec the compile would refuse, or refuse one it would accept.
+
     Args:
         yaml_content: YAML spec content, or a lock
         strict: If True, treat warnings as errors (spec only)
         lax: If True, downgrade strict-contract errors (drops) to warnings (spec only)
         files: data-pool files by the bare filename the spec's `source:` names,
-            content as text -- materialised into a temp dir used as base_dir
+            content as text -- materialised into a temp dir used as base_dir;
+            also where a runs spec's base fleet lock goes
+        seed: the seed to validate under; defaults to the spec's own
+            (``design.seed``, or a runs spec's root ``seed:``). `assign:`
+            refuses to draw unseeded, so a spec with assignments and no seed
+            anywhere reports what the compile reports.
 
     Returns:
         JSON with validation results including errors, warnings, and summary
@@ -2353,76 +2368,96 @@ def validate_experiment_spec(
         )
 
     try:
-        import yaml as yaml_lib
-
-        from pmspec.lock.build import merge_reports
-        from pmspec.spec import SpecConverter, SpecParser, SpecValidator
-        from pmspec.spec.file_loader import (
-            create_file_tag_loader,
-            resolve_file_references,
+        from pmspec.lock.build import (
+            load_spec_raw,
+            merge_reports,
+            parse_and_convert,
+            prepare_runs_spec,
         )
+        from pmspec.lock.runs import unknown_name_errors
+        from pmspec.spec import SpecValidator
     except ImportError as e:
         return json.dumps({"error": f"pmspec not available: {e}"})
 
     with _materialise_files(files) as tmp:
         base_dir = Path(tmp)
 
-        # Parse YAML with custom loader
-        # SECURITY: FileTagLoader inherits from yaml.SafeLoader, which prevents
-        # arbitrary code execution. The only custom tag is !file for loading
-        # external data files (CSV/JSON), which are parsed safely.
-        # base_dir anchors relative !file paths and data-pool `source:` files to
-        # the temp dir any `files` were materialised into.
-        FileTagLoader, file_loader = create_file_tag_loader(base_dir=base_dir)
-
-        try:
-            raw_spec = yaml_lib.load(yaml_content, Loader=FileTagLoader)
-            raw_spec = resolve_file_references(raw_spec, file_loader)
-        except yaml_lib.YAMLError as e:
+        # Parse the YAML first (!file tags resolved), exactly as `pmspec
+        # validate` and compile_spec do -- including the `!file` loader's own
+        # errors, which nothing downstream re-reads on the runs path.
+        # SECURITY: the loader behind this inherits from yaml.SafeLoader, which
+        # prevents arbitrary code execution. The only custom tag is !file for
+        # loading external data files (CSV/JSON), which are parsed safely.
+        # base_dir anchors relative !file paths, data-pool `source:` files and a
+        # runs spec's `runs_for:` lock to the temp dir `files` were written to.
+        raw_spec, load_errors, load_warnings = load_spec_raw(
+            yaml_content, base_dir=base_dir, seed=seed
+        )
+        if raw_spec is None and load_errors:
             return json.dumps(
-                {
-                    "valid": False,
-                    "kind": "spec",
-                    "errors": [f"YAML parse error: {e}"],
-                    "warnings": [],
-                }
+                {"valid": False, "kind": "spec", "errors": load_errors, "warnings": []}
+            )
+
+        # A `runs_for:` spec is validated as a runs spec, against its base fleet
+        # lock -- the same preparation compile_spec does, so validate cannot
+        # pass a spec the compile would refuse (or the other way round).
+        raw_spec, base, runs_errors = prepare_runs_spec(raw_spec, base_dir=base_dir)
+        is_runs = isinstance(raw_spec, dict) and "runs_for" in raw_spec
+        if is_runs and base is None:
+            errors = merge_reports([load_errors, runs_errors], [], 0, False)[0]
+            return json.dumps(
+                {"valid": False, "kind": "spec", "errors": errors, "warnings": load_warnings}
             )
 
         # Run validator
-        validator = SpecValidator(base_dir=base_dir, lax=lax)
-        validation_result = validator.validate(raw_spec)
+        validator = SpecValidator(base_dir=base_dir, lax=lax, runs=is_runs)
+        validation_result = validator.validate(raw_spec if isinstance(raw_spec, dict) else {})
 
         # Also parse and convert to catch additional errors. All three
         # components get `lax`, or a parser/converter drop stays an error under
         # lax=True; the validator has already named every unknown workflow
         # item, so the parser does not report it again.
-        parser = SpecParser(base_dir=base_dir, lax=lax, report_unknown_items=False)
-        parsed = parser.parse(yaml_content)
-
-        # Seeded from the spec's own `design.seed` through the helper compile
-        # and `pmspec validate` share, so a spec that compiles cannot be
-        # rejected here for want of a seed (`assign:` refuses to draw
-        # unseeded). With no seed anywhere, this reports what compile reports.
-        # `resolve_times=False`, as `compile_spec` and `pmspec validate` pass
-        # it: a `start_at: {from, jitter}` is drawn after conversion from the
-        # lock's seed, so resolving here would reject a spec
-        # `compile_experiment_spec` accepts. Only `convert_spec_to_json`, which
-        # records no seed, resolves times -- and refuses a jitter.
-        converter = SpecConverter(
-            lax=lax, seed=effective_seed(raw_spec, False), resolve_times=False
+        #
+        # Seeded from the spec's own seed through the helper compile and
+        # `pmspec validate` share, so a spec that compiles cannot be rejected
+        # here for want of a seed (`assign:` refuses to draw unseeded). With no
+        # seed anywhere, this reports what compile reports. `resolve_times=False`,
+        # as `compile_spec` and `pmspec validate` pass it: a `start_at: {from,
+        # jitter}` is drawn after conversion from the lock's seed, so resolving
+        # here would reject a spec `compile_experiment_spec` accepts. Only
+        # `convert_spec_to_json`, which records no seed, resolves times -- and
+        # refuses a jitter.
+        parsed, result = parse_and_convert(
+            yaml_content,
+            base_dir=base_dir,
+            seed=effective_seed(raw_spec, is_runs, seed),
+            lax=lax,
+            resolve_times=False,
+            report_unknown_items=False,
+            raw=raw_spec if is_runs else None,
+            runs=is_runs,
         )
-        result = converter.convert(parsed)
 
     # Combine all errors and warnings: de-duplicated, one drop-count line
     dropped = validation_result.dropped + parsed.dropped + result.dropped
+    # A name with no bot behind it is a session that would go nowhere, judged
+    # on the name that would actually be uploaded.
+    name_errors = (
+        unknown_name_errors([str(c.get("name", "")) for c in result.json_data], base)
+        if base is not None
+        else []
+    )
     all_errors, all_warnings = merge_reports(
         [
+            load_errors,
             validation_result.errors,
             parsed.errors,
             result.errors,
             validator.validate_expanded(result.json_data),
+            runs_errors,
+            name_errors,
         ],
-        [validation_result.warnings, parsed.warnings, result.warnings],
+        [load_warnings, validation_result.warnings, parsed.warnings, result.warnings],
         dropped,
         lax,
     )
@@ -2439,7 +2474,13 @@ def validate_experiment_spec(
             "warnings": all_warnings,
             "dropped": dropped,
             "summary": {
-                "experiment_name": parsed.experiment.get("name", ""),
+                # A runs spec has no experiment of its own: the name is the
+                # base lock's, as `pmspec validate` reports it.
+                "experiment_name": (
+                    base.lock.experiment.get("name", "")
+                    if base is not None
+                    else parsed.experiment.get("name", "")
+                ),
                 "crawler_count": result.crawler_count,
                 "total_jobs": result.total_jobs,
                 "has_design": parsed.design is not None,

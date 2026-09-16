@@ -644,3 +644,77 @@ def test_a_crawler_preference_named_location_does_not_shadow_the_agent(study, tm
     values = base_variables(crawler)
     assert values["location"] == "DE-BE-BERLIN"
     assert values["name"] == "bot"
+
+
+# --- a `!file` the runs path cannot read ------------------------------------
+
+MISSING_FILE_RUNS_SPEC = """
+version: "1.0"
+runs_for: fleet.lock.yaml
+crawlers:
+  - name: bot_control
+    session:
+      start: "2026-10-01T10:00:00"
+      workflow: !file {path: ./missing.yaml}
+"""
+
+STEPS = """
+- visit: https://example.com/a
+- visit: https://example.com/b
+- visit: https://example.com/c
+- visit: https://example.com/d
+"""
+
+DRAWN_WORKFLOW_RUNS_SPEC = """
+version: "1.0"
+runs_for: fleet.lock.yaml
+seed: 42
+crawlers:
+  - name: bot_control
+    session:
+      start: "2026-10-01T10:00:00"
+      workflow: !file {path: ./steps.yaml, select: random, count: 2}
+"""
+
+
+def test_a_missing_file_tag_is_an_error_on_the_runs_path(study):
+    # The runs path parses an already-loaded `raw`, so nothing downstream ever
+    # re-reads the `!file` loader: without the loader's own errors a missing
+    # file compiles to a lock with an empty workflow and says PASSED.
+    result = compile_runs(study, MISSING_FILE_RUNS_SPEC)
+    assert result.lock is None
+    assert [e for e in result.errors if "File not found" in e] == [
+        f"File not found: {study / 'missing.yaml'}"
+    ]
+
+
+def test_a_missing_file_tag_is_reported_once_on_the_fleet_path(tmp_path):
+    # Unchanged behaviour, and the de-duplication that keeps it: the loader and
+    # the parser both name the same missing file, and merge_reports collapses it.
+    from pmspec.lock.build import compile_spec
+
+    text = FLEET_SPEC.replace(
+        "      workflow:\n        - visit: https://example.com\n",
+        "      workflow: !file {path: ./missing.yaml}\n",
+    )
+    result = compile_spec(text, base_dir=tmp_path, spec_path="fleet.yaml", seed=7)
+    assert result.lock is None
+    assert [e for e in result.errors if "File not found" in e] == [
+        f"File not found: {tmp_path / 'missing.yaml'}"
+    ]
+
+
+def test_a_runs_lock_is_byte_identical_when_the_seed_comes_from_the_spec(study):
+    # A `!file {select: random}` draws in the *loader*, which runs before the
+    # spec's own `seed:` has been read. Compiling five times must still yield
+    # one lock, and the same one `--seed 42` yields.
+    (study / "steps.yaml").write_text(STEPS)
+
+    def compiled(seed):
+        result = compile_runs(study, DRAWN_WORKFLOW_RUNS_SPEC, seed=seed)
+        assert result.lock is not None, result.errors
+        return dump_lock(result.lock)
+
+    own_seed = {compiled(None) for _ in range(5)}
+    assert len(own_seed) == 1, "a runs lock is not byte-deterministic from its own seed"
+    assert own_seed == {compiled(42)}

@@ -149,14 +149,27 @@ def parse_and_convert(
     return parsed, converter.convert(parsed)
 
 
-def load_spec_raw(spec_text: str, *, base_dir: Path, seed: int | None) -> tuple[Any, list[str]]:
-    """The raw YAML of a spec, `!file` tags resolved, or the YAML error."""
+def load_spec_raw(
+    spec_text: str, *, base_dir: Path, seed: int | None
+) -> tuple[Any, list[str], list[str]]:
+    """The raw YAML of a spec, `!file` tags resolved.
+
+    Returns ``(raw, errors, warnings)``. The errors are the YAML parse error
+    (with ``raw`` None) *or* whatever the `!file` loader could not do -- a
+    missing file, an unreadable one, a selection larger than the pool. Every
+    caller must merge them into its own report: on the fleet path the parser
+    re-loads the text and names them a second time, but the runs path parses
+    the mapping this function returns and never builds a loader of its own, so
+    a `workflow: !file {path: ./gone.yaml}` would otherwise compile to an empty
+    workflow and validate as PASSED.
+    """
     FileTagLoader, file_loader = create_file_tag_loader(base_dir=base_dir, seed=parser_seed(seed))
     try:
         raw = yaml.load(spec_text, Loader=FileTagLoader)
     except yaml.YAMLError as e:
-        return None, [f"YAML parse error: {e}"]
-    return resolve_file_references(raw, file_loader), []
+        return None, [f"YAML parse error: {e}"], []
+    resolved = resolve_file_references(raw, file_loader)
+    return resolved, list(file_loader.errors), list(file_loader.warnings)
 
 
 def prepare_runs_spec(raw: Any, *, base_dir: Path) -> tuple[Any, BaseLock | None, list[str]]:
@@ -210,9 +223,9 @@ def compile_spec(
     # The raw YAML, fully resolved (!file tags included), is what the strict
     # contract validates -- structurally and semantically, before a single
     # construct has been expanded or converted.
-    raw, yaml_errors = load_spec_raw(spec_text, base_dir=base_dir, seed=seed)
-    if yaml_errors:
-        return CompileResult(None, yaml_errors, [])
+    raw, load_errors, load_warnings = load_spec_raw(spec_text, base_dir=base_dir, seed=seed)
+    if raw is None and load_errors:
+        return CompileResult(None, load_errors, load_warnings)
 
     # A spec naming a fleet lock with `runs_for:` is a *runs* spec: its
     # `from_base:` blocks are expanded against that lock before anything else
@@ -220,7 +233,7 @@ def compile_spec(
     raw, base, runs_errors = prepare_runs_spec(raw, base_dir=base_dir)
     is_runs = isinstance(raw, dict) and "runs_for" in raw
     if is_runs and base is None:
-        return CompileResult(None, runs_errors, [])
+        return CompileResult(None, _merge(load_errors, runs_errors), load_warnings)
 
     validator = SpecValidator(base_dir=base_dir, lax=lax, runs=is_runs)
     validation = validator.validate(raw if isinstance(raw, dict) else {})
@@ -240,8 +253,8 @@ def compile_spec(
     if parsed.errors:
         dropped = validation.dropped + parsed.dropped
         errors, warnings = merge_reports(
-            [validation.errors, parsed.errors],
-            [validation.warnings, parsed.warnings],
+            [load_errors, validation.errors, parsed.errors],
+            [load_warnings, validation.warnings, parsed.warnings],
             dropped,
             lax,
         )
@@ -256,8 +269,8 @@ def compile_spec(
         dropped = validation.dropped + parsed.dropped
         key = "seed" if is_runs else "design.seed"
         errors, warnings = merge_reports(
-            [validation.errors, [f"{key}: must be an integer, got {declared_seed!r}"]],
-            [validation.warnings, parsed.warnings],
+            [load_errors, validation.errors, [f"{key}: must be an integer, got {declared_seed!r}"]],
+            [load_warnings, validation.warnings, parsed.warnings],
             dropped,
             lax,
         )
@@ -272,8 +285,8 @@ def compile_spec(
             else "no seed: pass --seed N or set design.seed; a lock is never unseeded"
         )
         errors, warnings = merge_reports(
-            [validation.errors, [no_seed]],
-            [validation.warnings, parsed.warnings],
+            [load_errors, validation.errors, [no_seed]],
+            [load_warnings, validation.warnings, parsed.warnings],
             dropped,
             lax,
         )
@@ -281,6 +294,20 @@ def compile_spec(
     if seed is None:
         # The spec's own seed only: redo both streams from it, so the pool
         # draws are seeded from the same number the lock records.
+        if is_runs:
+            # The runs path parses the mapping loaded above, and that load ran
+            # under the *flag* -- None here -- so a `!file {select: random}`
+            # drew from an unseeded Random and the lock's bytes moved every
+            # compile. Reload and re-expand under the spec's own seed; the
+            # fleet branch reaches the same place by re-reading `spec_text`.
+            raw, reload_errors, reload_warnings = load_spec_raw(
+                spec_text, base_dir=base_dir, seed=run_seed
+            )
+            raw, base, reload_runs_errors = prepare_runs_spec(raw, base_dir=base_dir)
+            load_errors = _merge(load_errors, reload_errors, reload_runs_errors)
+            load_warnings = _merge(load_warnings, reload_warnings)
+            if base is None:
+                return CompileResult(None, load_errors, load_warnings)
         parsed, result = parse_and_convert(
             spec_text,
             base_dir=base_dir,
@@ -306,6 +333,7 @@ def compile_spec(
     )
     errors, warnings = merge_reports(
         [
+            load_errors,
             validation.errors,
             parsed.errors,
             result.errors,
@@ -313,7 +341,7 @@ def compile_spec(
             runs_errors,
             name_errors,
         ],
-        [validation.warnings, parsed.warnings, result.warnings],
+        [load_warnings, validation.warnings, parsed.warnings, result.warnings],
         dropped,
         lax,
     )

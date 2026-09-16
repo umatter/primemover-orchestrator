@@ -536,3 +536,43 @@ def test_a_blank_pool_cell_substitutes_as_an_empty_string(spec_dir):
     r = _convert(spec_dir, text)
     assert r.errors == [], r.errors
     assert _preference(r.json_data[0], "comscore_person_id") == "zip=[]"
+
+
+# --- an assigned value in `defaults.proxy` ---------------------------------
+
+ASSIGNED_ENDPOINTS = """person_id,host,port
+510121845,gate1.example.com,7001
+510121846,gate2.example.com,7002
+"""
+
+DEFAULTS_PROXY_SPEC = """
+version: "1.0"
+experiment:
+  name: Assign defaults proxy
+data_pools:
+  endpoints:
+    type: csv
+    source: assigned_endpoints.csv
+defaults:
+  proxy:
+    hostname: "{endpoint.host}"
+    port: "{endpoint.port}"
+crawlers:
+  - name: "bot_{endpoint.person_id}"
+    agent: {location: US-IL-CHICAGO}
+    assign:
+      endpoint: {from_pool: endpoints, select: first}
+    session: {start: "+1m", workflow: [{wait: 1s}]}
+"""
+
+
+def test_an_assigned_value_in_defaults_proxy_resolves_per_crawler(tmp_path: Path):
+    # `defaults.proxy` is inherited by a crawler that declares none, so a
+    # `{name.column}` in it is the crawler's own assignment -- which means the
+    # inheritance has to happen before the assignments are resolved.
+    (tmp_path / "assigned_endpoints.csv").write_text(ASSIGNED_ENDPOINTS)
+    result = _convert(tmp_path, DEFAULTS_PROXY_SPEC)
+    assert result.errors == []
+    proxy = result.json_data[0]["proxy"]
+    assert proxy["hostname"] == "gate1.example.com"
+    assert proxy["port"] == 7001

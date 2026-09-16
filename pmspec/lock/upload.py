@@ -393,7 +393,13 @@ def _prepare_runs(lock: Lock, *, session: Any, options: UploadOptions) -> _RunsC
     # would silently drop the values must refuse the whole upload, not half-do it.
     pref_update_supported: bool | None = None
     if any(_crawler_updates(c) for c in lock.crawlers):
-        first = by_name[str(lock.crawlers[0]["name"])].get("configuration") or {}
+        probe_name = str(lock.crawlers[0]["name"])
+        first = by_name[probe_name].get("configuration") or {}
+        # A live crawler can come back without one (an interrupted create, an
+        # API that did not load the relation): a refusal names what is missing,
+        # where indexing `['id']` would only report a KeyError.
+        if "id" not in first:
+            raise UploadRefused(f"crawler '{probe_name}' has no configuration to update")
         pref_update_supported = supports_preference_update(session, first)
         if not pref_update_supported:
             raise UploadRefused(NO_PREFERENCE_SYNC)
@@ -486,6 +492,8 @@ def _apply_crawler(
     wanted = _crawler_updates(crawler)
     if wanted:
         config = live_crawler.get("configuration") or {}
+        if "id" not in config:
+            raise UploadRefused(f"crawler '{name}' has no configuration to update")
         old = {str(p.get("name")): p.get("value") for p in (config.get("preferences") or [])}
         session.put(
             f"configurations/{config['id']}",

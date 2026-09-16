@@ -213,3 +213,16 @@ def test_validate_refuses_a_fleet_spec_with_no_experiment(tmp_path: Path):
     out = CliRunner().invoke(cli, ["validate", str(spec)])
     assert out.exit_code == 1
     assert "experiment.name is required" in out.output
+
+
+def test_validate_of_a_runs_spec_reports_a_missing_file_tag(tmp_path: Path):
+    day = _fleet_and_runs(tmp_path)
+    day.write_text(
+        RUNS.replace(
+            "      workflow:\n        - visit: https://example.com/day1\n",
+            "      workflow: !file {path: ./missing.yaml}\n",
+        )
+    )
+    out = CliRunner().invoke(cli, ["validate", str(day), "--seed", "2"])
+    assert out.exit_code == 1, out.output
+    assert "FAILED" in out.output and "File not found" in out.output

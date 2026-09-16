@@ -225,6 +225,23 @@ class SpecConverter:
             else:
                 all_crawlers.append(crawler_template)
 
+        # A crawler without its own proxy block inherits `defaults.proxy`. Copy it
+        # onto the crawler *before* the substitution passes and pool assignment
+        # below: before assignment, or a pooled default (`defaults: {proxy:
+        # {from_pool: true, ...}}`) reaches _convert_proxy as a raw dict with no
+        # hostname and every bot silently compiles to the 127.0.0.1:8080
+        # placeholder; before `resolve_assignments`, or an assigned value in the
+        # default (`hostname: "{endpoint.host}"`) is copied on after the only
+        # pass that could have resolved it and reaches the bot as the literal
+        # token. Non-dict defaults ("none"/"auto") keep the fallback in
+        # _convert_crawler.
+        default_proxy = parsed.defaults.get("proxy")
+        if isinstance(default_proxy, dict):
+            all_crawlers = [
+                {**c, "proxy": copy.deepcopy(default_proxy)} if c.get("proxy") is None else c
+                for c in all_crawlers
+            ]
+
         # Give each `assign:` entry its row of a pool and substitute the row's
         # columns as `{<name>.<column>}` throughout the crawler. First of the
         # substitution passes on purpose: an assigned value may be what a pool
@@ -266,19 +283,6 @@ class SpecConverter:
         # resolve is left in place; `_scan_unresolved` below reports it as a
         # drop, so it can never reach a lock.
         self.errors.extend(resolve_draws(all_crawlers, parsed.pool_manager, effective_seed))
-
-        # A crawler without its own proxy block inherits `defaults.proxy`. Copy it
-        # onto the crawler *before* pool assignment, or a pooled default
-        # (`defaults: {proxy: {from_pool: true, ...}}`) reaches _convert_proxy as
-        # a raw dict with no hostname and every bot silently compiles to the
-        # 127.0.0.1:8080 placeholder. Non-dict defaults ("none"/"auto") keep the
-        # fallback in _convert_crawler.
-        default_proxy = parsed.defaults.get("proxy")
-        if isinstance(default_proxy, dict):
-            all_crawlers = [
-                {**c, "proxy": copy.deepcopy(default_proxy)} if c.get("proxy") is None else c
-                for c in all_crawlers
-            ]
 
         # Assign one pool row per `proxy: {from_pool: true}` crawler now that
         # design expansion and pool-reference resolution have fixed each

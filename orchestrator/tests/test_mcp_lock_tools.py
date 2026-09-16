@@ -452,3 +452,39 @@ def test_convert_spec_to_json_still_refuses_a_jitter():
     reproduced from its output -- it resolves times, and refuses."""
     out = json.loads(s.convert_spec_to_json(JITTER_SPEC))
     assert any("start_at jitter needs a seed" in e for e in out["errors"]), out
+
+
+def test_validate_a_runs_spec_with_the_base_lock_passed_as_a_file(tmp_path):
+    """Validation mirrors `pmspec validate`: a runs spec is prepared against its
+    base lock, which arrives in `files=` exactly as it does for a compile."""
+    out = json.loads(
+        s.validate_experiment_spec(RUNS_SPEC, files={"fleet.lock.yaml": _fleet_lock_text(tmp_path)})
+    )
+    assert out["valid"] is True, out
+    assert out["errors"] == []
+    assert out["summary"]["crawler_count"] == 2
+
+
+def test_validate_of_a_runs_spec_reports_a_name_the_base_does_not_have(tmp_path):
+    out = json.loads(
+        s.validate_experiment_spec(
+            RUNS_SPEC.replace("bot_control", "bot_ghost"),
+            files={"fleet.lock.yaml": _fleet_lock_text(tmp_path)},
+        )
+    )
+    assert out["valid"] is False
+    assert any(
+        "runs spec names crawler 'bot_ghost' which the base lock does not have" in e
+        for e in out["errors"]
+    ), out
+
+
+def test_validate_of_a_runs_spec_without_its_base_names_the_file_it_cannot_read():
+    out = json.loads(s.validate_experiment_spec(RUNS_SPEC))
+    assert out["valid"] is False
+    assert any("runs_for: cannot read fleet.lock.yaml" in e for e in out["errors"]), out
+
+
+def test_the_validate_docstring_says_where_a_runs_spec_base_lock_goes():
+    doc = s.validate_experiment_spec.__doc__ or ""
+    assert "runs_for" in doc and "files" in doc

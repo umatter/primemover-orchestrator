@@ -63,17 +63,3 @@ def substitute_named(text: str, prefix: str, values: dict[str, Any]) -> str:
             raise NamedFormatError(match.group(0), column, value, str(e)) from e
 
     return NAMED_RE.sub(replace, text)
-
-
-def substitute_named_in(node: Any, prefix: str, values: dict[str, Any]) -> Any:
-    """``substitute_named`` over every string in a nested structure.
-
-    Dict *keys* are left alone: every placeholder this serves sits in a value.
-    """
-    if isinstance(node, str):
-        return substitute_named(node, prefix, values)
-    if isinstance(node, dict):
-        return {k: substitute_named_in(v, prefix, values) for k, v in node.items()}
-    if isinstance(node, list):
-        return [substitute_named_in(v, prefix, values) for v in node]
-    return node

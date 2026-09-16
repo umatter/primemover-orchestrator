@@ -73,12 +73,14 @@ class SummaryGenerator:
         # base lock loaded, `from_base:` expanded -- or a summary of one would
         # be an unnamed experiment with no crawlers, which is a report about
         # this function rather than about the spec.
-        raw, raw_errors = build.load_spec_raw(
+        raw, raw_errors, raw_warnings = build.load_spec_raw(
             yaml_content, base_dir=base_dir or Path.cwd(), seed=seed
         )
         base = None
+        # The `!file` loader's own errors count: on the runs path below, `raw`
+        # is what gets parsed, so nothing else would ever name a missing file.
         runs_errors: list[str] = list(raw_errors)
-        if not raw_errors:
+        if raw is not None:
             raw, base, prep_errors = build.prepare_runs_spec(raw, base_dir=base_dir or Path.cwd())
             runs_errors.extend(prep_errors)
         is_runs = isinstance(raw, dict) and "runs_for" in raw
@@ -113,8 +115,10 @@ class SummaryGenerator:
             defaults=parsed.defaults,
             template_names=list(parsed.templates.keys()),
             data_pool_names=list(parsed.data_pools.keys()),
-            errors=runs_errors + list(parsed.errors) + list(result.errors),
-            warnings=list(parsed.warnings) + list(result.warnings),
+            errors=list(dict.fromkeys(runs_errors + list(parsed.errors) + list(result.errors))),
+            warnings=list(
+                dict.fromkeys(raw_warnings + list(parsed.warnings) + list(result.warnings))
+            ),
             is_valid=not runs_errors and not parsed.errors and not result.errors,
         )
 
