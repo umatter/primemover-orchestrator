@@ -69,25 +69,49 @@ class SummaryGenerator:
 
         seed = seed if seed is not None else self.seed
 
+        # A `runs_for:` spec is prepared exactly as compile_spec prepares it --
+        # base lock loaded, `from_base:` expanded -- or a summary of one would
+        # be an unnamed experiment with no crawlers, which is a report about
+        # this function rather than about the spec.
+        raw, raw_errors = build.load_spec_raw(
+            yaml_content, base_dir=base_dir or Path.cwd(), seed=seed
+        )
+        base = None
+        runs_errors: list[str] = list(raw_errors)
+        if not raw_errors:
+            raw, base, prep_errors = build.prepare_runs_spec(raw, base_dir=base_dir or Path.cwd())
+            runs_errors.extend(prep_errors)
+        is_runs = isinstance(raw, dict) and "runs_for" in raw
+        if is_runs and base is None:
+            is_runs = False  # nothing to prepare against; the errors say why
+
         # Parse and convert through the one seed helper compile_spec uses: an
-        # explicit seed wins over design.seed, the parser's pool stream is
-        # seed + 1 and the converter's design stream is seed, so the round-trip
-        # (spec -> lock -> summary == spec -> summary) draws the same rows.
-        parsed, result = build.parse_and_convert(yaml_content, base_dir=base_dir, seed=seed)
+        # explicit seed wins over the spec's own seed, the parser's pool stream
+        # is seed + 1 and the converter's design stream is seed, so the
+        # round-trip (spec -> lock -> summary == spec -> summary) draws the
+        # same rows.
+        parsed, result = build.parse_and_convert(
+            yaml_content,
+            base_dir=base_dir,
+            seed=seed if seed is not None else (raw.get("seed") if is_runs else None),
+            raw=raw if is_runs else None,
+            runs=is_runs,
+        )
 
         # Build summary from parsed spec and conversion result
+        experiment = base.lock.experiment if base is not None else parsed.experiment
         summary = ExperimentSummary(
             source=DataSource.YAML_SPEC,
             source_timestamp=datetime.now(),
-            name=parsed.experiment.get("name", "Unnamed Experiment"),
-            description=parsed.experiment.get("description", ""),
+            name=experiment.get("name") or "Unnamed Experiment",
+            description=experiment.get("description", ""),
             version=parsed.version,
             defaults=parsed.defaults,
             template_names=list(parsed.templates.keys()),
             data_pool_names=list(parsed.data_pools.keys()),
-            errors=list(parsed.errors) + list(result.errors),
+            errors=runs_errors + list(parsed.errors) + list(result.errors),
             warnings=list(parsed.warnings) + list(result.warnings),
-            is_valid=len(parsed.errors) == 0 and len(result.errors) == 0,
+            is_valid=not runs_errors and not parsed.errors and not result.errors,
         )
 
         # Extract design information

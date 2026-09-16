@@ -22,6 +22,22 @@ from typing import Any
 NAMED_RE = re.compile(r"\{(?P<prefix>[A-Za-z_]\w*)\.(?P<col>[A-Za-z_][\w-]*)(?::(?P<fmt>[^}]+))?\}")
 
 
+class NamedFormatError(ValueError):
+    """A format spec the substituted value cannot satisfy (`{base.arm:.2f}` on a
+    string level id).
+
+    Carries the token and the offending value so a caller expanding one block
+    over many rows can group the failures into one message instead of repeating
+    the same mistake once per row.
+    """
+
+    def __init__(self, token: str, column: str, value: Any, reason: str) -> None:
+        super().__init__(f"{token}: cannot format {value!r} ({reason})")
+        self.token = token
+        self.column = column
+        self.value = value
+
+
 def substitute_named(text: str, prefix: str, values: dict[str, Any]) -> str:
     """Replace every ``{<prefix>.<col>}`` / ``{<prefix>.<col>:<fmt>}`` in *text*.
 
@@ -44,7 +60,7 @@ def substitute_named(text: str, prefix: str, values: dict[str, Any]) -> str:
         try:
             return format(value, fmt)
         except (ValueError, TypeError) as e:
-            raise ValueError(f"{{{prefix}.{column}:{fmt}}}: cannot format {value!r} ({e})") from e
+            raise NamedFormatError(match.group(0), column, value, str(e)) from e
 
     return NAMED_RE.sub(replace, text)
 

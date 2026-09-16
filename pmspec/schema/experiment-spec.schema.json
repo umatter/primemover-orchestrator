@@ -44,6 +44,10 @@
       "type": "string",
       "description": "Path to the fleet lock this spec adds sessions to, relative to the spec. Its presence makes this a runs spec: no design, no experiment, and no agent/proxy/configuration on a crawler."
     },
+    "seed": {
+      "type": "integer",
+      "description": "Runs spec only: the seed every draw derives from, when --seed is not passed (a runs spec has no design: block to hold design.seed). Never inherited from the base lock."
+    },
     "strategy_schemas": {
       "type": "object",
       "description": "Per-strategy JSON Schema for a lambda_select job's treatment block: an inline schema, or a path resolved against the spec's directory",

@@ -154,3 +154,31 @@ def test_a_runs_lock_against_a_fleet_lock_is_refused():
     with pytest.raises(LockError) as exc:
         diff_locks(dump_lock(make_runs_lock()), dump_lock(make_lock()))
     assert exc.value.errors == ["cannot diff a runs lock against a fleet lock"]
+
+
+def test_the_base_binding_is_shown_and_a_mismatch_is_not_identical():
+    from .test_lock_runs import make_runs_lock
+
+    a = make_runs_lock()
+    b = make_runs_lock()
+    b.provenance.base_lock_sha256 = "ef" * 32
+    d = diff_locks(dump_lock(a), dump_lock(b))
+    assert not d.identical and d.base_changed
+    text = d.render()
+    assert "base_lock_sha256:" in text
+    assert f"base: {'cd' * 6} vs {'ef' * 6}" in text
+
+
+def test_two_fleet_locks_say_nothing_about_a_base():
+    text = dump_lock(make_lock())
+    rendered = diff_locks(text, text).render()
+    assert "base_lock_sha256" not in rendered and "base_spec_path" not in rendered
+
+
+def test_a_changed_base_spec_path_is_shown():
+    from .test_lock_runs import make_runs_lock
+
+    a = make_runs_lock()
+    b = make_runs_lock()
+    b.provenance.base_spec_path = "design/other.yaml"
+    assert "base_spec_path" in diff_locks(dump_lock(a), dump_lock(b)).render()

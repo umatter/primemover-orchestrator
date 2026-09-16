@@ -127,8 +127,13 @@ def prepare_runs_spec(raw: Any, *, base_dir: Path) -> tuple[Any, BaseLock | None
     disagree about what a runs spec is."""
     if not isinstance(raw, dict) or "runs_for" not in raw:
         return raw, None, []
+    runs_for = raw["runs_for"]
+    if not isinstance(runs_for, str) or not runs_for.strip():
+        # `str(None)` is the string "None", which would go on to be reported as
+        # a missing file called None -- an answer about the wrong question.
+        return raw, None, ["runs_for: a fleet lock path is required"]
     try:
-        base = load_base(base_dir, str(raw["runs_for"]))
+        base = load_base(base_dir, runs_for)
     except LockError as e:
         return raw, None, list(e.errors)
     expanded, errors = expand_from_base(raw, base)
@@ -200,22 +205,43 @@ def compile_spec(
         )
         return CompileResult(None, errors, warnings, dropped)
 
-    effective_seed = seed if seed is not None else (parsed.design or {}).get("seed")
+    # A runs spec has no `design:` block to hold `design.seed` (it is refused),
+    # so its seed is a root `seed:` key. Never the base lock's: that number
+    # drew the randomization, and a runs lock's draws are a different question.
+    spec_seed = (
+        raw.get("seed") if is_runs and isinstance(raw, dict) else (parsed.design or {}).get("seed")
+    )
+    if spec_seed is not None and (isinstance(spec_seed, bool) or not isinstance(spec_seed, int)):
+        # Caught before the re-parse below, which would otherwise fail on
+        # `parser_seed("later")` with a TypeError instead of a message.
+        dropped = validation.dropped + parsed.dropped
+        key = "seed" if is_runs else "design.seed"
+        errors, warnings = merge_reports(
+            [validation.errors, [f"{key}: must be an integer, got {spec_seed!r}"]],
+            [validation.warnings, parsed.warnings],
+            dropped,
+            lax,
+        )
+        return CompileResult(None, errors, warnings, dropped)
+    effective_seed = seed if seed is not None else spec_seed
     if effective_seed is None:
         dropped = validation.dropped + parsed.dropped
+        no_seed = (
+            "no seed: pass --seed N or set a root seed: in the runs spec; "
+            "a lock is never unseeded"
+            if is_runs
+            else "no seed: pass --seed N or set design.seed; a lock is never unseeded"
+        )
         errors, warnings = merge_reports(
-            [
-                validation.errors,
-                ["no seed: pass --seed N or set design.seed; a lock is never unseeded"],
-            ],
+            [validation.errors, [no_seed]],
             [validation.warnings, parsed.warnings],
             dropped,
             lax,
         )
         return CompileResult(None, errors, warnings, dropped)
     if seed is None:
-        # design.seed only: redo both streams from it, so the pool draws are
-        # seeded from the same number the lock records.
+        # The spec's own seed only: redo both streams from it, so the pool
+        # draws are seeded from the same number the lock records.
         parsed, result = parse_and_convert(
             spec_text,
             base_dir=base_dir,

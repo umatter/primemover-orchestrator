@@ -14,7 +14,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from pmspec.spec.substitute import substitute_named_in
+from pmspec.spec.substitute import NamedFormatError, substitute_named
 
 from .io import load_lock, sha256_text
 from .model import Lock, LockError
@@ -42,6 +42,8 @@ def load_base(base_dir: Path, runs_for: str) -> BaseLock:
     runs lock -- a runs lock is bound to exactly one base, and chaining them
     would make "which fleet was this bot randomized into" unanswerable.
     """
+    if not runs_for or not str(runs_for).strip():
+        raise LockError(["runs_for: a fleet lock path is required"])
     path = Path(runs_for)
     if not path.is_absolute():
         path = base_dir / path
@@ -69,11 +71,46 @@ def base_variables(crawler: dict[str, Any]) -> dict[str, str]:
     for preference in (crawler.get("configuration") or {}).get("preferences") or []:
         if isinstance(preference, dict) and preference.get("name") is not None:
             values[str(preference["name"])] = str(preference.get("value", ""))
-    # After the preferences, not before: a fleet lock also carries a `location`
-    # *preference*, and `{base.location}` means the agent's location.
+    # Written after the preferences, so the crawler's own name and its agent's
+    # location win over any preference of the same name. Both cases are real: a
+    # fleet lock always carries a `location` *preference* (the parser adds one
+    # from `defaults.location`), and a study is free to name a preference
+    # `name`. `{base.name}` and `{base.location}` mean the bot's identity and
+    # the bot's geography -- what a runs spec is actually addressing -- and a
+    # preference that shadowed either would make them mean something else on
+    # some fleets and not others.
     values["name"] = str(crawler.get("name", ""))
     values["location"] = str((crawler.get("agent") or {}).get("location", ""))
     return values
+
+
+def _substitute_block(
+    node: Any,
+    values: dict[str, str],
+    path: str,
+    failures: dict[tuple[str, str], list[NamedFormatError]],
+) -> Any:
+    """``substitute_named`` over a crawler block, recording where each format
+    failure happened rather than raising on the first one.
+
+    The path is what makes the collapsed message useful: one bad token in a
+    block expanded over 500 bots is one mistake in one field, and saying so
+    once (with the count) beats 500 lines that differ only in a value.
+    """
+    if isinstance(node, str):
+        try:
+            return substitute_named(node, "base", values)
+        except NamedFormatError as e:
+            failures.setdefault((path, e.token), []).append(e)
+            return node
+    if isinstance(node, dict):
+        return {
+            k: _substitute_block(v, values, f"{path}.{k}" if path else str(k), failures)
+            for k, v in node.items()
+        }
+    if isinstance(node, list):
+        return [_substitute_block(v, values, f"{path}[{i}]", failures) for i, v in enumerate(node)]
+    return node
 
 
 def expand_from_base(raw: dict[str, Any], base: BaseLock) -> tuple[dict[str, Any], list[str]]:
@@ -99,12 +136,15 @@ def expand_from_base(raw: dict[str, Any], base: BaseLock) -> tuple[dict[str, Any
             expanded.append(crawler)
             continue
         template = {k: v for k, v in crawler.items() if k != "from_base"}
+        failures: dict[tuple[str, str], list[NamedFormatError]] = {}
         for base_crawler in base.lock.crawlers:
             values = base_variables(base_crawler)
-            try:
-                expanded.append(substitute_named_in(template, "base", values))
-            except ValueError as e:
-                errors.append(f"crawler[{i}] (from_base '{values['name']}'): {e}")
+            expanded.append(_substitute_block(template, values, "", failures))
+        for (path, token), failed in failures.items():
+            errors.append(
+                f"crawler[{i}].{path}: {token} cannot be formatted from the base value "
+                f"({len(failed)} crawler(s); e.g. {failed[0].value!r})"
+            )
     return {**raw, "crawlers": expanded}, errors
 
 

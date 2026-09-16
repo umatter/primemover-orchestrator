@@ -156,6 +156,7 @@ class SpecValidator:
         {
             "version",
             "runs_for",
+            "seed",
             "defaults",
             "templates",
             "data_pools",
@@ -163,11 +164,15 @@ class SpecValidator:
             "crawlers",
         }
     )
+    # No `description`: a runs lock carries name, queues and updates and
+    # nothing else, so a description written here would be accepted and then
+    # discarded -- exactly the silent loss the strict contract exists to end.
+    # It is an unknown-key drop, and a session's own `description:` is where a
+    # per-session note belongs.
     _KEYS_CRAWLER_RUNS: frozenset[str] = frozenset(
         {
             "from_base",
             "name",
-            "description",
             "session",
             "additional_sessions",
             "queues",
@@ -683,6 +688,14 @@ class SpecValidator:
         for key, why in self._RUNS_ROOT_REFUSALS.items():
             if key in spec:
                 errors.append(f"{key}: {why}")
+
+        # `design.seed` has nowhere to live in a runs spec (`design:` is
+        # refused), so the seed it draws waits and pool rows from is a root
+        # key. It is never inherited from the base lock: the base's seed
+        # belongs to the randomization, and reusing it would make two
+        # different questions share one number.
+        if "seed" in spec and (isinstance(spec["seed"], bool) or not isinstance(spec["seed"], int)):
+            errors.append(f"seed: must be an integer, got {spec['seed']!r}")
 
         defaults = spec.get("defaults")
         if isinstance(defaults, dict):

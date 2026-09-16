@@ -226,6 +226,14 @@ def build_schema() -> dict[str, Any]:
             "items": {"$ref": "#/definitions/crawler"},
             "minItems": 1,
         },
+        "seed": {
+            "type": "integer",
+            "description": (
+                "Runs spec only: the seed every draw derives from, when --seed is not passed "
+                "(a runs spec has no design: block to hold design.seed). Never inherited from "
+                "the base lock."
+            ),
+        },
         "runs_for": {
             "type": "string",
             "description": (

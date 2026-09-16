@@ -186,3 +186,30 @@ def test_diff_refuses_a_runs_lock_against_a_fleet_lock(tmp_path: Path):
     )
     assert out.exit_code == 1
     assert "cannot diff a runs lock against a fleet lock" in out.output
+
+
+def test_preview_on_a_runs_spec_counts_crawlers_and_queues(tmp_path: Path):
+    day = _fleet_and_runs(tmp_path)
+    out = CliRunner().invoke(cli, ["preview", str(day), "--seed", "2"])
+    assert out.exit_code == 0, out.output
+    assert "Runs spec for Fleet CLI (base " in out.output
+    assert "Crawlers:    1" in out.output
+    assert "Queues:      1" in out.output
+    assert "Jobs:        1" in out.output
+
+
+def test_summary_on_a_runs_spec_names_the_base_experiment(tmp_path: Path):
+    day = _fleet_and_runs(tmp_path)
+    out = CliRunner().invoke(cli, ["summary", str(day), "--seed", "2"])
+    assert out.exit_code == 0, out.output
+    assert "Unnamed Experiment" not in out.output
+    assert "Fleet CLI" in out.output
+    assert "0 crawlers" not in out.output.lower()
+
+
+def test_validate_refuses_a_fleet_spec_with_no_experiment(tmp_path: Path):
+    spec = tmp_path / "no_exp.yaml"
+    spec.write_text(SPEC.replace("experiment:\n  name: CLI\n", ""))
+    out = CliRunner().invoke(cli, ["validate", str(spec)])
+    assert out.exit_code == 1
+    assert "experiment.name is required" in out.output

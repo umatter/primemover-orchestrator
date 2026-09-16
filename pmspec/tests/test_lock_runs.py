@@ -339,8 +339,8 @@ templates:
 crawlers:
   - from_base: true
     name: "{base.name}"
-    description: "{base.name} in {base.location}"
     session:
+      name: "{base.name} in {base.location}"
       start: "2026-10-01T10:00:00"
       workflow:
         - template: day
@@ -538,3 +538,109 @@ def test_a_bad_format_spec_on_a_base_variable_is_an_error(study):
     result = compile_runs(study, text)
     assert result.lock is None
     assert any("base.arm" in e and "format" in e for e in result.errors)
+
+
+# --- the seed a runs spec carries ------------------------------------------
+
+
+def test_a_root_seed_compiles_without_the_flag(study):
+    # A runs spec has no `design:` block to hold `design.seed` -- `design:` is
+    # refused -- so the seed it draws from is a root key.
+    text = RUNS_SPEC.replace("runs_for: fleet.lock.yaml", "runs_for: fleet.lock.yaml\nseed: 42")
+    result = compile_runs(study, text, seed=None)
+    assert result.errors == []
+    assert result.lock.provenance.seed == 42
+
+
+def test_the_flag_overrides_a_root_seed(study):
+    text = RUNS_SPEC.replace("runs_for: fleet.lock.yaml", "runs_for: fleet.lock.yaml\nseed: 42")
+    assert compile_runs(study, text, seed=7).lock.provenance.seed == 7
+
+
+def test_the_base_lock_seed_is_never_inherited(study):
+    # The base compiled with seed 7; a runs spec with neither flag nor root
+    # seed is unseeded, not seeded from the randomization it appends to.
+    result = compile_runs(study, RUNS_SPEC, seed=None)
+    assert result.lock is None
+    assert [
+        "no seed: pass --seed N or set a root seed: in the runs spec; a lock is never unseeded"
+    ] == [e for e in result.errors if "no seed" in e]
+
+
+def test_a_non_integer_root_seed_is_an_error(study):
+    text = RUNS_SPEC.replace("runs_for: fleet.lock.yaml", "runs_for: fleet.lock.yaml\nseed: later")
+    result = compile_runs(study, text, seed=None)
+    assert result.lock is None
+    assert any(e.startswith("seed: must be an integer") for e in result.errors)
+
+
+def test_a_fleet_spec_still_reads_design_seed(tmp_path):
+    from pmspec.lock.build import compile_spec
+
+    text = FLEET_SPEC.replace("design:\n", "design:\n  seed: 3\n")
+    result = compile_spec(text, base_dir=tmp_path, spec_path="s.yaml", seed=None)
+    assert result.lock is not None and result.lock.provenance.seed == 3
+
+
+def test_an_empty_runs_for_says_a_path_is_required(study):
+    result = compile_runs(study, RUNS_SPEC.replace("runs_for: fleet.lock.yaml", "runs_for:"))
+    assert result.lock is None
+    assert result.errors == ["runs_for: a fleet lock path is required"]
+
+
+# --- what a runs crawler may not carry (continued) --------------------------
+
+
+def test_description_on_a_runs_crawler_is_a_drop(study):
+    # A runs lock carries name, queues and updates: a crawler description here
+    # would be accepted and then discarded.
+    text = RUNS_SPEC.replace(
+        "  - name: bot_control\n", '  - name: bot_control\n    description: "day one"\n'
+    )
+    result = compile_runs(study, text)
+    assert result.lock is None
+    assert any("crawler[0].description" in e and "unknown key" in e for e in result.errors)
+
+
+def test_a_session_description_is_still_read(study):
+    text = RUNS_SPEC.replace(
+        '      start: "2026-10-01T10:00:00"\n',
+        '      start: "2026-10-01T10:00:00"\n      description: "day one"\n',
+        1,
+    )
+    result = compile_runs(study, text)
+    assert result.errors == []
+    assert result.lock.crawlers[0]["queues"][0]["description"] == "day one"
+
+
+def test_one_bad_format_spec_is_one_error_naming_the_field_and_the_count(study):
+    text = FROM_BASE_SPEC.replace("{base.arm}", "{base.arm:.2f}")
+    result = compile_runs(study, text)
+    assert result.lock is None
+    # One message for the field, not one per base crawler. (The token is left
+    # in place, so the converter's unresolved scan names it too -- a different
+    # pass reporting a different fact about the same mistake.)
+    format_errors = [e for e in result.errors if "cannot be formatted" in e]
+    assert len(format_errors) == 1, result.errors
+    assert format_errors[0].startswith("crawler[0].session.workflow[0].with.arm:")
+    assert "{base.arm:.2f}" in format_errors[0] and "2 crawler(s)" in format_errors[0]
+
+
+def test_a_crawler_preference_named_location_does_not_shadow_the_agent(study, tmp_path):
+    # `{base.location}` means the bot's geography (the agent's), which a
+    # preference of the same name must not redefine.
+    from pmspec.lock.runs import base_variables
+
+    crawler = {
+        "name": "bot",
+        "agent": {"location": "DE-BE-BERLIN"},
+        "configuration": {
+            "preferences": [
+                {"name": "location", "value": "US-IL-CHICAGO"},
+                {"name": "name", "value": "not the crawler"},
+            ]
+        },
+    }
+    values = base_variables(crawler)
+    assert values["location"] == "DE-BE-BERLIN"
+    assert values["name"] == "bot"

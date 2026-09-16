@@ -1074,13 +1074,46 @@ def preview(file: str, seed: int | None):
         click.echo(f"Commit:      {lock.provenance.git_commit or 'unknown'}")
         return
 
-    parsed, _ = parse_and_convert(content, base_dir=base_dir, seed=seed)
-
-    if parsed.errors:
+    # The same preparation `validate` and `compile` do, so a runs spec previews
+    # as what it would compile to rather than as an unnamed spec with no bots.
+    raw_spec, yaml_errors = load_spec_raw(content, base_dir=base_dir, seed=seed)
+    if yaml_errors:
         click.secho("Parse errors:", fg="red")
-        for error in parsed.errors:
+        for error in yaml_errors:
             click.secho(f"  {error}", fg="red")
         sys.exit(1)
+    raw_spec, base, runs_errors = prepare_runs_spec(raw_spec, base_dir=base_dir)
+    is_runs = isinstance(raw_spec, dict) and "runs_for" in raw_spec
+    if is_runs and base is None:
+        click.secho("Parse errors:", fg="red")
+        for error in runs_errors:
+            click.secho(f"  {error}", fg="red")
+        sys.exit(1)
+
+    parsed, result = parse_and_convert(
+        content,
+        base_dir=base_dir,
+        seed=seed if seed is not None else (raw_spec.get("seed") if is_runs else None),
+        raw=raw_spec if is_runs else None,
+        runs=is_runs,
+    )
+
+    if parsed.errors or runs_errors:
+        click.secho("Parse errors:", fg="red")
+        for error in runs_errors + list(parsed.errors):
+            click.secho(f"  {error}", fg="red")
+        sys.exit(1)
+
+    if base is not None:
+        base_name = base.lock.experiment.get("name", "N/A")
+        click.secho(f"Runs spec for {base_name} (base {base.sha256[:12]})", bold=True)
+        click.echo()
+        total_queues = sum(len(c.get("queues", [])) for c in result.json_data)
+        click.echo(f"Crawlers:    {result.crawler_count}")
+        click.echo(f"Queues:      {total_queues}")
+        click.echo(f"Jobs:        {result.total_jobs}")
+        click.echo(f"Base spec:   {base.path}")
+        return
 
     click.secho(f"Experiment: {parsed.experiment.get('name', 'N/A')}", bold=True)
     click.echo()
