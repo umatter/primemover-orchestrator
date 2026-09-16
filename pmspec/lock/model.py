@@ -103,7 +103,7 @@ class Lock:
             # Before materialising: a stray `agent:` here is a raw body, not a
             # ref, so materialise would fail with a bare KeyError instead of
             # saying what the author actually got wrong.
-            _check_runs_crawlers(d["crawlers"])
+            check_runs_crawlers(d.get("crawlers"))
         if d.get("pmspec_lock") == 2:
             try:
                 crawlers = materialise(d["parts"], d["crawlers"])
@@ -128,17 +128,30 @@ class Lock:
         )
 
 
-def _check_runs_crawlers(crawlers: list[dict[str, Any]]) -> None:
-    """Refuse a runs lock carrying anything that belongs to its base fleet."""
+def check_runs_crawlers(crawlers: Any) -> None:
+    """Refuse a runs lock carrying anything that belongs to its base fleet.
+
+    ``load_lock`` calls this *before* the schema, so a hand-edited lock is told
+    what it actually got wrong ("carries agent; a runs lock adds queues only")
+    rather than jsonschema's "Additional properties are not allowed". That puts
+    it ahead of every shape check, so it takes the document as it comes: a
+    ``crawlers`` that is not a list, or an item that is not a mapping, is not
+    this function's complaint -- it returns and lets the schema say so.
+    """
+    if not isinstance(crawlers, list):
+        return
     errors: list[str] = []
     for crawler in crawlers:
+        if not isinstance(crawler, dict):
+            continue
         name = crawler.get("name")
         for key in _FLEET_ONLY_CRAWLER_KEYS:
             if key in crawler:
                 errors.append(
                     f"runs lock crawler '{name}' carries {key}; a runs lock adds queues only"
                 )
-        for key in crawler.get("updates") or {}:
+        updates = crawler.get("updates")
+        for key in updates if isinstance(updates, dict) else {}:
             if key != "preferences":
                 errors.append(
                     f"runs lock crawler '{name}': updates may only contain preferences (got {key})"

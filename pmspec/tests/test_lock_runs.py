@@ -169,6 +169,47 @@ def test_runs_lock_refuses_updates_outside_preferences():
     ]
 
 
+@pytest.mark.parametrize(
+    "key,block",
+    [
+        ("configuration", "    configuration:\n      name: c\n"),
+        ("agent", "    agent:\n      ref: a:0000000000000000\n      name: a\n"),
+        ("proxy", "    proxy:\n      name: p\n"),
+    ],
+)
+def test_loading_a_hand_edited_runs_lock_says_what_is_wrong(key, block):
+    # Through load_lock, not Lock.from_dict: the runs crawler item is
+    # `additionalProperties: false`, so without the check running ahead of the
+    # schema the author would be told "Additional properties are not allowed".
+    text = dump_lock(make_runs_lock()).replace("  - name: bot_01\n", "  - name: bot_01\n" + block)
+    with pytest.raises(LockError) as exc:
+        load_lock(text)
+    assert exc.value.errors == [
+        f"runs lock crawler 'bot_01' carries {key}; a runs lock adds queues only"
+    ]
+
+
+def test_loading_a_runs_lock_with_updates_outside_preferences_says_what_is_wrong():
+    text = dump_lock(make_runs_lock()).replace(
+        "      preferences:\n        ideology:", "      params:\n        pi:"
+    )
+    with pytest.raises(LockError) as exc:
+        load_lock(text)
+    assert exc.value.errors == [
+        "runs lock crawler 'bot_01': updates may only contain preferences (got params)"
+    ]
+
+
+def test_the_check_ahead_of_the_schema_leaves_shape_errors_to_the_schema():
+    # It runs before every shape check, so it must not itself trip over a
+    # malformed document -- the schema is still the one that names the problem.
+    full = dump_lock(make_runs_lock())
+    text = full[: full.index("crawlers:")] + "crawlers:\n  - just a string\n"
+    with pytest.raises(LockError) as exc:
+        load_lock(text)
+    assert any("crawlers" in e or "object" in e for e in exc.value.errors)
+
+
 def test_a_fleet_lock_may_still_carry_configuration_and_agent():
     # The refusals above are scoped to the runs kind, not to crawlers at large.
     d = make_lock().to_dict()

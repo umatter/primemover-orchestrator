@@ -9,7 +9,7 @@ from typing import Any
 
 import yaml
 
-from .model import Lock, LockError
+from .model import Lock, LockError, check_runs_crawlers
 
 _SCHEMA_PATHS = {
     1: Path(__file__).parent.parent / "schema" / "lock-1.schema.json",
@@ -85,6 +85,13 @@ def load_lock(text: str) -> Lock:
         raise LockError([f"YAML parse error: {e}"]) from e
     if not isinstance(d, dict):
         raise LockError(["not a mapping"])
+    if d.get("kind") == "runs":
+        # Ahead of the schema on purpose. The runs crawler item is
+        # `additionalProperties: false`, so a hand-edited lock carrying a
+        # leftover `agent:` would otherwise be told "Additional properties are
+        # not allowed" -- true, and no help at all. The schema stays as the
+        # second net for anything this does not name.
+        check_runs_crawlers(d.get("crawlers"))
     errors = validate_lock_dict(d)
     if errors:
         raise LockError(errors)
