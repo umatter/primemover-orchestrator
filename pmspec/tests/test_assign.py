@@ -430,3 +430,109 @@ def test_a_runs_spec_match_field_without_match_value_has_no_agent_to_fall_back_o
         e == "crawlers[0].assign.session: match_field needs agent.location or match_value"
         for e in result.errors
     ), result.errors
+
+
+# --- validate must not reject what compile accepts --------------------------
+
+
+NO_SEED_SPEC = SPEC  # no design.seed, no root seed:
+SEEDED_SPEC = SPEC.replace(
+    "crawlers:\n", "design:\n  seed: 3\n  factors:\n    arm:\n      levels: [a]\ncrawlers:\n"
+)
+
+
+def test_a_spec_with_design_seed_validates_and_compiles_alike(spec_dir):
+    """The divergence this closes: `assign` refuses to draw unseeded, and
+    validate used to hand its converter only `--seed`."""
+    from click.testing import CliRunner
+
+    from pmspec.cli import cli
+
+    (spec_dir / "s.yaml").write_text(SEEDED_SPEC)
+    result = CliRunner().invoke(cli, ["validate", str(spec_dir / "s.yaml")])
+    assert result.exit_code == 0, result.output
+    assert "need a seed" not in result.output
+
+
+def test_validate_and_compile_agree_that_an_unseeded_assign_is_an_error(spec_dir):
+    from click.testing import CliRunner
+
+    from pmspec.cli import cli
+    from pmspec.lock.build import compile_spec
+
+    (spec_dir / "s.yaml").write_text(NO_SEED_SPEC)
+    result = CliRunner().invoke(cli, ["validate", str(spec_dir / "s.yaml")])
+    assert result.exit_code == 1
+    assert "assignments need a seed" in result.output
+
+    # compile refuses first, and harder: a *lock* is never unseeded at all, so
+    # it never reaches the draw. Both refuse; neither accepts.
+    compiled = compile_spec(NO_SEED_SPEC, base_dir=spec_dir, spec_path="s.yaml", seed=None)
+    assert compiled.lock is None
+    assert any("seed" in e for e in compiled.errors), compiled.errors
+
+
+def test_validate_seeds_from_the_command_line_too(spec_dir):
+    from click.testing import CliRunner
+
+    from pmspec.cli import cli
+
+    (spec_dir / "s.yaml").write_text(NO_SEED_SPEC)
+    result = CliRunner().invoke(cli, ["validate", str(spec_dir / "s.yaml"), "--seed", "3"])
+    assert result.exit_code == 0, result.output
+
+
+def test_validate_accepts_a_runs_spec_seeded_by_its_root_seed(runs_study):
+    from click.testing import CliRunner
+
+    from pmspec.cli import cli
+
+    (runs_study / "day.yaml").write_text(RUNS_SPEC_ASSIGN)
+    result = CliRunner().invoke(cli, ["validate", str(runs_study / "day.yaml")])
+    assert result.exit_code == 0, result.output
+
+
+def test_the_mcp_validate_tool_seeds_from_design_seed(spec_dir):
+    import json
+
+    from orchestrator.mcp_server.server import validate_experiment_spec
+
+    files = {"panelists.csv": PANELISTS}
+    out = json.loads(validate_experiment_spec(SEEDED_SPEC, files=files))
+    assert out["valid"] is True, out["errors"]
+
+
+def test_the_mcp_validate_tool_reports_the_seed_error_compile_would(spec_dir):
+    import json
+
+    from orchestrator.mcp_server.server import validate_experiment_spec
+
+    out = json.loads(validate_experiment_spec(NO_SEED_SPEC, files={"panelists.csv": PANELISTS}))
+    assert out["valid"] is False
+    assert any("assignments need a seed" in e for e in out["errors"]), out["errors"]
+
+
+def test_the_orchestrator_validate_command_seeds_its_converter(spec_dir):
+    from click.testing import CliRunner
+
+    from orchestrator.cli import cli
+
+    (spec_dir / "s.yaml").write_text(NO_SEED_SPEC)
+    runner = CliRunner()
+    unseeded = runner.invoke(cli, ["experiment", "validate", str(spec_dir / "s.yaml")])
+    assert "assignments need a seed" in unseeded.output
+    seeded = runner.invoke(cli, ["experiment", "validate", str(spec_dir / "s.yaml"), "--seed", "3"])
+    assert "assignments need a seed" not in seeded.output
+
+
+# --- a blank cell is empty, not "None" --------------------------------------
+
+
+def test_a_blank_pool_cell_substitutes_as_an_empty_string(spec_dir):
+    (spec_dir / "panelists.csv").write_text(
+        PANELISTS.replace("510121845,US-IL-CHICAGO,60601", "510121845,US-IL-CHICAGO,")
+    )
+    text = SPEC.replace('value: "{panelist.person_id}"', 'value: "zip=[{panelist.zip}]"')
+    r = _convert(spec_dir, text)
+    assert r.errors == [], r.errors
+    assert _preference(r.json_data[0], "comscore_person_id") == "zip=[]"

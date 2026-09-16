@@ -73,6 +73,48 @@ def parser_seed(seed: int | None) -> int | None:
     return None if seed is None else seed + 1
 
 
+def spec_seed(raw: Any, runs: bool) -> Any:
+    """The seed a spec declares for itself, exactly as written.
+
+    A runs spec has no ``design:`` block to hold ``design.seed`` (it is
+    refused), so its seed is a root ``seed:`` key; a fleet spec's is
+    ``design.seed``. Never the base lock's: that number drew the
+    randomization, and a runs lock's draws are a different question.
+
+    Returned *unvalidated* -- a `seed: later` comes back as the string, because
+    ``compile_spec`` is the one caller that must name it in an error rather
+    than quietly ignore it. Everything else wants :func:`effective_seed`.
+    """
+    if not isinstance(raw, dict):
+        return None
+    if runs:
+        return raw.get("seed")
+    design = raw.get("design")
+    return design.get("seed") if isinstance(design, dict) else None
+
+
+def effective_seed(raw: Any, runs: bool, override: int | None = None) -> int | None:
+    """The seed a parser/converter should actually run with: *override* if
+    given, else the spec's own declared seed when it is a usable integer.
+
+    The one resolution `compile`, `validate`, `preview` and `summary` share, so
+    a spec that compiles cannot fail validation for want of a seed -- which is
+    exactly what happened to `assign:`, whose draws are refused unseeded while
+    validate was handing its converter nothing but ``--seed``.
+
+    A declared seed that is not an integer yields ``None`` here rather than
+    reaching ``parser_seed``, which would raise `TypeError` on ``"later" + 1``;
+    compile reports it, and the readers below degrade to unseeded instead of
+    crashing.
+    """
+    if override is not None:
+        return override
+    declared = spec_seed(raw, runs)
+    if isinstance(declared, bool) or not isinstance(declared, int):
+        return None
+    return declared
+
+
 def parse_and_convert(
     spec_text: str,
     *,
@@ -205,26 +247,23 @@ def compile_spec(
         )
         return CompileResult(None, errors, warnings, dropped)
 
-    # A runs spec has no `design:` block to hold `design.seed` (it is refused),
-    # so its seed is a root `seed:` key. Never the base lock's: that number
-    # drew the randomization, and a runs lock's draws are a different question.
-    spec_seed = (
-        raw.get("seed") if is_runs and isinstance(raw, dict) else (parsed.design or {}).get("seed")
-    )
-    if spec_seed is not None and (isinstance(spec_seed, bool) or not isinstance(spec_seed, int)):
+    declared_seed = spec_seed(raw, is_runs)
+    if declared_seed is not None and (
+        isinstance(declared_seed, bool) or not isinstance(declared_seed, int)
+    ):
         # Caught before the re-parse below, which would otherwise fail on
         # `parser_seed("later")` with a TypeError instead of a message.
         dropped = validation.dropped + parsed.dropped
         key = "seed" if is_runs else "design.seed"
         errors, warnings = merge_reports(
-            [validation.errors, [f"{key}: must be an integer, got {spec_seed!r}"]],
+            [validation.errors, [f"{key}: must be an integer, got {declared_seed!r}"]],
             [validation.warnings, parsed.warnings],
             dropped,
             lax,
         )
         return CompileResult(None, errors, warnings, dropped)
-    effective_seed = seed if seed is not None else spec_seed
-    if effective_seed is None:
+    run_seed = effective_seed(raw, is_runs, seed)
+    if run_seed is None:
         dropped = validation.dropped + parsed.dropped
         no_seed = (
             "no seed: pass --seed N or set a root seed: in the runs spec; "
@@ -245,7 +284,7 @@ def compile_spec(
         parsed, result = parse_and_convert(
             spec_text,
             base_dir=base_dir,
-            seed=effective_seed,
+            seed=run_seed,
             lax=lax,
             resolve_times=False,
             report_unknown_items=False,
@@ -320,7 +359,7 @@ def compile_spec(
         generator=generator or parsed.experiment.get("generator"),
         git_commit=git_commit(repo_dir),
         pmspec_version=pmspec_version(),
-        seed=int(effective_seed),
+        seed=int(run_seed),
         lax=lax,
         pools=pools,
         base_lock_sha256=base.sha256 if base is not None else None,

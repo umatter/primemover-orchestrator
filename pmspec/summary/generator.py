@@ -93,7 +93,7 @@ class SummaryGenerator:
         parsed, result = build.parse_and_convert(
             yaml_content,
             base_dir=base_dir,
-            seed=seed if seed is not None else (raw.get("seed") if is_runs else None),
+            seed=build.effective_seed(raw, is_runs, seed),
             raw=raw if is_runs else None,
             runs=is_runs,
         )

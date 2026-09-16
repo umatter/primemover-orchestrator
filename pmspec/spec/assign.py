@@ -181,8 +181,12 @@ def resolve_assignments(
             row = draw(i, crawler, str(name), entry)
             if row is None:
                 continue
+            # A blank CSV cell loads as None, and `str(None)` is the string
+            # "None" -- a bot preference reading "None" is worse than an empty
+            # one, because it looks like a value. An empty cell means empty.
+            values = {k: ("" if v is None else v) for k, v in row.items()}
             failures: dict[str, NamedFormatError] = {}
-            resolved = _substitute_crawler(resolved, str(name), row, failures)
+            resolved = _substitute_crawler(resolved, str(name), values, failures)
             for token, failure in failures.items():
                 errors.append(f"crawlers[{i}]: {token} cannot format {failure.value!r}")
         crawlers[i] = resolved

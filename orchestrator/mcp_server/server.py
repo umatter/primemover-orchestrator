@@ -20,7 +20,7 @@ from orchestrator import status
 from orchestrator.config import get_settings
 from orchestrator.tracing import TraceBuilder
 from pmspec.lock.audit import audit_experiment, lock_strategies
-from pmspec.lock.build import compile_spec
+from pmspec.lock.build import compile_spec, effective_seed
 from pmspec.lock.cleanup import delete_experiments, find_test_experiments, parse_age
 from pmspec.lock.diff import diff_locks
 from pmspec.lock.io import LockError, dump_lock, is_lock_document, load_lock
@@ -2366,7 +2366,11 @@ def validate_experiment_spec(
         parser = SpecParser(base_dir=base_dir, lax=lax, report_unknown_items=False)
         parsed = parser.parse(yaml_content)
 
-        converter = SpecConverter(lax=lax)
+        # Seeded from the spec's own `design.seed` through the helper compile
+        # and `pmspec validate` share, so a spec that compiles cannot be
+        # rejected here for want of a seed (`assign:` refuses to draw
+        # unseeded). With no seed anywhere, this reports what compile reports.
+        converter = SpecConverter(lax=lax, seed=effective_seed(raw_spec, False))
         result = converter.convert(parsed)
 
     # Combine all errors and warnings: de-duplicated, one drop-count line

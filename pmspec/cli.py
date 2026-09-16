@@ -51,6 +51,7 @@ from .lock.api import ApiError, ApiSession
 from .lock.audit import audit_experiment, lock_strategies
 from .lock.build import (
     compile_spec,
+    effective_seed,
     load_spec_raw,
     merge_reports,
     parse_and_convert,
@@ -153,6 +154,13 @@ def validate(file: str, format: str, strict: bool, lax: bool, seed: int | None):
                 click.secho(f"  ERROR: {error}", fg="red")
         sys.exit(1)
 
+    # The seed compile would run with, resolved from the same helper: a spec
+    # that compiles must not fail validation for want of a seed. `assign:`
+    # refuses to draw unseeded, so validate handing its converter nothing but
+    # `--seed` made `pmspec validate` reject specs `pmspec compile` accepted.
+    # With no seed anywhere, both report the same "assignments need a seed".
+    run_seed = effective_seed(raw_spec, is_runs, seed)
+
     # Run enhanced validator on raw spec
     validator = SpecValidator(base_dir=base_dir, lax=lax, runs=is_runs)
     validation_result = validator.validate(raw_spec)
@@ -164,7 +172,7 @@ def validate(file: str, format: str, strict: bool, lax: bool, seed: int | None):
     parsed, result = parse_and_convert(
         content,
         base_dir=base_dir,
-        seed=seed,
+        seed=run_seed,
         lax=lax,
         report_unknown_items=False,
         raw=raw_spec if is_runs else None,
@@ -1093,7 +1101,7 @@ def preview(file: str, seed: int | None):
     parsed, result = parse_and_convert(
         content,
         base_dir=base_dir,
-        seed=seed if seed is not None else (raw_spec.get("seed") if is_runs else None),
+        seed=effective_seed(raw_spec, is_runs, seed),
         raw=raw_spec if is_runs else None,
         runs=is_runs,
     )

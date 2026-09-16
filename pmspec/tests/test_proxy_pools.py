@@ -176,3 +176,24 @@ def test_an_assign_on_the_same_pool_takes_rows_the_proxies_then_cannot(spec_dir)
         "p2.example",
         "p3.example",
     ]
+
+
+def test_a_hostname_less_pool_is_still_reported_when_an_assign_uses_it_first(spec_dir):
+    """The pool-level hostname check is keyed on its own `checked` set, not on
+    the shared taken-row dict -- which an `assign:` on the same pool fills
+    first, and which would therefore have skipped the check for exactly the
+    pools that need it."""
+    (spec_dir / "proxies.csv").write_text(CSV.replace("hostname,", "ip,"))
+    text = SPEC.replace(
+        "  - name: chi_1\n",
+        "  - name: spare\n    agent: {location: US-IL-CHICAGO}\n"
+        "    assign:\n"
+        "      slot: {from_pool: us_proxies, match_field: location, select: first}\n"
+        '    session: {start: "+1m", workflow: [{wait: 1s}]}\n'
+        "  - name: chi_1\n",
+    )
+    parsed = SpecParser(base_dir=spec_dir).parse(text)
+    r = SpecConverter(seed=1).convert(parsed)
+    bad = [e for e in r.errors if "us_proxies" in e and "hostname" in e]
+    assert len(bad) == 1, r.errors
+    assert "ip" in bad[0] and "location" in bad[0], bad[0]
