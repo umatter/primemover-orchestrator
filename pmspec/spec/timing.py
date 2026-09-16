@@ -20,10 +20,11 @@ the lock's one seed:
 
 Both draws are integer seconds, uniform and inclusive of both bounds.
 
-The relative-offset grammar here (``+90s``, ``-5m``, ``now``) is the one
-``pmspec.lock.anchor`` parses; it is re-implemented rather than imported
-because ``pmspec.spec`` does not depend on ``pmspec.lock`` (the dependency runs
-the other way, and a lock is built from a converted spec).
+The relative-offset grammar (``+90s``, ``-5m``) is ``time_utils.OFFSET_RE``,
+the one ``is_relative_time`` and ``pmspec.lock.anchor`` also read -- it lives
+there rather than here because ``pmspec.spec`` does not depend on
+``pmspec.lock`` (the dependency runs the other way: a lock is built from a
+converted spec).
 """
 
 from __future__ import annotations
@@ -33,7 +34,7 @@ import re
 from datetime import datetime, timedelta
 from typing import Any
 
-from .time_utils import _to_api_wall_clock, is_relative_time
+from .time_utils import OFFSET_RE, UNIT_SECONDS, _to_api_wall_clock, is_relative_time
 
 #: A resolvable wait-range token: both bounds in whole seconds.
 WAIT_TOKEN_RE = re.compile(r"%%pmspec-wait:(\d+):(\d+)%%")
@@ -49,8 +50,6 @@ _WAIT_TOKEN_FMT = "%%pmspec-wait:{min_s}:{max_s}%%"
 _DURATION_RE = re.compile(
     r"^(\d+(?:\.\d+)?)\s*(s|sec|seconds?|m|min|minutes?|h|hr|hours?|d|days?)?$"
 )
-_OFFSET_RE = re.compile(r"^([+-])(\d+)([smhd])$")
-_UNIT_SECONDS = {"s": 1, "m": 60, "h": 3600, "d": 86400}
 
 
 def wait_token(min_s: int, max_s: int) -> str:
@@ -77,19 +76,21 @@ def parse_duration(value: Any) -> int | None:
         return None
     amount = float(match.group(1))
     unit = (match.group(2) or "s")[0]
-    return int(amount * _UNIT_SECONDS[unit])
+    return int(amount * UNIT_SECONDS[unit])
 
 
-def _relative_seconds(value: str) -> int | None:
-    """Seconds from the anchor for a relative `from` (`now`, `+1h`, `-5m`)."""
-    text = value.strip().lower()
-    if text == "now":
+def _relative_seconds(value: str) -> int:
+    """Seconds from the anchor for a relative `from` (`now`, `+1h`, `-5m`).
+
+    A total, never ``None``: the caller has already asked ``is_relative_time``,
+    which reads the same :data:`OFFSET_RE`, so anything arriving here either
+    matches it or is `now`.
+    """
+    match = OFFSET_RE.match(value.strip().lower())
+    if match is None:  # "now"
         return 0
-    match = _OFFSET_RE.match(text)
-    if match is None:
-        return None
     sign, amount, unit = match.groups()
-    seconds = int(amount) * _UNIT_SECONDS[unit]
+    seconds = int(amount) * UNIT_SECONDS[unit]
     return -seconds if sign == "-" else seconds
 
 
@@ -141,10 +142,13 @@ def resolve_start_jitter(crawlers: list[dict[str, Any]], seed: int | None) -> li
     back as ``+<total seconds>s`` and an absolute one as the ISO wall clock it
     shifts to, which is exactly what ``derive_anchor`` reads next.
 
-    Returns the errors found. A dict that could not be resolved is left in
-    place; the compile fails on the error rather than on the shape.
+    Returns the errors found. **Every** path replaces the dict with a string,
+    an unresolvable one with the unjittered `from` (or `now`): the errors are
+    what fails the compile, and a caller that reads `start_at` before checking
+    them -- `derive_anchor`, `parse_relative_time` -- must never meet a dict.
     """
     errors: list[str] = []
+    unseeded = False
 
     for i, crawler in enumerate(crawlers):
         for j, queue in enumerate(crawler.get("queues", [])):
@@ -153,6 +157,7 @@ def resolve_start_jitter(crawlers: list[dict[str, Any]], seed: int | None) -> li
                 continue
             where = f"crawlers[{i}].queues[{j}].start_at"
             source, jitter = start_at.get("from"), start_at.get("jitter")
+            queue["start_at"] = source if isinstance(source, str) else "now"
             if source is None or jitter is None:
                 errors.append(f"{where}: needs both from and jitter")
                 continue
@@ -161,7 +166,7 @@ def resolve_start_jitter(crawlers: list[dict[str, Any]], seed: int | None) -> li
                 errors.append(f"{where}: jitter {jitter!r} is not a duration")
                 continue
             if seed is None:
-                errors.append(f"{where}: start jitter needs a seed: use pmspec compile")
+                unseeded = True
                 continue
             drawn = random.Random(f"{seed}:start:{i}:{j}").randint(0, span)
             resolved = _shift(str(source), drawn)
@@ -170,14 +175,18 @@ def resolve_start_jitter(crawlers: list[dict[str, Any]], seed: int | None) -> li
                 continue
             queue["start_at"] = resolved
 
+    # One message for the spec, not one per session: a spec with no seed has
+    # every jittered session in the same position, and 500 copies of it buries
+    # whatever else went wrong.
+    if unseeded:
+        errors.append("start jitter needs a seed: use pmspec compile, or set design.seed")
     return errors
 
 
 def _shift(source: str, seconds: int) -> str | None:
     """`source` moved `seconds` later, in `source`'s own kind of time."""
     if is_relative_time(source):
-        base = _relative_seconds(source)
-        return None if base is None else _format_seconds(base + seconds)
+        return _format_seconds(_relative_seconds(source) + seconds)
     try:
         parsed = datetime.fromisoformat(_to_api_wall_clock(source))
     except ValueError:

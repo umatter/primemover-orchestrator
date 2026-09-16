@@ -326,6 +326,14 @@ def compile_spec(
             for path in literal
         )
 
+    # Before the anchor, not after: a spec that already failed may carry a queue
+    # whose `start_at` the converter could not resolve (a `{from, jitter}` with
+    # an unusable jitter, say), and `derive_anchor` is written for the strings a
+    # *valid* conversion produces. Reporting the real error beats a traceback
+    # from the shape it left behind.
+    if errors:
+        return CompileResult(None, errors, warnings, dropped)
+
     raw_starts = [q["start_at"] for c in crawlers for q in c.get("queues", [])]
     try:
         anchor_value, offsets = derive_anchor(raw_starts, override=anchor)

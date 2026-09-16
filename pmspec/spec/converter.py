@@ -162,6 +162,10 @@ class SpecConverter:
         # design.parameters names outside _STANDARD_PARAM_KEYS for the spec
         # being converted; set per convert() and read by _convert_configuration.
         self._sampled_substitution_params: frozenset[str] = frozenset()
+        # Whether the `generate`-path jitter refusal has already been reported
+        # for this conversion: it is one fact about the spec, not one per
+        # session, and a 500-bot fleet would otherwise repeat it 500 times.
+        self._jitter_refused = False
 
     def _runner_user_id(self, experiment: dict[str, Any]) -> int | None:
         """experiment.runner_user_id, validated; None when absent."""
@@ -188,6 +192,7 @@ class SpecConverter:
         self.errors = list(parsed.errors)  # Copy any parsing errors
         self.warnings = list(parsed.warnings)
         self.drops = Drops(self.lax)
+        self._jitter_refused = False
         runner_user_id = self._runner_user_id(parsed.experiment)
 
         if self.errors:
@@ -699,7 +704,9 @@ class SpecConverter:
             # -- it writes API JSON, not a lock -- so there is nothing to draw
             # from and nothing that could be reproduced later.
             if self.resolve_times:
-                self.errors.append("start_at jitter needs a seed: use pmspec compile")
+                if not self._jitter_refused:
+                    self.errors.append("start_at jitter needs a seed: use pmspec compile")
+                    self._jitter_refused = True
                 source = start_at.get("from")
                 start_at = parse_relative_time(source if isinstance(source, str) else "now")
         elif self.resolve_times:

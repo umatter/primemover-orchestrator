@@ -303,3 +303,57 @@ crawlers:
     result = SpecValidator(runs=True).validate(yaml.safe_load(runs))
     assert result.valid, result.errors
     assert result.dropped == 0, result.errors
+
+
+# --- an unresolvable jitter is an error, never a traceback -------------------
+
+
+@pytest.mark.parametrize(
+    ("bad", "message"),
+    [
+        ('from: "+1h", jitter: "soon"', "is not a duration"),
+        ('from: "+1h", jitter: "-5s"', "is not a duration"),
+        ('jitter: "6h"', "needs both from and jitter"),
+        ('from: "tomorrow", jitter: "6h"', "cannot parse start time"),
+    ],
+)
+def test_an_unresolvable_jitter_is_reported_not_raised(tmp_path, bad, message):
+    # `resolve_start_jitter` leaves a *string* behind on every error path and
+    # compile_spec returns on the errors before deriving an anchor, so neither
+    # `derive_anchor` nor `is_relative_time` is ever handed a dict. Both halves
+    # matter: either one alone turns a bad jitter into an AttributeError
+    # traceback out of `pmspec compile`.
+    text = JITTER_SPEC.replace('from: "+1h", jitter: "6h"', bad)
+    result = _compile(tmp_path, text)
+    assert result.lock is None
+    assert any(message in e for e in result.errors), result.errors
+
+
+def test_the_cli_reports_a_bad_jitter_instead_of_crashing(tmp_path):
+    from click.testing import CliRunner
+
+    from pmspec.cli import cli
+
+    spec = tmp_path / "study.yaml"
+    spec.write_text(JITTER_SPEC.replace('jitter: "6h"', 'jitter: "soon"'))
+    out = CliRunner().invoke(cli, ["compile", str(spec), "--seed", "7"])
+    assert out.exit_code == 1, out.output
+    assert out.exception is None or isinstance(out.exception, SystemExit), out.exception
+    assert "is not a duration" in out.output, out.output
+
+
+def test_the_unseeded_jitter_error_is_reported_once(tmp_path):
+    # Three crawlers, one message -- not one per session.
+    parsed = SpecParser(base_dir=tmp_path).parse(JITTER_SPEC.replace("  seed: 7\n", ""))
+    result = SpecConverter(resolve_times=False).convert(parsed)
+    assert [e for e in result.errors if "start jitter needs a seed" in e] == [
+        "start jitter needs a seed: use pmspec compile, or set design.seed"
+    ], result.errors
+
+
+def test_the_generate_jitter_refusal_is_reported_once(tmp_path):
+    parsed = SpecParser(base_dir=tmp_path, seed=8).parse(JITTER_SPEC)
+    result = SpecConverter(seed=7, resolve_times=True).convert(parsed)
+    assert [e for e in result.errors if "start_at jitter" in e] == [
+        "start_at jitter needs a seed: use pmspec compile"
+    ], result.errors
