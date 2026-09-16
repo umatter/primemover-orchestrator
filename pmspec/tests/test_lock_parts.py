@@ -195,3 +195,14 @@ def test_agent_part_with_a_name_fails_validation():
 
 def test_well_formed_parts_still_validate():
     assert validate_lock_dict(_lock_dict(3)) == []
+
+
+def test_crawlers_without_an_agent_factor_and_materialise():
+    # A runs-lock crawler carries queues and nothing else; the agent step has
+    # to be skipped rather than assumed.
+    crawler = {"name": "bot_000", "queues": copy.deepcopy(make_lock().crawlers[0]["queues"])}
+    parts, refs = factor_crawlers([crawler])
+    assert parts["agents"] == {}
+    assert "agent" not in refs[0]
+    assert list(refs[0]) == ["name", "queues"]
+    assert materialise(parts, refs) == [crawler]

@@ -6,6 +6,7 @@
   "additionalProperties": false,
   "properties": {
     "pmspec_lock": {"const": 2},
+    "kind": {"enum": ["fleet", "runs"]},
     "provenance": {
       "type": "object",
       "required": ["spec_path", "spec_sha256", "pmspec_version", "seed"],
@@ -21,7 +22,9 @@
         "pools": {
           "type": "object",
           "additionalProperties": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
-        }
+        },
+        "base_lock_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "base_spec_path": {"type": "string"}
       }
     },
     "experiment": {
@@ -72,40 +75,90 @@
     },
     "crawlers": {
       "type": "array",
-      "minItems": 1,
-      "items": {
-        "type": "object",
-        "required": ["name", "configuration", "queues"],
+      "minItems": 1
+    }
+  },
+  "allOf": [
+    {
+      "if": {"properties": {"kind": {"const": "runs"}}, "required": ["kind"]},
+      "then": {
         "properties": {
-          "name": {"type": "string", "minLength": 1},
-          "configuration": {"type": "object"},
-          "proxy": {"type": "object"},
-          "agent": {
-            "type": "object",
-            "required": ["ref"],
-            "additionalProperties": false,
-            "properties": {
-              "ref": {"type": "string", "pattern": "^a:[0-9a-f]{16}$"},
-              "name": {}
-            }
-          },
-          "queues": {
-            "type": "array",
+          "crawlers": {
             "items": {
               "type": "object",
-              "required": ["ref", "start_offset"],
-              "not": {"anyOf": [{"required": ["start_at"]}, {"required": ["jobs"]}]},
+              "required": ["name", "queues"],
               "additionalProperties": false,
               "properties": {
-                "ref": {"type": "string", "pattern": "^q:[0-9a-f]{16}$"},
-                "start_offset": {"type": "string", "pattern": "^[+-][0-9]+[smhd]$"},
-                "start_at": false,
-                "jobs": false
+                "name": {"type": "string", "minLength": 1},
+                "queues": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "required": ["ref", "start_offset"],
+                    "not": {"anyOf": [{"required": ["start_at"]}, {"required": ["jobs"]}]},
+                    "additionalProperties": false,
+                    "properties": {
+                      "ref": {"type": "string", "pattern": "^q:[0-9a-f]{16}$"},
+                      "start_offset": {"type": "string", "pattern": "^[+-][0-9]+[smhd]$"},
+                      "start_at": false,
+                      "jobs": false
+                    }
+                  }
+                },
+                "updates": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "preferences": {
+                      "type": "object",
+                      "additionalProperties": {"type": "string"}
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "else": {
+        "properties": {
+          "crawlers": {
+            "items": {
+              "type": "object",
+              "required": ["name", "configuration", "queues"],
+              "properties": {
+                "name": {"type": "string", "minLength": 1},
+                "configuration": {"type": "object"},
+                "proxy": {"type": "object"},
+                "agent": {
+                  "type": "object",
+                  "required": ["ref"],
+                  "additionalProperties": false,
+                  "properties": {
+                    "ref": {"type": "string", "pattern": "^a:[0-9a-f]{16}$"},
+                    "name": {}
+                  }
+                },
+                "queues": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "required": ["ref", "start_offset"],
+                    "not": {"anyOf": [{"required": ["start_at"]}, {"required": ["jobs"]}]},
+                    "additionalProperties": false,
+                    "properties": {
+                      "ref": {"type": "string", "pattern": "^q:[0-9a-f]{16}$"},
+                      "start_offset": {"type": "string", "pattern": "^[+-][0-9]+[smhd]$"},
+                      "start_at": false,
+                      "jobs": false
+                    }
+                  }
+                }
               }
             }
           }
         }
       }
     }
-  }
+  ]
 }

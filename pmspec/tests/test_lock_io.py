@@ -149,3 +149,13 @@ def test_lock_without_pools_loads_with_empty_dict():
     text = yaml.safe_dump(d, sort_keys=False)
     lock = load_lock(text)
     assert lock.provenance.pools == {}
+
+
+def test_lock_without_base_fields_loads_with_none():
+    # Every lock written before the runs kind existed: the two base-binding
+    # fields are absent, and absent must mean None rather than a load failure.
+    d = make_lock().to_dict()
+    assert "base_lock_sha256" not in d["provenance"]
+    lock = load_lock(yaml.safe_dump(d, sort_keys=False))
+    assert lock.provenance.base_lock_sha256 is None
+    assert lock.provenance.base_spec_path is None
