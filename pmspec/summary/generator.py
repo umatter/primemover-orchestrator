@@ -69,25 +69,20 @@ class SummaryGenerator:
 
         seed = seed if seed is not None else self.seed
 
-        # A `runs_for:` spec is prepared exactly as compile_spec prepares it --
-        # base lock loaded, `from_base:` expanded -- or a summary of one would
-        # be an unnamed experiment with no crawlers, which is a report about
-        # this function rather than about the spec.
-        raw, raw_errors, raw_warnings = build.load_spec_raw(
-            yaml_content, base_dir=base_dir or Path.cwd(), seed=seed
-        )
-        base = None
-        # The `!file` loader's own errors count: on the runs path below, `raw`
-        # is what gets parsed, so nothing else would ever name a missing file.
-        runs_errors: list[str] = list(raw_errors)
-        if raw is not None:
-            raw, base, prep_errors = build.prepare_runs_spec(raw, base_dir=base_dir or Path.cwd())
-            runs_errors.extend(prep_errors)
-        is_runs = isinstance(raw, dict) and "runs_for" in raw
+        # Prepared exactly as compile_spec prepares it -- loaded under the seed
+        # a compile would use, `!file` errors kept, a `runs_for:` spec expanded
+        # against its base lock -- or a summary would describe a different draw
+        # than the lock does, and a runs spec would summarise as an unnamed
+        # experiment with no crawlers.
+        prepared = build.load_and_prepare(yaml_content, base_dir=base_dir or Path.cwd(), seed=seed)
+        raw, base = prepared.raw, prepared.base
+        runs_errors: list[str] = list(prepared.errors)
+        raw_warnings = prepared.warnings
+        is_runs = prepared.is_runs
         if is_runs and base is None:
             is_runs = False  # nothing to prepare against; the errors say why
 
-        # Parse and convert through the one seed helper compile_spec uses: an
+        # Parse and convert through the one seed rule compile_spec uses: an
         # explicit seed wins over the spec's own seed, the parser's pool stream
         # is seed + 1 and the converter's design stream is seed, so the
         # round-trip (spec -> lock -> summary == spec -> summary) draws the
@@ -95,7 +90,7 @@ class SummaryGenerator:
         parsed, result = build.parse_and_convert(
             yaml_content,
             base_dir=base_dir,
-            seed=build.effective_seed(raw, is_runs, seed),
+            seed=prepared.run_seed,
             # Summarising is not generating: times stay unresolved, exactly as
             # compile_spec leaves them, so a seeded `start_at: {from, jitter}`
             # is summarised rather than refused.

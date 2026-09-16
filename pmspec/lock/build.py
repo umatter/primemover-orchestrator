@@ -172,6 +172,68 @@ def load_spec_raw(
     return resolved, list(file_loader.errors), list(file_loader.warnings)
 
 
+@dataclass
+class PreparedSpec:
+    """A spec loaded under the seed it will be compiled with, runs spec expanded.
+
+    ``raw`` is None only for a YAML error. ``base`` is None for a fleet spec
+    *and* for a runs spec whose base lock could not be read -- ``is_runs`` tells
+    the two apart, and the second is a hard error.
+    """
+
+    raw: Any
+    is_runs: bool
+    base: BaseLock | None
+    run_seed: int | None
+    errors: list[str] = field(default_factory=list)
+    warnings: list[str] = field(default_factory=list)
+
+
+def load_spec_markers(spec_text: str, *, base_dir: Path) -> tuple[Any, list[str]]:
+    """The spec's YAML with every ``!file`` left as an unresolved marker.
+
+    Cheap on purpose -- no file is opened and nothing is drawn -- because its
+    one job is to answer the two questions that decide how the real load must
+    run: is this a runs spec (``runs_for:``), and what seed does it declare.
+    """
+    FileTagLoader, _ = create_file_tag_loader(base_dir=base_dir)
+    try:
+        return yaml.load(spec_text, Loader=FileTagLoader), []
+    except yaml.YAMLError as e:
+        return None, [f"YAML parse error: {e}"]
+
+
+def load_and_prepare(spec_text: str, *, base_dir: Path, seed: int | None = None) -> PreparedSpec:
+    """Load a spec under the seed it will actually be compiled with, and expand
+    a runs spec against its base lock. The one entry every reader of a spec
+    uses: `compile`, `pmspec validate`, `pmspec preview`, the summary generator
+    and the MCP `validate_experiment_spec`.
+
+    The seed is the whole point. A ``!file {select: random}`` draws in the YAML
+    *loader*, which runs before anything has read the spec's own ``design.seed``
+    (or a runs spec's root ``seed:``), so loading under the ``--seed`` flag
+    alone -- None, when the spec declares its own -- draws workflow A while the
+    lock is built from workflow B. Everything downstream then describes a spec
+    nobody compiled: the validator is the only component that reports an
+    unknown job type (the parser runs with ``report_unknown_items=False``), so a
+    clean draw A alongside a draw B carrying a typo produced a *silently short*
+    lock, and a spec `compile` accepted could fail `validate` on the next run.
+    Reading the declared seed from a marker-only parse first, and loading once
+    under it, is what makes the two agree -- always, not two runs in three.
+    """
+    markers, marker_errors = load_spec_markers(spec_text, base_dir=base_dir)
+    if markers is None:
+        return PreparedSpec(None, False, None, None, marker_errors, [])
+    is_runs = isinstance(markers, dict) and "runs_for" in markers
+    run_seed = effective_seed(markers, is_runs, seed)
+
+    raw, errors, warnings = load_spec_raw(spec_text, base_dir=base_dir, seed=run_seed)
+    if raw is None and errors:
+        return PreparedSpec(None, is_runs, None, run_seed, errors, warnings)
+    raw, base, runs_errors = prepare_runs_spec(raw, base_dir=base_dir)
+    return PreparedSpec(raw, is_runs, base, run_seed, _merge(errors, runs_errors), warnings)
+
+
 def prepare_runs_spec(raw: Any, *, base_dir: Path) -> tuple[Any, BaseLock | None, list[str]]:
     """For a spec carrying ``runs_for:``: load its base fleet lock and expand
     every ``from_base:`` crawler block against it.
@@ -220,30 +282,31 @@ def compile_spec(
     lax: bool = False,
     git_root: Path | None = None,
 ) -> CompileResult:
-    # The raw YAML, fully resolved (!file tags included), is what the strict
-    # contract validates -- structurally and semantically, before a single
-    # construct has been expanded or converted.
-    raw, load_errors, load_warnings = load_spec_raw(spec_text, base_dir=base_dir, seed=seed)
-    if raw is None and load_errors:
-        return CompileResult(None, load_errors, load_warnings)
-
-    # A spec naming a fleet lock with `runs_for:` is a *runs* spec: its
-    # `from_base:` blocks are expanded against that lock before anything else
-    # sees the spec, and every component below runs in runs mode.
-    raw, base, runs_errors = prepare_runs_spec(raw, base_dir=base_dir)
-    is_runs = isinstance(raw, dict) and "runs_for" in raw
+    # The raw YAML, fully resolved (!file tags included) under the seed this
+    # compile will run with, is what the strict contract validates --
+    # structurally and semantically, before a single construct has been expanded
+    # or converted. A spec naming a fleet lock with `runs_for:` is a *runs*
+    # spec: its `from_base:` blocks are expanded against that lock before
+    # anything else sees it, and every component below runs in runs mode.
+    prepared = load_and_prepare(spec_text, base_dir=base_dir, seed=seed)
+    raw, is_runs, base = prepared.raw, prepared.is_runs, prepared.base
+    prep_errors, prep_warnings = prepared.errors, prepared.warnings
+    if raw is None and prep_errors:
+        return CompileResult(None, prep_errors, prep_warnings)
     if is_runs and base is None:
-        return CompileResult(None, _merge(load_errors, runs_errors), load_warnings)
+        return CompileResult(None, prep_errors, prep_warnings)
 
     validator = SpecValidator(base_dir=base_dir, lax=lax, runs=is_runs)
     validation = validator.validate(raw if isinstance(raw, dict) else {})
 
     # The validator above already names every unknown workflow item; the parser
-    # must not report it a second time (report_unknown_items=False).
+    # must not report it a second time (report_unknown_items=False). Seeded with
+    # `prepared.run_seed`, the number `raw` was drawn under -- one draw, judged
+    # and compiled, never two.
     parsed, result = parse_and_convert(
         spec_text,
         base_dir=base_dir,
-        seed=seed,
+        seed=prepared.run_seed,
         lax=lax,
         resolve_times=False,
         report_unknown_items=False,
@@ -253,8 +316,8 @@ def compile_spec(
     if parsed.errors:
         dropped = validation.dropped + parsed.dropped
         errors, warnings = merge_reports(
-            [load_errors, validation.errors, parsed.errors],
-            [load_warnings, validation.warnings, parsed.warnings],
+            [prep_errors, validation.errors, parsed.errors],
+            [prep_warnings, validation.warnings, parsed.warnings],
             dropped,
             lax,
         )
@@ -264,18 +327,18 @@ def compile_spec(
     if declared_seed is not None and (
         isinstance(declared_seed, bool) or not isinstance(declared_seed, int)
     ):
-        # Caught before the re-parse below, which would otherwise fail on
-        # `parser_seed("later")` with a TypeError instead of a message.
+        # `effective_seed` degraded this to None rather than raising on
+        # `parser_seed("later")`; this is where it gets named.
         dropped = validation.dropped + parsed.dropped
         key = "seed" if is_runs else "design.seed"
         errors, warnings = merge_reports(
-            [load_errors, validation.errors, [f"{key}: must be an integer, got {declared_seed!r}"]],
-            [load_warnings, validation.warnings, parsed.warnings],
+            [prep_errors, validation.errors, [f"{key}: must be an integer, got {declared_seed!r}"]],
+            [prep_warnings, validation.warnings, parsed.warnings],
             dropped,
             lax,
         )
         return CompileResult(None, errors, warnings, dropped)
-    run_seed = effective_seed(raw, is_runs, seed)
+    run_seed = prepared.run_seed
     if run_seed is None:
         dropped = validation.dropped + parsed.dropped
         no_seed = (
@@ -285,40 +348,12 @@ def compile_spec(
             else "no seed: pass --seed N or set design.seed; a lock is never unseeded"
         )
         errors, warnings = merge_reports(
-            [load_errors, validation.errors, [no_seed]],
-            [load_warnings, validation.warnings, parsed.warnings],
+            [prep_errors, validation.errors, [no_seed]],
+            [prep_warnings, validation.warnings, parsed.warnings],
             dropped,
             lax,
         )
         return CompileResult(None, errors, warnings, dropped)
-    if seed is None:
-        # The spec's own seed only: redo both streams from it, so the pool
-        # draws are seeded from the same number the lock records.
-        if is_runs:
-            # The runs path parses the mapping loaded above, and that load ran
-            # under the *flag* -- None here -- so a `!file {select: random}`
-            # drew from an unseeded Random and the lock's bytes moved every
-            # compile. Reload and re-expand under the spec's own seed; the
-            # fleet branch reaches the same place by re-reading `spec_text`.
-            raw, reload_errors, reload_warnings = load_spec_raw(
-                spec_text, base_dir=base_dir, seed=run_seed
-            )
-            raw, base, reload_runs_errors = prepare_runs_spec(raw, base_dir=base_dir)
-            load_errors = _merge(load_errors, reload_errors, reload_runs_errors)
-            load_warnings = _merge(load_warnings, reload_warnings)
-            if base is None:
-                return CompileResult(None, load_errors, load_warnings)
-        parsed, result = parse_and_convert(
-            spec_text,
-            base_dir=base_dir,
-            seed=run_seed,
-            lax=lax,
-            resolve_times=False,
-            report_unknown_items=False,
-            raw=raw if is_runs else None,
-            runs=is_runs,
-        )
-
     # Treatment values are concrete only now (`with:` and design variables
     # substituted); the raw pass above skipped templated ones.
     expanded_errors = validator.validate_expanded(result.json_data)
@@ -333,15 +368,14 @@ def compile_spec(
     )
     errors, warnings = merge_reports(
         [
-            load_errors,
+            prep_errors,
             validation.errors,
             parsed.errors,
             result.errors,
             expanded_errors,
-            runs_errors,
             name_errors,
         ],
-        [load_warnings, validation.warnings, parsed.warnings, result.warnings],
+        [prep_warnings, validation.warnings, parsed.warnings, result.warnings],
         dropped,
         lax,
     )

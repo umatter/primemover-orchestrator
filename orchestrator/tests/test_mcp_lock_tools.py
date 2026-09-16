@@ -488,3 +488,22 @@ def test_validate_of_a_runs_spec_without_its_base_names_the_file_it_cannot_read(
 def test_the_validate_docstring_says_where_a_runs_spec_base_lock_goes():
     doc = s.validate_experiment_spec.__doc__ or ""
     assert "runs_for" in doc and "files" in doc
+
+
+def test_validate_sees_the_draw_the_compile_would_see(tmp_path):
+    """Both load the spec under its own `seed:`, so a `!file {select: random}`
+    workflow is judged here as the one `compile_experiment_spec` would build."""
+    from pmspec.lock.build import compile_spec
+    from pmspec.tests.test_lock_runs import DRAWN_UNKNOWN_RUNS_SPEC, UNKNOWN_STEPS
+
+    files = {"fleet.lock.yaml": _fleet_lock_text(tmp_path), "unknown_steps.yaml": UNKNOWN_STEPS}
+    (tmp_path / "unknown_steps.yaml").write_text(UNKNOWN_STEPS)
+    (tmp_path / "fleet.lock.yaml").write_text(files["fleet.lock.yaml"])
+    for _ in range(5):
+        out = json.loads(s.validate_experiment_spec(DRAWN_UNKNOWN_RUNS_SPEC, files=files))
+        compiled = compile_spec(
+            DRAWN_UNKNOWN_RUNS_SPEC, base_dir=tmp_path, spec_path="day.yaml", seed=None
+        )
+        assert any("frobnicate" in e for e in out["errors"]) == any(
+            "frobnicate" in e for e in compiled.errors
+        ), (out, compiled.errors)

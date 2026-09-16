@@ -718,3 +718,92 @@ def test_a_runs_lock_is_byte_identical_when_the_seed_comes_from_the_spec(study):
     own_seed = {compiled(None) for _ in range(5)}
     assert len(own_seed) == 1, "a runs lock is not byte-deterministic from its own seed"
     assert own_seed == {compiled(42)}
+
+
+# --- what the validator saw must be what the lock was built from ------------
+
+UNKNOWN_STEPS = """
+- visit: https://example.com/a
+- visit: https://example.com/b
+- frobnicate: https://example.com/c
+"""
+
+DRAWN_UNKNOWN_RUNS_SPEC = """
+version: "1.0"
+runs_for: fleet.lock.yaml
+seed: 0
+crawlers:
+  - name: bot_control
+    session:
+      start: "2026-10-01T10:00:00"
+      workflow: !file {path: ./unknown_steps.yaml, select: random, count: 2}
+"""
+
+DRAWN_UNKNOWN_FLEET_SPEC = """
+version: "1.0"
+experiment:
+  name: Fleet draw
+design:
+  seed: 0
+  factors:
+    arm:
+      levels: [control, treated]
+      maps_to:
+        configuration.params.pi: {control: 0, treated: 1}
+crawlers:
+  - from_design: true
+    name: "bot_{arm}"
+    agent: {location: US-IL-CHICAGO}
+    session:
+      start: "+5m"
+      workflow: !file {path: ./unknown_steps.yaml, select: random, count: 2}
+"""
+
+
+def _assert_whole_draw(result, count=2):
+    """Either the draw's unknown job type was reported, or every session holds
+    the whole draw. A lock one job short is the validator having judged a
+    *different* draw than the one that was compiled."""
+    if result.lock is None:
+        assert any("frobnicate" in e for e in result.errors), result.errors
+        return
+    for crawler in result.lock.crawlers:
+        for queue in crawler["queues"]:
+            assert (
+                len(queue["jobs"]) == count
+            ), f"lock built from a draw the validator never saw: {len(queue['jobs'])} jobs"
+
+
+def test_a_drawn_workflow_is_validated_as_the_one_that_is_compiled(study):
+    (study / "unknown_steps.yaml").write_text(UNKNOWN_STEPS)
+    for _ in range(20):
+        _assert_whole_draw(compile_runs(study, DRAWN_UNKNOWN_RUNS_SPEC, seed=None))
+
+
+def test_a_fleet_drawn_workflow_is_validated_as_the_one_that_is_compiled(tmp_path):
+    from pmspec.lock.build import compile_spec
+
+    (tmp_path / "unknown_steps.yaml").write_text(UNKNOWN_STEPS)
+    for _ in range(20):
+        _assert_whole_draw(
+            compile_spec(
+                DRAWN_UNKNOWN_FLEET_SPEC, base_dir=tmp_path, spec_path="fleet.yaml", seed=None
+            )
+        )
+
+
+def test_validate_and_compile_see_the_same_draw(study):
+    # Both read the spec's own `seed:`, so they must agree about the drawn
+    # workflow -- every time, not two runs in three.
+    from click.testing import CliRunner
+
+    from pmspec.cli import cli
+
+    (study / "unknown_steps.yaml").write_text(UNKNOWN_STEPS)
+    (study / "day.yaml").write_text(DRAWN_UNKNOWN_RUNS_SPEC)
+    for _ in range(5):
+        compiled = compile_runs(study, DRAWN_UNKNOWN_RUNS_SPEC, seed=None)
+        validated = CliRunner().invoke(cli, ["validate", str(study / "day.yaml")])
+        assert ("frobnicate" in validated.output) == any(
+            "frobnicate" in e for e in compiled.errors
+        ), (validated.output, compiled.errors)

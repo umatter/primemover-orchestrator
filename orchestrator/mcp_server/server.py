@@ -20,7 +20,7 @@ from orchestrator import status
 from orchestrator.config import get_settings
 from orchestrator.tracing import TraceBuilder
 from pmspec.lock.audit import audit_experiment, lock_strategies
-from pmspec.lock.build import compile_spec, effective_seed
+from pmspec.lock.build import compile_spec
 from pmspec.lock.cleanup import delete_experiments, find_test_experiments, parse_age
 from pmspec.lock.diff import diff_locks
 from pmspec.lock.io import LockError, dump_lock, is_lock_document, load_lock
@@ -2368,12 +2368,7 @@ def validate_experiment_spec(
         )
 
     try:
-        from pmspec.lock.build import (
-            load_spec_raw,
-            merge_reports,
-            parse_and_convert,
-            prepare_runs_spec,
-        )
+        from pmspec.lock.build import load_and_prepare, merge_reports, parse_and_convert
         from pmspec.lock.runs import unknown_name_errors
         from pmspec.spec import SpecValidator
     except ImportError as e:
@@ -2382,31 +2377,23 @@ def validate_experiment_spec(
     with _materialise_files(files) as tmp:
         base_dir = Path(tmp)
 
-        # Parse the YAML first (!file tags resolved), exactly as `pmspec
-        # validate` and compile_spec do -- including the `!file` loader's own
-        # errors, which nothing downstream re-reads on the runs path.
+        # The one preparation every reader of a spec shares, exactly as `pmspec
+        # validate` and compile_spec use it: the YAML loaded under the seed a
+        # compile would run with (so a `!file {select: random}` is judged as the
+        # draw that would be compiled), the `!file` loader's own errors kept --
+        # nothing downstream re-reads them on the runs path -- and a `runs_for:`
+        # spec expanded against its base fleet lock.
         # SECURITY: the loader behind this inherits from yaml.SafeLoader, which
         # prevents arbitrary code execution. The only custom tag is !file for
         # loading external data files (CSV/JSON), which are parsed safely.
         # base_dir anchors relative !file paths, data-pool `source:` files and a
         # runs spec's `runs_for:` lock to the temp dir `files` were written to.
-        raw_spec, load_errors, load_warnings = load_spec_raw(
-            yaml_content, base_dir=base_dir, seed=seed
-        )
-        if raw_spec is None and load_errors:
+        prepared = load_and_prepare(yaml_content, base_dir=base_dir, seed=seed)
+        raw_spec, is_runs, base = prepared.raw, prepared.is_runs, prepared.base
+        prep_errors, prep_warnings = prepared.errors, prepared.warnings
+        if (raw_spec is None and prep_errors) or (is_runs and base is None):
             return json.dumps(
-                {"valid": False, "kind": "spec", "errors": load_errors, "warnings": []}
-            )
-
-        # A `runs_for:` spec is validated as a runs spec, against its base fleet
-        # lock -- the same preparation compile_spec does, so validate cannot
-        # pass a spec the compile would refuse (or the other way round).
-        raw_spec, base, runs_errors = prepare_runs_spec(raw_spec, base_dir=base_dir)
-        is_runs = isinstance(raw_spec, dict) and "runs_for" in raw_spec
-        if is_runs and base is None:
-            errors = merge_reports([load_errors, runs_errors], [], 0, False)[0]
-            return json.dumps(
-                {"valid": False, "kind": "spec", "errors": errors, "warnings": load_warnings}
+                {"valid": False, "kind": "spec", "errors": prep_errors, "warnings": prep_warnings}
             )
 
         # Run validator
@@ -2418,19 +2405,18 @@ def validate_experiment_spec(
         # lax=True; the validator has already named every unknown workflow
         # item, so the parser does not report it again.
         #
-        # Seeded from the spec's own seed through the helper compile and
-        # `pmspec validate` share, so a spec that compiles cannot be rejected
-        # here for want of a seed (`assign:` refuses to draw unseeded). With no
-        # seed anywhere, this reports what compile reports. `resolve_times=False`,
-        # as `compile_spec` and `pmspec validate` pass it: a `start_at: {from,
-        # jitter}` is drawn after conversion from the lock's seed, so resolving
-        # here would reject a spec `compile_experiment_spec` accepts. Only
-        # `convert_spec_to_json`, which records no seed, resolves times -- and
-        # refuses a jitter.
+        # Seeded with the number `raw_spec` was drawn under, so a spec that
+        # compiles cannot be rejected here for want of a seed (`assign:` refuses
+        # to draw unseeded). With no seed anywhere, this reports what compile
+        # reports. `resolve_times=False`, as `compile_spec` and `pmspec validate`
+        # pass it: a `start_at: {from, jitter}` is drawn after conversion from
+        # the lock's seed, so resolving here would reject a spec
+        # `compile_experiment_spec` accepts. Only `convert_spec_to_json`, which
+        # records no seed, resolves times -- and refuses a jitter.
         parsed, result = parse_and_convert(
             yaml_content,
             base_dir=base_dir,
-            seed=effective_seed(raw_spec, is_runs, seed),
+            seed=prepared.run_seed,
             lax=lax,
             resolve_times=False,
             report_unknown_items=False,
@@ -2449,15 +2435,14 @@ def validate_experiment_spec(
     )
     all_errors, all_warnings = merge_reports(
         [
-            load_errors,
+            prep_errors,
             validation_result.errors,
             parsed.errors,
             result.errors,
             validator.validate_expanded(result.json_data),
-            runs_errors,
             name_errors,
         ],
-        [load_warnings, validation_result.warnings, parsed.warnings, result.warnings],
+        [prep_warnings, validation_result.warnings, parsed.warnings, result.warnings],
         dropped,
         lax,
     )
@@ -3180,7 +3165,7 @@ design:
     mainstream_media_aversion:
       levels: [control, treated]
       maps_to:
-        params.pi:
+        configuration.params.pi:
           control: 0
           treated: 1
   replications: 3

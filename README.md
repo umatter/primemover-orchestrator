@@ -489,7 +489,7 @@ design:
     political_orientation:
       levels: [left, center, right]
       maps_to:
-        params.pi: {left: -0.5, center: 0, right: 0.5}
+        configuration.params.pi: {left: -0.5, center: 0, right: 0.5}
     content_type:
       levels: [news, entertainment]
   replications: 5

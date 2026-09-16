@@ -51,11 +51,9 @@ from .lock.api import ApiError, ApiSession
 from .lock.audit import audit_experiment, lock_strategies
 from .lock.build import (
     compile_spec,
-    effective_seed,
-    load_spec_raw,
+    load_and_prepare,
     merge_reports,
     parse_and_convert,
-    prepare_runs_spec,
 )
 from .lock.cleanup import CleanupError, delete_experiments, find_test_experiments, parse_age
 from .lock.diff import diff_locks
@@ -135,26 +133,16 @@ def validate(file: str, format: str, strict: bool, lax: bool, seed: int | None):
         click.echo(f"Anchor:     {lock.schedule['anchor']}")
         sys.exit(0)
 
-    # Parse the YAML first (!file tags resolved), exactly as compile_spec does.
-    # A `!file` the loader could not read is an error here too, not a silently
-    # empty list: on the runs path nothing downstream re-reads it.
-    raw_spec, load_errors, load_warnings = load_spec_raw(content, base_dir=base_dir, seed=seed)
-    if raw_spec is None and load_errors:
-        if format == "json":
-            click.echo(json.dumps({"valid": False, "errors": load_errors, "warnings": []}))
-        else:
-            click.secho("Validation FAILED", fg="red", bold=True)
-            for error in load_errors:
-                click.secho(f"  {error}", fg="red")
-        sys.exit(1)
-
-    # A `runs_for:` spec is validated as a runs spec, against its base fleet
-    # lock -- the same preparation compile_spec does, so validate cannot pass a
-    # spec compile would refuse (or the other way round).
-    raw_spec, base, runs_errors = prepare_runs_spec(raw_spec, base_dir=base_dir)
-    is_runs = isinstance(raw_spec, dict) and "runs_for" in raw_spec
-    if is_runs and base is None:
-        prep_errors = load_errors + [e for e in runs_errors if e not in load_errors]
+    # The one preparation every reader of a spec shares: the YAML loaded under
+    # the seed *compile* would run with (so validate judges the very draw a
+    # `!file {select: random}` would compile), `!file` errors kept rather than
+    # silently emptied, and a `runs_for:` spec expanded against its base fleet
+    # lock. Without it validate could pass a spec compile refuses, or refuse one
+    # it accepts.
+    prepared = load_and_prepare(content, base_dir=base_dir, seed=seed)
+    raw_spec, is_runs, base = prepared.raw, prepared.is_runs, prepared.base
+    prep_errors, prep_warnings = prepared.errors, prepared.warnings
+    if (raw_spec is None and prep_errors) or (is_runs and base is None):
         if format == "json":
             click.echo(json.dumps({"valid": False, "errors": prep_errors, "warnings": []}))
         else:
@@ -163,12 +151,10 @@ def validate(file: str, format: str, strict: bool, lax: bool, seed: int | None):
                 click.secho(f"  ERROR: {error}", fg="red")
         sys.exit(1)
 
-    # The seed compile would run with, resolved from the same helper: a spec
-    # that compiles must not fail validation for want of a seed. `assign:`
-    # refuses to draw unseeded, so validate handing its converter nothing but
-    # `--seed` made `pmspec validate` reject specs `pmspec compile` accepted.
-    # With no seed anywhere, both report the same "assignments need a seed".
-    run_seed = effective_seed(raw_spec, is_runs, seed)
+    # `assign:` refuses to draw unseeded, so validate handing its converter
+    # nothing but `--seed` made `pmspec validate` reject specs `pmspec compile`
+    # accepted. With no seed anywhere, both report "assignments need a seed".
+    run_seed = prepared.run_seed
 
     # Run enhanced validator on raw spec
     validator = SpecValidator(base_dir=base_dir, lax=lax, runs=is_runs)
@@ -203,15 +189,14 @@ def validate(file: str, format: str, strict: bool, lax: bool, seed: int | None):
     )
     all_errors, all_warnings = merge_reports(
         [
-            load_errors,
+            prep_errors,
             validation_result.errors,
             parsed.errors,
             result.errors,
             validator.validate_expanded(result.json_data),
-            runs_errors,
             name_errors,
         ],
-        [load_warnings, validation_result.warnings, parsed.warnings, result.warnings],
+        [prep_warnings, validation_result.warnings, parsed.warnings, result.warnings],
         dropped,
         lax,
     )
@@ -1154,32 +1139,27 @@ def preview(file: str, seed: int | None):
 
     # The same preparation `validate` and `compile` do, so a runs spec previews
     # as what it would compile to rather than as an unnamed spec with no bots.
-    raw_spec, load_errors, _load_warnings = load_spec_raw(content, base_dir=base_dir, seed=seed)
-    if raw_spec is None and load_errors:
+    prepared = load_and_prepare(content, base_dir=base_dir, seed=seed)
+    raw_spec, is_runs, base = prepared.raw, prepared.is_runs, prepared.base
+    prep_errors = prepared.errors
+    if (raw_spec is None and prep_errors) or (is_runs and base is None):
         click.secho("Parse errors:", fg="red")
-        for error in load_errors:
-            click.secho(f"  {error}", fg="red")
-        sys.exit(1)
-    raw_spec, base, runs_errors = prepare_runs_spec(raw_spec, base_dir=base_dir)
-    is_runs = isinstance(raw_spec, dict) and "runs_for" in raw_spec
-    if is_runs and base is None:
-        click.secho("Parse errors:", fg="red")
-        for error in load_errors + [e for e in runs_errors if e not in load_errors]:
+        for error in prep_errors:
             click.secho(f"  {error}", fg="red")
         sys.exit(1)
 
     parsed, result = parse_and_convert(
         content,
         base_dir=base_dir,
-        seed=effective_seed(raw_spec, is_runs, seed),
+        seed=prepared.run_seed,
         resolve_times=False,  # previewing is not generating -- see `validate`
         raw=raw_spec if is_runs else None,
         runs=is_runs,
     )
 
-    # `load_errors` first: a `!file` the loader could not read is what every
+    # `prep_errors` first: a `!file` the loader could not read is what every
     # emptiness below would otherwise be blamed on.
-    preview_errors = merge_reports([load_errors, runs_errors, list(parsed.errors)], [], 0, False)[0]
+    preview_errors = merge_reports([prep_errors, list(parsed.errors)], [], 0, False)[0]
     if preview_errors:
         click.secho("Parse errors:", fg="red")
         for error in preview_errors:
@@ -1673,7 +1653,7 @@ design:
           left: 1
           center: 0
           right: -1
-        params.pi:
+        configuration.params.pi:
           left: -0.5
           center: 0
           right: 0.5
