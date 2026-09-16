@@ -29,6 +29,7 @@ import json
 from pathlib import Path
 from typing import Any
 
+from .assign import ASSIGN_SELECTS
 from .distributions import DistributionFactory
 from .job_registry import JobRegistry
 from .validator import SpecValidator
@@ -439,6 +440,15 @@ def build_schema() -> dict[str, Any]:
             ),
             "default": False,
         },
+        "assign": {
+            "type": "object",
+            "description": (
+                "Per-crawler pool draws: each name takes one row of a pool, without "
+                "replacement across crawlers, and exposes its columns as "
+                "{name.column} placeholders anywhere in this crawler"
+            ),
+            "additionalProperties": {"$ref": "#/definitions/assignment"},
+        },
         "updates": {
             "type": "object",
             "description": (
@@ -453,6 +463,27 @@ def build_schema() -> dict[str, Any]:
                 }
             },
             "additionalProperties": False,
+        },
+    }
+
+    assignment_fragments = {
+        "from_pool": {"type": "string", "description": "Name of a declared data pool"},
+        "match_field": {
+            "type": "string",
+            "description": (
+                "Pool column compared with the crawler's agent.location (or with "
+                "match_value); omit to draw from any row"
+            ),
+        },
+        "match_value": {
+            "type": "string",
+            "description": "What match_field is compared with, instead of agent.location",
+        },
+        "select": {
+            "type": "string",
+            "description": "How a row is chosen among the free matching ones",
+            "enum": sorted(ASSIGN_SELECTS),
+            "default": "random",
         },
     }
 
@@ -540,6 +571,12 @@ def build_schema() -> dict[str, Any]:
             sv._KEYS_CRAWLER | sv._KEYS_CRAWLER_RUNS,
             "Crawler definition (a fleet spec's, or a runs spec's)",
             crawler_fragments,
+        ),
+        "assignment": _object(
+            sv._KEYS_ASSIGN,
+            "One pool row drawn for this crawler, substitutable as {name.column}",
+            assignment_fragments,
+            required=["from_pool"],
         ),
         "configuration": _object(
             sv._KEYS_CONFIGURATION, "Crawler configuration", configuration_fragments

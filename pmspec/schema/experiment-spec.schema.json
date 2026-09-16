@@ -320,7 +320,13 @@
         "agent": {
           "$ref": "#/definitions/agent"
         },
-        "assign": {},
+        "assign": {
+          "type": "object",
+          "description": "Per-crawler pool draws: each name takes one row of a pool, without replacement across crawlers, and exposes its columns as {name.column} placeholders anywhere in this crawler",
+          "additionalProperties": {
+            "$ref": "#/definitions/assignment"
+          }
+        },
         "configuration": {
           "$ref": "#/definitions/configuration"
         },
@@ -380,6 +386,37 @@
         }
       },
       "additionalProperties": false
+    },
+    "assignment": {
+      "type": "object",
+      "description": "One pool row drawn for this crawler, substitutable as {name.column}",
+      "properties": {
+        "from_pool": {
+          "type": "string",
+          "description": "Name of a declared data pool"
+        },
+        "match_field": {
+          "type": "string",
+          "description": "Pool column compared with the crawler's agent.location (or with match_value); omit to draw from any row"
+        },
+        "match_value": {
+          "type": "string",
+          "description": "What match_field is compared with, instead of agent.location"
+        },
+        "select": {
+          "type": "string",
+          "description": "How a row is chosen among the free matching ones",
+          "enum": [
+            "first",
+            "random"
+          ],
+          "default": "random"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "from_pool"
+      ]
     },
     "configuration": {
       "type": "object",

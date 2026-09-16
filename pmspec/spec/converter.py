@@ -13,6 +13,7 @@ import re
 from dataclasses import dataclass, field
 from typing import Any
 
+from .assign import resolve_assignments
 from .data_pools import DataPoolManager, resolve_pool_references
 from .design_expander import DesignExpander
 from .draws import ANY_DRAW_TOKEN_RE, resolve_draws
@@ -218,6 +219,20 @@ class SpecConverter:
             else:
                 all_crawlers.append(crawler_template)
 
+        # Give each `assign:` entry its row of a pool and substitute the row's
+        # columns as `{<name>.<column>}` throughout the crawler. First of the
+        # substitution passes on purpose: an assigned value may be what a pool
+        # scoring context, a template `with:` value or a proxy field reads, and
+        # `match_value: "{city}"` / `"{base.x}"` are already concrete by now
+        # (design expansion, and `from_base:` before the parse).
+        #
+        # `pool_rows_taken` is shared with `_assign_pool_proxies` below so a
+        # pool serving both cannot hand the same row to a proxy and a bot.
+        pool_rows_taken: dict[str, set[int]] = {}
+        self.errors.extend(
+            resolve_assignments(all_crawlers, parsed.pool_manager, effective_seed, pool_rows_taken)
+        )
+
         # Resolve data-pool references now that design expansion has fixed each
         # crawler's params (pi, kappa, alpha, ...) -- pool scoring expressions
         # read those from the crawler context.
@@ -262,7 +277,7 @@ class SpecConverter:
         # Assign one pool row per `proxy: {from_pool: true}` crawler now that
         # design expansion and pool-reference resolution have fixed each
         # crawler's agent/location.
-        self._assign_pool_proxies(all_crawlers, parsed.pool_manager)
+        self._assign_pool_proxies(all_crawlers, parsed.pool_manager, pool_rows_taken)
 
         # Convert each crawler to API format
         api_crawlers = []
@@ -487,7 +502,10 @@ class SpecConverter:
         return str(value) if value is not None else ""
 
     def _assign_pool_proxies(
-        self, crawlers: list[dict[str, Any]], pool_manager: DataPoolManager | None
+        self,
+        crawlers: list[dict[str, Any]],
+        pool_manager: DataPoolManager | None,
+        used: dict[str, set[int]] | None = None,
     ) -> None:
         """Give each `proxy: {from_pool: true}` crawler its own row of the named pool.
 
@@ -495,11 +513,19 @@ class SpecConverter:
         detection signal and a confound across arms), so rows are handed out
         without replacement, in pool order, to crawlers in spec order; running
         out is an error, not a shared proxy.
+
+        `used` is the taken-row bookkeeping, shared with `resolve_assignments`
+        (`assign:`) so a pool serving both features hands each row out once in
+        total, not once per feature.
         """
-        used: dict[str, set[int]] = {}
+        used = {} if used is None else used
         # Pools already found to have no hostname/host column: reported once,
         # then every crawler drawing from them is skipped without repeating it.
         unusable: set[str] = set()
+        # Pools whose hostname/host column has been checked. Kept apart from
+        # `used`, which an `assign:` on the same pool may already have filled:
+        # keying the check on `used` would skip it for exactly those pools.
+        checked: set[str] = set()
         for i, crawler in enumerate(crawlers):
             proxy = crawler.get("proxy")
             if not (isinstance(proxy, dict) and proxy.get("from_pool") is True):
@@ -520,7 +546,8 @@ class SpecConverter:
             # An empty hostname is the runner's "no proxy" signal, so a pool whose
             # rows have no hostname/host column at all (`ip`, say) would turn
             # every bot into a direct connection. Checked once per pool.
-            if pool_name not in unusable and pool_name not in used:
+            if pool_name not in unusable and pool_name not in checked:
+                checked.add(pool_name)
                 if not any(("hostname" in row or "host" in row) for row in rows):
                     columns = sorted({str(k) for row in rows for k in row})
                     self.errors.append(

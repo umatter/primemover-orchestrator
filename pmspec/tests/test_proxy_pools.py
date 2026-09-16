@@ -145,3 +145,34 @@ def test_defaults_proxy_from_pool_assigns_rows_like_the_per_crawler_form(spec_di
         "p3.example",
     ]
     assert all(c["proxy"]["port"] == 7777 for c in r.json_data)
+
+
+def test_an_assign_on_the_same_pool_takes_rows_the_proxies_then_cannot(spec_dir):
+    """`assign:` and `proxy: {from_pool: ...}` share one taken-row set, so a pool
+    serving both hands each row out once in total -- and runs out sooner."""
+    text = SPEC.replace(
+        "  - name: chi_1\n",
+        "  - name: spare\n    agent: {location: US-IL-CHICAGO}\n"
+        "    assign:\n"
+        "      slot: {from_pool: us_proxies, match_field: location, select: first}\n"
+        "    configuration:\n"
+        "      preferences:\n"
+        '        - {name: slot, value: "{slot.hostname}"}\n'
+        '    session: {start: "+1m", workflow: [{wait: 1s}]}\n'
+        "  - name: chi_1\n",
+    )
+    parsed = SpecParser(base_dir=spec_dir).parse(text)
+    r = SpecConverter(seed=1).convert(parsed)
+    assigned = [
+        p["value"]
+        for c in r.json_data
+        for p in c["configuration"]["preferences"]
+        if p["name"] == "slot"
+    ]
+    assert assigned == ["p1.example"]
+    # chi_1 now gets p2; chi_2 has no free Chicago row left.
+    assert any("chi_2" in e and "us_proxies" in e for e in r.errors), r.errors
+    assert [c["proxy"]["hostname"] for c in r.json_data if c["name"] != "spare"] == [
+        "p2.example",
+        "p3.example",
+    ]

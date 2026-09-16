@@ -23,6 +23,7 @@ try:
 except ImportError:
     HAS_JSONSCHEMA = False
 
+from .assign import ASSIGN_KEYS, ASSIGN_SELECTS
 from .draws import is_draw, is_valid_name, select_error
 from .drops import Drops
 from .job_registry import JobRegistry
@@ -144,8 +145,13 @@ class SpecValidator:
             "session",
             "additional_sessions",
             "queues",
+            "assign",
         }
     )
+    # The keys one `assign: {<name>: {...}}` entry may carry (see
+    # spec/assign.py, which owns the set so the drawing code and this
+    # whitelist cannot drift).
+    _KEYS_ASSIGN: frozenset[str] = ASSIGN_KEYS
     # A *runs* spec (one that names a fleet lock with `runs_for:`) has its own
     # whitelists. It adds sessions to bots the base lock already randomized, so
     # everything that describes a bot is absent here -- and absent as an
@@ -352,6 +358,10 @@ class SpecValidator:
         self.runs = runs
         self.drops = Drops(lax)
         self._strategy_schemas: dict[str, Any] = {}
+        # Pool name -> its column names, loaded on first `assign.match_field`
+        # check and reset per validate(); None until then, so a spec with no
+        # `assign:` never reads a pool file.
+        self._pool_columns_cache: dict[str, list[str]] | None = None
         self._load_schema(schema_path)
 
     def _load_schema(self, schema_path: str | None = None) -> None:
@@ -389,6 +399,7 @@ class SpecValidator:
         info: dict[str, Any] = {}
         self.drops = Drops(self.lax)
         self._strategy_schemas = spec.get("strategy_schemas") or {}
+        self._pool_columns_cache = None
 
         # 0. Unknown keys (first, so the message a reader sees first names the typo)
         self._validate_unknown_keys(spec)
@@ -667,6 +678,10 @@ class SpecValidator:
             check(crawler, crawler_keys, prefix)
             if not isinstance(crawler, dict):
                 continue
+            assign = crawler.get("assign")
+            if isinstance(assign, dict):
+                for name, entry in assign.items():
+                    check(entry, self._KEYS_ASSIGN, f"{prefix}.assign.{name}")
             check(crawler.get("configuration"), self._KEYS_CONFIGURATION, f"{prefix}.configuration")
             check(crawler.get("proxy"), self._KEYS_PROXY, f"{prefix}.proxy")
             check(crawler.get("agent"), self._KEYS_AGENT, f"{prefix}.agent")
@@ -926,6 +941,8 @@ class SpecValidator:
             if crawler.get("from_design") and not design:
                 errors.append(f"{prefix}: from_design=true but no design is defined")
 
+            self._validate_assign(crawler, prefix, spec, errors)
+
             # Validate proxy if defined.
             #
             # A warning, not a drop: nothing the author wrote is discarded; the
@@ -960,6 +977,103 @@ class SpecValidator:
                 )
 
         return errors, warnings
+
+    _ASSIGN_NAME_RE = re.compile(r"[A-Za-z_]\w*")
+
+    def _pool_columns(self, spec: dict[str, Any], name: str) -> list[str] | None:
+        """The column names of a declared data pool, or None when they cannot
+        be read here (no such pool, or the file is missing/unreadable -- the
+        parser reports that, and a second message from a *column* check would
+        only bury it).
+
+        Loaded lazily and cached per validate() call: only a spec carrying
+        `assign:` pays for it.
+        """
+        if self._pool_columns_cache is None:
+            from .data_pools import DataPoolManager
+
+            manager = DataPoolManager(base_dir=self.base_dir)
+            pools = spec.get("data_pools")
+            if isinstance(pools, dict):
+                manager.load_pools_from_spec(pools)
+            self._pool_columns_cache = {
+                pool: sorted({str(k) for row in (rows or []) for k in row})
+                for pool, rows in manager.pools.items()
+            }
+        return self._pool_columns_cache.get(name)
+
+    def _validate_assign(
+        self, crawler: Any, prefix: str, spec: dict[str, Any], errors: list[str]
+    ) -> None:
+        """`assign: {<name>: {from_pool, match_field, match_value, select}}`.
+
+        Every rule here is an error, not a drop: an assignment the converter
+        cannot draw leaves `{<name>.<column>}` in the crawler, and while the
+        unresolved scan does catch that, it names the placeholder rather than
+        the mistake. Saying "pool 'panelists' has no column 'county'" once is
+        worth more than one drop per place the row was referenced.
+        """
+        if not isinstance(crawler, dict):
+            return
+        assignments = crawler.get("assign")
+        if assignments is None:
+            return
+        if not isinstance(assignments, dict):
+            errors.append(f"{prefix}.assign: must be a mapping of <name> to a pool draw")
+            return
+
+        declared = spec.get("data_pools")
+        declared_names = set(declared) if isinstance(declared, dict) else set()
+        design = spec.get("design") or {}
+        # `base` is taken by a runs spec's `{base.<var>}`; a factor or sampled
+        # parameter already owns its bare `{name}`, and an assignment of the
+        # same name would make `{name.x}` and `{name}` two different things.
+        reserved = {"base"}
+        for key in ("factors", "parameters"):
+            block = design.get(key)
+            if isinstance(block, dict):
+                reserved |= set(block)
+
+        for raw_name, entry in assignments.items():
+            name = str(raw_name)
+            where = f"{prefix}.assign.{name}"
+            if not self._ASSIGN_NAME_RE.fullmatch(name):
+                # `{pan-elist.col}` matches neither the substitution regex nor
+                # the unresolved scan, so it would reach the bot as a literal
+                # with nothing reported anywhere.
+                errors.append(
+                    f"{where}: an assignment name must be a letter or underscore followed by "
+                    "letters, digits or underscores (it becomes a {name.column} placeholder)"
+                )
+                continue
+            if name in reserved:
+                errors.append(f"{where}: collides with a design variable")
+                continue
+            if not isinstance(entry, dict):
+                errors.append(f"{where}: must be a mapping with `from_pool:`")
+                continue
+
+            pool = entry.get("from_pool")
+            if not pool or not isinstance(pool, str):
+                errors.append(f"{where}: from_pool is required (the pool to draw a row from)")
+                continue
+            if pool not in declared_names:
+                errors.append(f"{where}: unknown pool '{pool}' (define it under data_pools)")
+                continue
+
+            select = entry.get("select")
+            if select is not None and select not in ASSIGN_SELECTS:
+                errors.append(f"{where}: select must be random or first, got {select!r}")
+
+            field = entry.get("match_field")
+            if field is None:
+                continue
+            columns = self._pool_columns(spec, pool)
+            if columns is not None and str(field) not in columns:
+                errors.append(
+                    f"{where}: match_field {str(field)!r} is not a column of pool "
+                    f"'{pool}' (columns: {columns})"
+                )
 
     def _validate_session(
         self,
