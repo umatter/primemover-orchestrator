@@ -297,10 +297,31 @@ class AuditResult:
         return "\n".join(lines)
 
 
-def _arm_label(crawler: dict[str, Any]) -> str:
+def _treatment_arm(treatment: dict[str, Any] | None) -> str:
+    """The arm a *job's own treatment* names, for a crawler that has no
+    configuration to read one from (a runs lock's).
+
+    ``reliability/lean`` when the job asks for both, else the switches it
+    actually carries -- only those, since a runs lock says nothing about the
+    ones it leaves out. Nothing to go on is ``-``, never a control arm: the
+    bot's arm is in the fleet lock this one was compiled against.
+    """
+    treatment = treatment or {}
+    if "reliability" in treatment and "lean" in treatment:
+        return f"{treatment['reliability']}/{treatment['lean']}"
+    named = [f"{k}={treatment[k]}" for k in ("pi", "psi", "kappa", "tau") if k in treatment]
+    return ",".join(named) if named else "-"
+
+
+def _arm_label(crawler: dict[str, Any], treatment: dict[str, Any] | None = None) -> str:
     """``reliability/lean`` from the lock crawler's own preferences when both
-    are set, else ``pi=...,psi=...,kappa=...,tau=...`` from its params."""
-    config = crawler.get("configuration") or {}
+    are set, else ``pi=...,psi=...,kappa=...,tau=...`` from its params.
+
+    A runs lock's crawler carries no configuration at all, so there the arm
+    comes from the job's treatment instead (:func:`_treatment_arm`)."""
+    config = crawler.get("configuration")
+    if config is None:
+        return _treatment_arm(treatment)
     prefs = {p.get("name"): p.get("value") for p in config.get("preferences", [])}
     if "reliability" in prefs and "lean" in prefs:
         return f"{prefs['reliability']}/{prefs['lean']}"
@@ -348,13 +369,19 @@ def _job_treatment(
     ``configuration.params`` via ``selectionConfiguration``, so it is audited
     under ``youtube_v1`` with those params (``pi``/``psi``/``kappa``/``tau``/
     ``beta``) as the treatment. Anything else has nothing to audit.
+
+    The params fallback needs a ``configuration``, which a runs lock's crawler
+    has none of -- its bot was configured by the fleet lock it appends to. A
+    strategy-less lambda job there is not audited rather than audited against
+    an assumed control arm, which would report every treated bot as a mismatch.
     """
     behaviors = _behaviors(job)
     strategy = behaviors.get("strategy")
     if strategy is not None:
         return str(strategy), {k: v for k, v in behaviors.items() if k != "strategy"}
-    if job.get("type") == LAMBDA_SELECT_TYPE:
-        params = (crawler.get("configuration") or {}).get("params") or {}
+    config = crawler.get("configuration")
+    if config is not None and job.get("type") == LAMBDA_SELECT_TYPE:
+        params = config.get("params") or {}
         return "youtube_v1", {k: params.get(k, 0) for k in YOUTUBE_V1}
     return None
 
@@ -510,6 +537,8 @@ def audit_experiment(
         name = crawler["name"]
         if name not in chosen:
             continue
+        # A fleet crawler's arm is a property of the bot; a runs crawler has no
+        # configuration, so its arm is whatever each job's treatment asks for.
         arm = _arm_label(crawler)
         live_crawler = live_by_name.get(name)
         if live_crawler is None:
@@ -519,10 +548,19 @@ def audit_experiment(
             for lock_queue in crawler.get("queues", []):
                 qname = lock_queue.get("name", "")
                 for ordinal, job in enumerate(lock_queue.get("jobs", [])):
-                    if _job_treatment(crawler, job) is None:
+                    resolved = _job_treatment(crawler, job)
+                    if resolved is None:
                         continue
                     findings.append(
-                        JobFinding(name, qname, ordinal, None, arm, "missing", "no live crawler")
+                        JobFinding(
+                            name,
+                            qname,
+                            ordinal,
+                            None,
+                            _arm_label(crawler, resolved[1]),
+                            "missing",
+                            "no live crawler",
+                        )
                     )
             continue
         live_cid = int(live_crawler["id"])
@@ -547,10 +585,19 @@ def audit_experiment(
 
             if position >= len(candidates):
                 for ordinal, job in enumerate(lock_jobs):
-                    if _job_treatment(crawler, job) is None:
+                    resolved = _job_treatment(crawler, job)
+                    if resolved is None:
                         continue
                     findings.append(
-                        JobFinding(name, qname, ordinal, None, arm, "missing", "no live queue")
+                        JobFinding(
+                            name,
+                            qname,
+                            ordinal,
+                            None,
+                            _arm_label(crawler, resolved[1]),
+                            "missing",
+                            "no live queue",
+                        )
                     )
                 continue
 
@@ -591,6 +638,7 @@ def audit_experiment(
                 if resolved is None:
                     continue
                 strategy, treatment = resolved
+                arm = _arm_label(crawler, treatment)
 
                 if ordinal >= len(live_jobs):
                     findings.append(

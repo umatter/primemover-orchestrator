@@ -86,6 +86,11 @@ class RunsSession:
     Records every call. ``preference_update_supported`` is the *API version*
     switch the support probe reads: an API without the preferences sync answers
     the same 200 but its ``data`` carries no ``preferences`` key.
+
+    It also *reflects its writes*, as the real API does: preferences PUT on the
+    experiment come back on the next read, and queues posted to a crawler come
+    back in the queue listings. That is what lets the post-upload verify in
+    ``upload`` see what the upload just wrote.
     """
 
     base_url = "http://fake"
@@ -101,6 +106,7 @@ class RunsSession:
         fail_on_crawler: str | None = None,
     ) -> None:
         self.calls: list[tuple[str, str, Any]] = []
+        self.extra_prefs: list[dict[str, Any]] = []
         self.live_sha = live_sha
         self.live_mode = live_mode
         self.preference_update_supported = preference_update_supported
@@ -138,7 +144,7 @@ class RunsSession:
             "user_id": 5,
             "description": "the study",
             "contact": "ada@example.org",
-            "preferences": prefs,
+            "preferences": prefs + self.extra_prefs,
             "crawlers": copy.deepcopy(self.crawlers),
         }
 
@@ -170,6 +176,7 @@ class RunsSession:
                 ]
             return data
         self.experiment_puts.append(json)
+        self.extra_prefs.extend(json.get("preferences") or [])
         return {"id": int(path.split("/")[1])}
 
     def post_file(self, path, field, filename, content, content_type):
@@ -180,7 +187,17 @@ class RunsSession:
             from pmspec.lock.api import ApiError
 
             raise ApiError("upload failed", status=422, detail="bad queue")
-        self.crawler_uploads[crawler_id] = json.loads(content)
+        queues = json.loads(content)
+        self.crawler_uploads[crawler_id] = queues
+        for q in queues:
+            self.existing_queues.append(
+                {
+                    "id": 700 + len(self.existing_queues),
+                    "crawler_id": crawler_id,
+                    "name": q["name"],
+                    "start_at": str(q["start_at"]).replace("T", " ")[:19],
+                }
+            )
         return {}
 
 

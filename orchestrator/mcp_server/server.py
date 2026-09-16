@@ -2701,12 +2701,9 @@ def upload_experiment(
         response["queues_posted"] = result.queue_count
         response["queues_skipped_existing"] = result.skipped_existing
         response["updates_applied"] = result.updates_applied
-        # verify_lock compares a *fleet*: crawler shape, params, proxy. A runs
-        # lock owns none of that and would read as all-different. Comparing
-        # only the queues it uploaded is its own piece of work; saying nothing
-        # is better than reporting a difference that is not one.
-        response["verify"] = {"skipped": "verify does not compare a runs lock yet"}
-        return json.dumps(response)
+        # and then falls through to the same verify: for a runs lock that
+        # compares the queues it appended and the preferences it updated,
+        # nothing of the fleet it appended them to.
 
     # Outside any earlier try: the upload itself already succeeded, and an
     # exception here (an httpx failure fetching the export under deep_verify,

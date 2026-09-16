@@ -120,7 +120,48 @@ def _wall(value: str) -> str:
     return value.replace(" ", "T")[:19]
 
 
+def _lock_queues(
+    crawler: dict[str, Any], anchor_dt: datetime, *, deep: bool
+) -> list[dict[str, Any]]:
+    queues: list[dict[str, Any]] = []
+    for q in crawler.get("queues", []):
+        queue: dict[str, Any] = {
+            "name": q["name"],
+            "start_at": _wall(resolve_start_at(anchor_dt, q["start_offset"])),
+        }
+        if deep:
+            queue["jobs"] = [
+                {
+                    "type": j["type"],
+                    "behaviors": {b["name"]: str(b["value"]) for b in j.get("behaviors", [])},
+                }
+                for j in q.get("jobs", [])
+            ]
+        queues.append(queue)
+    return queues
+
+
+def runs_lock_shape(lock: Lock, anchor_dt: datetime, *, deep: bool) -> dict[str, Any]:
+    """What a *runs* lock claims about the live experiment.
+
+    Only what it wrote: the queues it appended to each crawler, and -- when it
+    carries ``updates:`` -- the preference values it set. The bot itself (its
+    params, proxy, location and every other preference) belongs to the fleet
+    lock that created it and is not this lock's claim to make.
+    """
+    crawlers: dict[str, Any] = {}
+    for c in lock.crawlers:
+        entry: dict[str, Any] = {"queues": _lock_queues(c, anchor_dt, deep=deep)}
+        updates = (c.get("updates") or {}).get("preferences") or {}
+        if updates:
+            entry["updates"] = {str(k): str(v) for k, v in updates.items()}
+        crawlers[c["name"]] = entry
+    return {"crawlers": crawlers}
+
+
 def lock_shape(lock: Lock, anchor_dt: datetime, *, deep: bool) -> dict[str, Any]:
+    if lock.is_runs:
+        return runs_lock_shape(lock, anchor_dt, deep=deep)
     crawlers: dict[str, Any] = {}
     for c in lock.crawlers:
         proxy = c.get("proxy") or {}
@@ -134,22 +175,8 @@ def lock_shape(lock: Lock, anchor_dt: datetime, *, deep: bool) -> dict[str, Any]
                 "hostname": proxy.get("hostname"),
                 "port": proxy.get("port"),
             },
-            "queues": [],
+            "queues": _lock_queues(c, anchor_dt, deep=deep),
         }
-        for q in c.get("queues", []):
-            queue: dict[str, Any] = {
-                "name": q["name"],
-                "start_at": _wall(resolve_start_at(anchor_dt, q["start_offset"])),
-            }
-            if deep:
-                queue["jobs"] = [
-                    {
-                        "type": j["type"],
-                        "behaviors": {b["name"]: str(b["value"]) for b in j.get("behaviors", [])},
-                    }
-                    for j in q.get("jobs", [])
-                ]
-            entry["queues"].append(queue)
         crawlers[c["name"]] = entry
     return {"crawlers": crawlers}
 
@@ -211,8 +238,16 @@ def _export_jobs(session: Any, experiment_id: int) -> dict[int, list[dict[str, A
 
 
 def live_shape(
-    session: Any, experiment_id: int, *, deep: bool
+    session: Any, experiment_id: int, *, deep: bool, runs: bool = False
 ) -> tuple[dict[str, Any], dict[str, Any]]:
+    """The live experiment in the shape a lock describes it.
+
+    With *runs*, only what a runs lock can own: each crawler's queues and its
+    preference values (the ones a lock's ``updates:`` names are picked out of
+    later, by :func:`runs_live_shape`). The params behind a crawler's
+    configuration are a request per configuration, so a runs verify -- which
+    compares none of them -- does not make it.
+    """
     exp = session.get(f"experiments/{experiment_id}")
     queues = _paginate(session, f"experiments/{experiment_id}/queues-unprocessed") + _paginate(
         session, f"experiments/{experiment_id}/queues-processed"
@@ -234,21 +269,26 @@ def live_shape(
     crawlers: dict[str, Any] = {}
     for c in exp.get("crawlers", []):
         config = c.get("configuration") or {}
-        params_rows: list[dict[str, Any]] = []
-        if config.get("id") is not None:
-            params_rows = _configuration(config["id"]).get("params") or []
-        proxy = c.get("proxy") or {}
-        entry: dict[str, Any] = {
-            "params": _params(params_rows[0] if params_rows else None),
-            "preferences": {p["name"]: str(p["value"]) for p in config.get("preferences", [])},
-            "location": (c.get("agent") or {}).get("location", ""),
-            "proxy": {
-                "type": proxy.get("type"),
-                "hostname": proxy.get("hostname"),
-                "port": proxy.get("port"),
-            },
-            "queues": [],
-        }
+        preferences = {p["name"]: str(p["value"]) for p in config.get("preferences", [])}
+        entry: dict[str, Any]
+        if runs:
+            entry = {"preferences": preferences, "queues": []}
+        else:
+            params_rows: list[dict[str, Any]] = []
+            if config.get("id") is not None:
+                params_rows = _configuration(config["id"]).get("params") or []
+            proxy = c.get("proxy") or {}
+            entry = {
+                "params": _params(params_rows[0] if params_rows else None),
+                "preferences": preferences,
+                "location": (c.get("agent") or {}).get("location", ""),
+                "proxy": {
+                    "type": proxy.get("type"),
+                    "hostname": proxy.get("hostname"),
+                    "port": proxy.get("port"),
+                },
+                "queues": [],
+            }
         for q in sorted(
             by_crawler.get(int(c["id"]), []), key=lambda q: (_wall(q["start_at"]), q["name"])
         ):
@@ -258,6 +298,44 @@ def live_shape(
             entry["queues"].append(queue)
         crawlers[c["name"]] = entry
     return {"crawlers": crawlers}, exp
+
+
+def runs_live_shape(
+    live: dict[str, Any], expected: dict[str, Any], *, match_start: bool
+) -> dict[str, Any]:
+    """The live side of a runs verify: what *this* lock put there, and nothing else.
+
+    For each crawler the lock names, the live queues whose ``(start_at, name)``
+    the lock asked for -- so the queues another upload appended to the same bot
+    never read as extra -- plus the live value of exactly the preference names
+    its ``updates:`` set. A lock queue with no live match simply is not there,
+    which ``compare_shapes`` reports as a shorter queue list.
+
+    Without the server's anchor (``match_start``) a lock start time resolves to
+    nothing comparable, so the match falls back to the queue name alone rather
+    than silently matching nothing at all.
+    """
+    crawlers: dict[str, Any] = {}
+    for name, want in expected["crawlers"].items():
+        entry = live["crawlers"].get(name)
+        if entry is None:
+            continue  # absent crawler: compare_shapes reports it as missing
+        keys = {
+            (q.get("start_at"), q["name"]) if match_start else (None, q["name"])
+            for q in want["queues"]
+        }
+        kept: dict[str, Any] = {
+            "queues": [
+                q
+                for q in entry["queues"]
+                if ((q.get("start_at"), q["name"]) if match_start else (None, q["name"])) in keys
+            ]
+        }
+        if "updates" in want:
+            prefs = entry.get("preferences") or {}
+            kept["updates"] = {k: prefs[k] for k in want["updates"] if k in prefs}
+        crawlers[name] = kept
+    return {"crawlers": crawlers}
 
 
 def compare_shapes(expected: Any, actual: Any, path: str = "") -> list[Difference]:
@@ -313,7 +391,7 @@ def verify_lock(
 ) -> VerifyResult:
     lock = load_lock(lock_text)
     local_sha = sha256_text(lock_text)
-    actual, exp = live_shape(session, experiment_id, deep=deep)
+    actual, exp = live_shape(session, experiment_id, deep=deep, runs=lock.is_runs)
     prefs = exp.get("preferences", [])
     live_shas = [p["value"] for p in prefs if p.get("name") == "pmspec.lock_sha256"]
     anchor_iso = _live_anchor(prefs, local_sha)
@@ -324,19 +402,26 @@ def verify_lock(
     # Queue order inside a crawler: lock order vs. live sorted by start; sort the lock side too.
     for entry in expected["crawlers"].values():
         entry["queues"].sort(key=lambda q: (q["start_at"], q["name"]))
+    if lock.is_runs:
+        # A runs lock appends to a fleet somebody else uploaded: every crawler
+        # it does not name, and every queue it did not write, belongs to that
+        # other upload -- so neither is "extra", and neither is compared.
+        actual = runs_live_shape(actual, expected, match_start=anchor_iso is not None)
+        extra: list[str] = []
+    else:
+        # Only this lock's crawlers are compared: in append mode the experiment
+        # legitimately holds crawlers from earlier uploads.
+        extra = sorted(set(actual["crawlers"]) - set(expected["crawlers"]))
+        actual = {
+            "crawlers": {
+                name: c for name, c in actual["crawlers"].items() if name in expected["crawlers"]
+            }
+        }
     if anchor_iso is None:
         # Without the server's anchor the lock's offsets resolve to nothing
         # comparable; the rest of the structure still is.
         _drop_start_times(expected)
         _drop_start_times(actual)
-    # Only this lock's crawlers are compared: in append mode the experiment
-    # legitimately holds crawlers from earlier uploads.
-    extra = sorted(set(actual["crawlers"]) - set(expected["crawlers"]))
-    actual = {
-        "crawlers": {
-            name: c for name, c in actual["crawlers"].items() if name in expected["crawlers"]
-        }
-    }
     return VerifyResult(
         experiment_id=experiment_id,
         bound=local_sha in live_shas,

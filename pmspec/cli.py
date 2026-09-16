@@ -777,14 +777,6 @@ def upload(
             f.write(result.record_line + "\n")
     click.echo(result.record_line)
 
-    if result.kind == "runs":
-        # `verify` compares a fleet -- crawler shape, params, proxy -- none of
-        # which a runs lock owns. Comparing only the queues it appended is its
-        # own piece of work; until it exists, saying nothing beats reporting
-        # differences that are not differences.
-        click.secho("Verify: not compared (a runs lock appends queues)", fg="cyan")
-        sys.exit(0)
-
     try:
         verdict = verify_lock(
             lock_text, session=session, experiment_id=result.experiment_id, deep=deep

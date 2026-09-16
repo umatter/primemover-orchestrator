@@ -431,7 +431,7 @@ def plan_runs_upload(lock_text: str, *, session: Any, options: UploadOptions) ->
         raise UploadRefused("not a runs lock: plan_runs_upload describes a `kind: runs` lock")
     ctx = _prepare_runs(lock, session=session, options=options)
     total = sum(len(c["queues"]) for c in ctx.crawlers)
-    skip = sum(len(_skipped(ctx, c)) for c in ctx.crawlers)
+    skip = sum(len(_partition(ctx, c)[1]) for c in ctx.crawlers)
     return {
         "kind": "runs",
         "experiment_id": ctx.experiment_id,
@@ -446,10 +446,23 @@ def plan_runs_upload(lock_text: str, *, session: Any, options: UploadOptions) ->
     }
 
 
-def _skipped(ctx: _RunsContext, crawler: dict[str, Any]) -> list[dict[str, Any]]:
+def _partition(
+    ctx: _RunsContext, crawler: dict[str, Any]
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """This crawler's queues split into (to post, already live).
+
+    The one place the skip predicate lives. A dry run reports what an apply
+    would do, so the two must compute "already live" the same way or the plan
+    is fiction; sharing the function is what makes that true by construction.
+    """
     crawler_id = int(ctx.by_name[str(crawler["name"])]["id"])
     live = ctx.existing.get(crawler_id, set())
-    return [q for q in crawler["queues"] if (_wall(str(q["start_at"])), str(q["name"])) in live]
+    post: list[dict[str, Any]] = []
+    skipped: list[dict[str, Any]] = []
+    for q in crawler["queues"]:
+        target = skipped if (_wall(str(q["start_at"])), str(q["name"])) in live else post
+        target.append(q)
+    return post, skipped
 
 
 def _apply_crawler(
@@ -459,10 +472,7 @@ def _apply_crawler(
     name = str(crawler["name"])
     live_crawler = ctx.by_name[name]
     crawler_id = int(live_crawler["id"])
-    already = ctx.existing.get(crawler_id, set())
-    post = [
-        q for q in crawler["queues"] if (_wall(str(q["start_at"])), str(q["name"])) not in already
-    ]
+    post, skipped = _partition(ctx, crawler)
     if post:
         session.post_file(
             f"crawlers/{crawler_id}/upload",
@@ -487,7 +497,7 @@ def _apply_crawler(
             },
         )
         record = {f"preferences.{k}": [old.get(k), v] for k, v in wanted.items()}
-    return len(post), len(crawler["queues"]) - len(post), record
+    return len(post), len(skipped), record
 
 
 def _upload_runs(

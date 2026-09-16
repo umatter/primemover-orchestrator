@@ -502,17 +502,30 @@ def test_runs_dry_run_needs_an_experiment_id(runs_lock_file, runs_session):
     assert runs_session.calls == []
 
 
-def test_runs_upload_prints_queue_counts_and_does_not_verify(
-    runs_lock_file, runs_session, monkeypatch
+def test_runs_upload_prints_queue_counts_and_verifies_what_it_appended(
+    runs_lock_file, runs_session
 ):
-    monkeypatch.setattr(
-        cli_module,
-        "verify_lock",
-        lambda *a, **k: pytest.fail("a runs lock must not be verified as a fleet"),
-    )
     out = CliRunner().invoke(cli, ["upload", str(runs_lock_file), "--mode", "real", "-e", "181"])
     assert out.exit_code == 0, out.output
     assert "Queues: 2 (skipped 0 already live)" in out.output
     assert "kind=runs" in out.output
-    assert "Verify: not compared" in out.output
+    assert "BOUND  experiment 181" in out.output
+    assert "structure: identical" in out.output
     assert sorted(runs_session.crawler_uploads) == [10, 11]
+
+
+def test_runs_upload_exits_nonzero_when_the_queues_did_not_land(
+    runs_lock_file, runs_session, monkeypatch
+):
+    """The post-upload verify is the check that the append worked: an API that
+    accepted the POST and stored nothing must not read as a clean upload."""
+    monkeypatch.setattr(runs_session, "existing_queues", [])
+    original = runs_session.post_file
+    monkeypatch.setattr(
+        runs_session,
+        "post_file",
+        lambda *a, **k: (original(*a, **k), runs_session.existing_queues.clear())[0],
+    )
+    out = CliRunner().invoke(cli, ["upload", str(runs_lock_file), "--mode", "real", "-e", "181"])
+    assert out.exit_code == 1, out.output
+    assert "queues.length" in out.output

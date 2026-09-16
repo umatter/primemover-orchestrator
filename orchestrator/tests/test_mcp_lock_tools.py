@@ -370,12 +370,11 @@ def test_runs_lock_dry_run_returns_the_plan_and_writes_nothing(monkeypatch: pyte
     assert session.experiment_puts == [] and session.crawler_uploads == {}
 
 
-def test_runs_lock_apply_reports_the_counts_and_skips_verify(monkeypatch: pytest.MonkeyPatch):
+def test_runs_lock_apply_reports_the_counts_and_verifies_its_queues(
+    monkeypatch: pytest.MonkeyPatch,
+):
     session = RunsSession()
     monkeypatch.setattr(s, "_McpSession", lambda: session)
-    monkeypatch.setattr(
-        s, "verify_lock", lambda *a, **k: pytest.fail("a runs lock must not be verified as a fleet")
-    )
     out = json.loads(
         s.upload_experiment(
             dump_lock(make_runs_lock()), mode="real", experiment_id=181, dry_run=False
@@ -383,5 +382,6 @@ def test_runs_lock_apply_reports_the_counts_and_skips_verify(monkeypatch: pytest
     )
     assert out["success"] is True and out["kind"] == "runs"
     assert out["queues_posted"] == 2 and out["queues_skipped_existing"] == 0
-    assert out["verify"] == {"skipped": "verify does not compare a runs lock yet"}
+    assert out["verify"]["ok"] is True and out["verify"]["bound"] is True
+    assert out["verify"]["differences"] == []
     assert sorted(session.crawler_uploads) == [10, 11]
