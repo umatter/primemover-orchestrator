@@ -28,6 +28,7 @@ from .draws import is_draw, is_valid_name, select_error
 from .drops import Drops
 from .job_registry import JobRegistry
 from .time_utils import is_relative_time
+from .timing import parse_duration
 
 _TEMPLATE_VAR_RE = re.compile(r"\$\{(?!secret:)[^}]*\}|\{[A-Za-z_][A-Za-z0-9_]*(?::[^}]*)?\}")
 _INDEX_RE = re.compile(r"\[\d+\]")
@@ -210,6 +211,11 @@ class SpecValidator:
     }
     _RUNS_CRAWLER_REFUSALS: tuple[str, ...] = ("agent", "proxy", "configuration")
 
+    #: The seeded form of a session start: `start_at: {from: "+1h", jitter: "6h"}`.
+    #: Both required -- a `from` alone is the string form written the long way,
+    #: and a `jitter` alone has nothing to jitter.
+    _KEYS_START_AT: frozenset[str] = frozenset({"from", "jitter"})
+
     _KEYS_SESSION: frozenset[str] = frozenset(
         {
             "name",
@@ -300,13 +306,13 @@ class SpecValidator:
     # and by _validate_job_options to report an option key outside this set as
     # a drop ("the runner never sees it").
     #
-    # visit/wait have no dict form at all today: _expand_shorthand uses the
-    # scalar value directly (visit) or only accepts int/float/str
-    # (wait/_parse_duration), so a dict value here is silently mishandled, not
-    # read key-by-key.
+    # visit has no dict form at all: _expand_shorthand uses the scalar value
+    # directly, so a dict value there is silently mishandled, not read
+    # key-by-key. `wait` has exactly one: the seeded range `{min, max}`
+    # (timing.py), whose bounds are durations like the scalar form's.
     _OPTION_KEYS: dict[str, frozenset[str]] = {
         "visit": frozenset(),
-        "wait": frozenset(),
+        "wait": frozenset({"min", "max"}),
         "click": frozenset({"selector", "selection_type", "captcha_mode", "task", "flag"}),
         "try_click": frozenset({"selector", "selection_type", "captcha_mode", "task", "flag"}),
         "type": frozenset(
@@ -1090,6 +1096,8 @@ class SpecValidator:
             self.drops.report(
                 prefix, "no start time", "every session needs start: now | +5m | <ISO wall clock>"
             )
+        elif isinstance(start, dict):
+            self._validate_start_jitter(start, prefix, errors)
         else:
             # Validate timestamp format
             if not self._is_valid_timestamp(start):
@@ -1102,6 +1110,45 @@ class SpecValidator:
         workflow = session.get("workflow", [])
         for i, item in enumerate(workflow):
             self._validate_workflow_item(item, f"{prefix}.workflow[{i}]", errors, warnings, spec)
+
+    def _validate_wait_range(self, value: dict[str, Any], prefix: str, errors: list[str]) -> None:
+        """`wait: {min, max}`: two durations, in order.
+
+        The number itself is drawn in the converter from the lock's seed
+        (``timing.resolve_wait_tokens``), so all that can be checked here is
+        that there is a range to draw from.
+        """
+        low_raw, high_raw = value.get("min"), value.get("max")
+        if low_raw is None or high_raw is None:
+            errors.append(f"{prefix}.wait: needs both min and max")
+            return
+        low, high = parse_duration(low_raw), parse_duration(high_raw)
+        for name, raw, parsed in (("min", low_raw, low), ("max", high_raw, high)):
+            if parsed is None:
+                errors.append(f"{prefix}.wait.{name}: {raw!r} is not a duration")
+        if low is not None and high is not None and low > high:
+            errors.append(f"{prefix}.wait: min ({low_raw}) exceeds max ({high_raw})")
+
+    def _validate_start_jitter(self, value: dict[str, Any], prefix: str, errors: list[str]) -> None:
+        """`start_at: {from, jitter}`: a start the seed moves later by U(0, jitter)."""
+        for key in value:
+            if key not in self._KEYS_START_AT:
+                self.drops.report(
+                    f"{prefix}.start_at.{key}",
+                    "key not read by a session start",
+                    "a jittered start has only from and jitter",
+                )
+        source, jitter = value.get("from"), value.get("jitter")
+        if source is None or jitter is None:
+            errors.append(f"{prefix}.start_at: needs both from and jitter")
+            return
+        if not self._is_valid_timestamp(source):
+            errors.append(
+                f"{prefix}.start_at.from: invalid start time format '{source}'. "
+                "Use 'now', relative offset (+5m, +1h, +1d), or ISO 8601 timestamp"
+            )
+        if parse_duration(jitter) is None:
+            errors.append(f"{prefix}.start_at.jitter: {jitter!r} is not a duration")
 
     def _is_valid_timestamp(self, value: Any) -> bool:
         """
@@ -1473,14 +1520,14 @@ class SpecValidator:
         `_expand_shorthand` reads the mapping form of each shorthand with
         `value.get(<key>)` for a fixed set of keys (`_OPTION_KEYS`) and never
         looks at the rest, so `click: {selector: x, sped: fast}` silently loses
-        `sped` -- the runner never sees it. visit/wait have no dict form at all
-        (`_OPTION_KEYS` is empty for both): a dict value there is already
-        rejected by `_validate_job_shorthand`, so it is skipped here rather
-        than reported a second time key-by-key. Only the top level is checked:
-        lambda_select's `treatment` sub-keys are the strategy schema's business
+        `sped` -- the runner never sees it. visit has no dict form at all
+        (`_OPTION_KEYS` is empty): a dict value there is already rejected by
+        `_validate_job_shorthand`, so it is skipped here rather than reported a
+        second time key-by-key. Only the top level is checked: lambda_select's
+        `treatment` sub-keys are the strategy schema's business
         (`_validate_lambda_select_treatment`), not option keys.
         """
-        if not isinstance(value, dict) or job_type in ("visit", "wait"):
+        if not isinstance(value, dict) or job_type == "visit":
             return
         allowed = self._OPTION_KEYS.get(job_type)
         if allowed is None:  # unreachable: callers pass only registered shorthands
@@ -1510,8 +1557,12 @@ class SpecValidator:
                 errors.append(f"{prefix}.visit: URL is required")
 
         elif job_type == "wait":
-            if not isinstance(value, (int, float, str)):
-                errors.append(f"{prefix}.wait: duration must be a number or string")
+            if isinstance(value, dict):
+                self._validate_wait_range(value, prefix, errors)
+            elif not isinstance(value, (int, float, str)):
+                errors.append(
+                    f"{prefix}.wait: duration must be a number, a string, or {{min, max}}"
+                )
 
         elif job_type in ["type", "try_type"]:
             if isinstance(value, dict):
@@ -1541,7 +1592,10 @@ class SpecValidator:
         # handle_alert action="accept", empty selectors), so erroring here would
         # reject specs that validate now. Skipped when the hardcoded checks above
         # already rejected this item, so their messages are not duplicated.
-        if isinstance(value, dict) and len(errors) == errors_before:
+        # `wait: {min, max}` is the one dict form that is not an option object:
+        # its keys *are* the required `seconds` behaviour, drawn later, so the
+        # completeness check would warn about a value that is on its way.
+        if isinstance(value, dict) and job_type != "wait" and len(errors) == errors_before:
             aliases = self._BEHAVIOR_KEYS.get(job_type, {})
             for behavior in (b.name for b in schema.behaviors if b.required):
                 keys = aliases.get(behavior, (behavior,))

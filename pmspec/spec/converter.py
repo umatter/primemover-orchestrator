@@ -20,6 +20,7 @@ from .draws import ANY_DRAW_TOKEN_RE, resolve_draws
 from .drops import Drops
 from .parser import ParsedSpec, SpecParser
 from .time_utils import parse_relative_time
+from .timing import ANY_WAIT_TOKEN_RE, resolve_start_jitter, resolve_wait_tokens
 
 # The params the API contract defines explicit columns for; everything else in a
 # spec's params block is passed through untouched (see _convert_configuration).
@@ -299,6 +300,14 @@ class SpecConverter:
 
             except Exception as e:
                 self.errors.append(f"Error converting crawler {i}: {e}")
+
+        # Draw every seeded time now that each crawler's queues and jobs are
+        # fixed: the session's start within its jitter window, then each wait
+        # range's number of seconds. Both must land *before* the lock derives
+        # its anchor (build.py reads `start_at` as a string) and before the
+        # strict scan, which reports a surviving wait token as a drop.
+        self.errors.extend(resolve_start_jitter(api_crawlers, effective_seed))
+        self.errors.extend(resolve_wait_tokens(api_crawlers, effective_seed))
 
         self._scan_unresolved(api_crawlers)
 
@@ -684,7 +693,16 @@ class SpecConverter:
         start_at = queue.get("start_at", queue.get("start"))
         if not start_at:
             start_at = "now"
-        if self.resolve_times:
+        if isinstance(start_at, dict):
+            # `{from, jitter}`: resolved after conversion, from the lock's seed
+            # (timing.resolve_start_jitter). `generate` records no seed at all
+            # -- it writes API JSON, not a lock -- so there is nothing to draw
+            # from and nothing that could be reproduced later.
+            if self.resolve_times:
+                self.errors.append("start_at jitter needs a seed: use pmspec compile")
+                source = start_at.get("from")
+                start_at = parse_relative_time(source if isinstance(source, str) else "now")
+        elif self.resolve_times:
             start_at = parse_relative_time(start_at)
 
         api_queue = {
@@ -765,6 +783,11 @@ class SpecConverter:
         # loosely (ANY_DRAW_TOKEN_RE) on purpose: a token DRAW_TOKEN_RE cannot
         # parse is *more* certain to reach the bot as a literal, not less.
         draw_groups: dict[tuple[str, str], list[str]] = {}
+        # A surviving `%%pmspec-wait:...%%` token: the wait range could not be
+        # drawn (no seed -- already in self.errors) and the parser's token is
+        # still sitting in the job's `seconds` behaviour, where the runner
+        # would read a string where it expects a number.
+        wait_groups: dict[tuple[str, str], list[str]] = {}
 
         def walk(node: Any, path: str) -> None:
             if isinstance(node, str):
@@ -774,6 +797,9 @@ class SpecConverter:
                 for m in ANY_DRAW_TOKEN_RE.finditer(node):
                     generic = _INDEX_RE.sub("[*]", path)
                     draw_groups.setdefault((m.group(0), generic), []).append(path)
+                for m in ANY_WAIT_TOKEN_RE.finditer(node):
+                    generic = _INDEX_RE.sub("[*]", path)
+                    wait_groups.setdefault((m.group(0), generic), []).append(path)
             elif isinstance(node, dict):
                 for k, v in node.items():
                     if k == "multilogin_profile":
@@ -805,21 +831,34 @@ class SpecConverter:
                     fix,
                 )
 
-        draw_fix = "see the unknown-pool/missing-field/exhaustion error reported above"
-        for (token, generic), places in draw_groups.items():
-            if len(places) == 1:
-                self.drops.report(
-                    places[0],
-                    f"unresolved pool draw {token!r} would reach the bot as a literal",
-                    draw_fix,
-                )
-            else:
-                self.drops.report(
-                    generic,
-                    f"unresolved pool draw {token!r} would reach the bot as a literal in "
-                    f"{len(places)} place(s) (first: {places[0]})",
-                    draw_fix,
-                )
+        def report_tokens(
+            found: dict[tuple[str, str], list[str]], noun: str, token_fix: str
+        ) -> None:
+            for (token, generic), places in found.items():
+                if len(places) == 1:
+                    self.drops.report(
+                        places[0],
+                        f"unresolved {noun} {token!r} would reach the bot as a literal",
+                        token_fix,
+                    )
+                else:
+                    self.drops.report(
+                        generic,
+                        f"unresolved {noun} {token!r} would reach the bot as a literal in "
+                        f"{len(places)} place(s) (first: {places[0]})",
+                        token_fix,
+                    )
+
+        report_tokens(
+            draw_groups,
+            "pool draw",
+            "see the unknown-pool/missing-field/exhaustion error reported above",
+        )
+        report_tokens(
+            wait_groups,
+            "wait range",
+            "a wait range is drawn from the lock's seed: compile with `pmspec compile`",
+        )
 
     def _deep_merge(self, base: dict[str, Any], override: dict[str, Any]) -> None:
         """Deep merge override into base dict (in-place)."""

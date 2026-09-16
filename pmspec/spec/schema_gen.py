@@ -373,14 +373,18 @@ def build_schema() -> dict[str, Any]:
         "name": {"type": "string", "description": "Session name"},
         "description": {"type": "string", "description": "Session description"},
         "start": {
-            "type": "string",
-            "description": "Start time: 'now', relative offset (+5m, +1h, +1d), or ISO 8601 timestamp",
+            "oneOf": [{"type": "string"}, {"$ref": "#/definitions/startJitter"}],
+            "description": (
+                "Start time: 'now', relative offset (+5m, +1h, +1d), ISO 8601 timestamp, "
+                "or {from, jitter} for a seeded start within a window"
+            ),
             "examples": ["now", "+5m", "+1h", "+1d", "2025-02-01T10:00:00Z"],
         },
         "start_at": {
-            "type": "string",
+            "oneOf": [{"type": "string"}, {"$ref": "#/definitions/startJitter"}],
             "description": (
-                "Alias for start: 'now', relative offset (+5m, +1h, +1d), or ISO 8601 timestamp"
+                "Alias for start: 'now', relative offset (+5m, +1h, +1d), ISO 8601 timestamp, "
+                "or {from, jitter} for a seeded start within a window"
             ),
             "examples": ["now", "+5m", "+1h", "+1d", "2025-02-01T10:00:00Z"],
         },
@@ -600,6 +604,21 @@ def build_schema() -> dict[str, Any]:
         "proxy": _object(sv._KEYS_PROXY, "Proxy configuration", proxy_fragments),
         "agent": _object(sv._KEYS_AGENT, "Browser agent configuration", agent_fragments),
         "session": _object(sv._KEYS_SESSION, "Session/queue definition", session_fragments),
+        "startJitter": _object(
+            sv._KEYS_START_AT,
+            "A session start drawn from the lock's seed: from + U(0, jitter)",
+            {
+                "from": {
+                    "type": "string",
+                    "description": "The earliest start: 'now', a relative offset, or ISO 8601",
+                },
+                "jitter": {
+                    "type": "string",
+                    "description": "Width of the window the start is drawn from (e.g. '6h')",
+                },
+            },
+            required=["from", "jitter"],
+        ),
         "dataPool": {
             "type": "object",
             "description": "A data pool loaded from an external file (CSV/JSON/YAML)",
@@ -667,8 +686,23 @@ def build_schema() -> dict[str, Any]:
                     "oneOf": [
                         {"type": ["integer", "number"]},
                         {"type": "string", "pattern": r"^\d+(\.\d+)?\s*[a-z]*$"},
+                        _shorthand_options(
+                            "wait",
+                            "A wait drawn from the lock's seed: U(min, max) seconds",
+                            {
+                                "min": {
+                                    "type": ["integer", "number", "string"],
+                                    "description": "Shortest wait (e.g. '30s')",
+                                },
+                                "max": {
+                                    "type": ["integer", "number", "string"],
+                                    "description": "Longest wait (e.g. '60s')",
+                                },
+                            },
+                            required=["min", "max"],
+                        ),
                     ],
-                    "description": "Wait duration (e.g., 10, '10s', '5m')",
+                    "description": "Wait duration (e.g., 10, '10s', '5m') or a {min, max} range",
                 },
                 "click": {
                     "oneOf": [
