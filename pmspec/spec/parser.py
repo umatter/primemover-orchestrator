@@ -12,6 +12,7 @@ Handles:
 """
 
 import copy
+import random
 import re
 from dataclasses import dataclass, field
 from datetime import date, datetime
@@ -26,6 +27,25 @@ from .drops import Drops
 from .file_loader import FileLoader, create_file_tag_loader, resolve_file_references
 from .job_registry import JobRegistry
 from .timing import parse_duration, wait_token
+
+
+def stream_seed(seed: int | None, stream: str) -> int | None:
+    """One named sub-stream of the parser's seed.
+
+    The parser drives two independent samplers -- the `!file` loader and the
+    data-pool manager -- and both select with ``rng.sample(data, count)``. Given
+    the same seed they return the same rows, so a `!file {select: random}` and a
+    pool `{select: random}` over lists of equal length used to draw *identically*:
+    two things the design meant to vary independently moving together.
+
+    So each gets its own stream, derived exactly as phase 6's other draws are
+    (``random.Random(f"{seed}:{name}")`` in draws.py, assign.py, timing.py).
+    ``parser_seed(seed)`` stays the base, so ``provenance.seed`` is unchanged.
+    ``0`` is a seed: this tests ``is None``, never truthiness.
+    """
+    if seed is None:
+        return None
+    return random.Random(f"{seed}:{stream}").randrange(2**31)
 
 
 @dataclass
@@ -128,9 +148,12 @@ class SpecParser:
         self.warnings = []
         self.drops = Drops(self.lax)
 
-        # Create custom YAML loader with !file tag support
+        # Create custom YAML loader with !file tag support. Its own stream: the
+        # pool manager below samples the same way, so sharing self.seed made a
+        # `!file {select: random}` and a pool `{select: random}` over lists of
+        # equal length draw the same rows (see stream_seed).
         FileTagLoader, self.file_loader = create_file_tag_loader(
-            base_dir=self.base_dir, seed=self.seed
+            base_dir=self.base_dir, seed=stream_seed(self.seed, "files")
         )
 
         try:
@@ -194,8 +217,10 @@ class SpecParser:
         data_pools_raw = raw.get("data_pools", {})
         crawlers_raw = raw.get("crawlers", [])
 
-        # Initialize pool manager and load pools
-        self.pool_manager = DataPoolManager(base_dir=self.base_dir, seed=self.seed)
+        # Initialize pool manager and load pools, on its own stream (see above).
+        self.pool_manager = DataPoolManager(
+            base_dir=self.base_dir, seed=stream_seed(self.seed, "pools")
+        )
         if data_pools_raw:
             self.pool_manager.load_pools_from_spec(data_pools_raw)
             self.errors.extend(self.pool_manager.errors)

@@ -171,6 +171,29 @@ There is exactly one: `--seed N` (or `design.seed` when no flag is given). `comp
 refuses to produce an unseeded lock. Pools, file selections and design expansion all
 derive from it, so the same seed reproduces every draw.
 
+One seed, several *streams*. Everything that draws takes its own, named, sub-stream
+of the recorded number, so that two independent things in a design cannot move
+together:
+
+| stream | draws | derived from |
+|---|---|---|
+| design expansion | factor cells, `design.parameters` distributions | the seed itself |
+| `files` | `!file {select: random}` | `random.Random(f"{parser_seed}:files")` |
+| `pools` | a data pool's `{select: random}` / `top` tie-breaks | `random.Random(f"{parser_seed}:pools")` |
+| `assign:<name>` | one pool row per crawler for an `assign:` entry | `random.Random(f"{seed}:assign:<name>")` |
+| `<i>` | per-bot template `with:` draws for crawler *i* | `random.Random(f"{seed}:{i}")` |
+| `start:<i>:<j>` | a session's start within its jitter window | `random.Random(f"{seed}:start:{i}:{j}")` |
+| `wait:<i>:<j>:<k>` | a wait range's seconds | `random.Random(f"{seed}:wait:{i}:{j}:{k}")` |
+
+(`parser_seed` is `seed + 1`, the parser's base; it is not recorded separately —
+`provenance.seed` is the one number, and every stream above is a function of it.)
+The `files` and `pools` streams were split in 2026-09; before that both were seeded
+with `parser_seed` directly and both select with `rng.sample`, so a `!file
+{select: random}` and a pool `{select: random}` over lists of the same length drew
+the *same rows*. Splitting them changes the bytes of any existing lock that uses a
+`!file` or a pool — recompile and re-commit rather than expecting an old lock to
+reproduce.
+
 ---
 
 ## Overview
