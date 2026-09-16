@@ -21,6 +21,21 @@ class ApiSession:
         self._password = password
         self._timeout = timeout
         self._token: str | None = None
+        self._pref_update: bool | None = None
+
+    def supports_preference_update(self, configuration: dict[str, Any]) -> bool:
+        """Does this API sync `preferences` on PUT configurations/{id}?
+
+        Probed once per session (the answer is a property of the deployed API,
+        not of the configuration probed) via ``probe_preference_update``, which
+        sends the configuration's own current values and an empty preferences
+        list: accepted and value-changing under neither API version.
+        """
+        if self._pref_update is None:
+            from .upload import probe_preference_update
+
+            self._pref_update = probe_preference_update(self, configuration)
+        return self._pref_update
 
     def _headers(self) -> dict[str, str]:
         if self._token is None:

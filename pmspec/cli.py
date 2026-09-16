@@ -71,7 +71,13 @@ from .lock.secrets import (
     find_placeholders,
 )
 from .lock.status import experiment_status
-from .lock.upload import MODES, UploadOptions, UploadRefused, upload_lock
+from .lock.upload import (
+    MODES,
+    UploadOptions,
+    UploadRefused,
+    plan_runs_upload,
+    upload_lock,
+)
 from .lock.verify import verify_lock
 from .spec.design_expander import DesignExpander
 from .spec.job_registry import JobRegistry
@@ -426,6 +432,44 @@ def _load_lock_or_exit(lock_text: str) -> Lock:
         sys.exit(1)
 
 
+def _is_runs_lock(lock_text: str) -> bool:
+    return _load_lock_or_exit(lock_text).is_runs
+
+
+def _print_runs_plan(lock_text: str, options: UploadOptions) -> None:
+    """What a runs upload would do, asked of the live experiment.
+
+    Exits non-zero on any refusal: a dry run that cannot say "this would work"
+    is the answer the author wanted, and silence here would be read as a yes.
+    """
+    session = _session_from_env()
+    try:
+        plan = plan_runs_upload(lock_text, session=session, options=options)
+    except (UploadRefused, AnchorError) as e:
+        click.secho(f"Refused: {e}", fg="red")
+        sys.exit(1)
+    except LockError as e:
+        click.secho("Lock invalid", fg="red", bold=True)
+        for error in e.errors:
+            click.secho(f"  ERROR: {error}", fg="red")
+        sys.exit(1)
+    except ApiError as e:
+        click.secho(f"Plan failed: {e}", fg="red")
+        if e.detail:
+            click.echo(f"  {e.detail}")
+        sys.exit(1)
+    click.secho(f"Runs lock -> experiment {plan['experiment_id']} (base lock OK)", fg="green")
+    click.echo(f"  Crawlers: {plan['crawlers']}  Anchor: {plan['anchor']}")
+    click.echo(
+        f"  Queues:   {plan['queues']} to append, {plan['would_skip']} already live "
+        f"of {plan['queues_in_lock']}"
+    )
+    click.echo(
+        f"  Updates:  {plan['updates']} crawler(s); "
+        f"API preference sync: {'yes' if plan['preference_update_supported'] else 'n/a'}"
+    )
+
+
 def _lock_header(lock: Lock) -> str:
     """The one line that says which lock this is.
 
@@ -678,21 +722,30 @@ def upload(
     secrets_path: str | None,
     seed: int | None,
 ) -> None:
-    """Upload a lock (or compile a spec, then upload the lock) and verify the result."""
+    """Upload a lock (or compile a spec, then upload the lock) and verify the result.
+
+    A `kind: runs` lock appends queues to an existing experiment's crawlers and
+    needs `-e <id>`. Its dry run is not local: every refusal it prints (base
+    lock, mode, crawler names, preference support) is a question to the live
+    experiment, so it prints the plan the apply would carry out.
+    """
     lock_text = _lock_text_for(file, seed)
     store = _load_store(secrets_path)
     missing = _secrets_report(lock_text, store)
     if missing:
         click.secho(f"{len(missing)} secret(s) missing", fg="red")
         sys.exit(1)
+
+    options = UploadOptions(
+        mode=mode, experiment_id=experiment_id, allow_dirty=allow_dirty, allow_past=allow_past
+    )
     if dry_run:
+        if _is_runs_lock(lock_text):
+            _print_runs_plan(lock_text, options)
         click.secho("Dry run - not uploading", fg="cyan")
         sys.exit(0)
 
     session = _session_from_env()
-    options = UploadOptions(
-        mode=mode, experiment_id=experiment_id, allow_dirty=allow_dirty, allow_past=allow_past
-    )
     try:
         result = upload_lock(lock_text, session=session, store=store, options=options)
     except (UploadRefused, AnchorError, MissingSecret) as e:
@@ -708,14 +761,29 @@ def upload(
     click.echo(
         f"Experiment ID: {result.experiment_id}  ({result.experiment_name}, mode={result.mode})"
     )
-    click.echo(
-        f"Crawlers: {result.crawler_count}  Jobs: {result.total_jobs}  Anchor: {result.anchor}"
-    )
+    if result.kind == "runs":
+        click.echo(
+            f"Crawlers: {result.crawler_count}  Queues: {result.queue_count} "
+            f"(skipped {result.skipped_existing} already live)  "
+            f"Updates: {result.updates_applied}  Anchor: {result.anchor}"
+        )
+    else:
+        click.echo(
+            f"Crawlers: {result.crawler_count}  Jobs: {result.total_jobs}  Anchor: {result.anchor}"
+        )
 
     if record:
         with open(record, "a") as f:
             f.write(result.record_line + "\n")
     click.echo(result.record_line)
+
+    if result.kind == "runs":
+        # `verify` compares a fleet -- crawler shape, params, proxy -- none of
+        # which a runs lock owns. Comparing only the queues it appended is its
+        # own piece of work; until it exists, saying nothing beats reporting
+        # differences that are not differences.
+        click.secho("Verify: not compared (a runs lock appends queues)", fg="cyan")
+        sys.exit(0)
 
     try:
         verdict = verify_lock(

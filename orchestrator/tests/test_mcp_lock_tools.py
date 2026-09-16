@@ -10,6 +10,7 @@ from orchestrator.mcp_server import server as s
 from pmspec.lock.io import dump_lock
 from pmspec.lock.model import LOCK_FORMAT_VERSION
 from pmspec.tests.test_lock_io import make_lock
+from pmspec.tests.test_lock_runs_upload import RunsSession, make_runs_lock
 
 SPEC = """
 version: "1.0"
@@ -340,3 +341,47 @@ def test_verify_experiment_redacts_secret_valued_differences(monkeypatch: pytest
             "actual": "<redacted>",
         }
     ]
+
+
+# --- a runs lock over the MCP ---------------------------------------------
+
+
+def test_runs_lock_without_an_experiment_id_is_an_error(monkeypatch: pytest.MonkeyPatch):
+    """A runs lock names no experiment: it appends to the one its base created."""
+    session = RunsSession()
+    monkeypatch.setattr(s, "_McpSession", lambda: session)
+    out = json.loads(s.upload_experiment(dump_lock(make_runs_lock()), mode="real"))
+    assert out["success"] is False
+    assert "pass -e <id>" in out["error"]
+    assert session.calls == []
+
+
+def test_runs_lock_dry_run_returns_the_plan_and_writes_nothing(monkeypatch: pytest.MonkeyPatch):
+    session = RunsSession()
+    monkeypatch.setattr(s, "_McpSession", lambda: session)
+    out = json.loads(
+        s.upload_experiment(dump_lock(make_runs_lock()), mode="real", experiment_id=181)
+    )
+    assert out["success"] is True and out["dry_run"] is True
+    assert out["kind"] == "runs" and out["experiment_id"] == 181
+    assert out["crawlers"] == 2 and out["queues"] == 2 and out["queues_in_lock"] == 2
+    assert out["would_skip"] == 0 and out["updates"] == 0
+    assert out["base_ok"] is True and out["preference_update_supported"] is False
+    assert session.experiment_puts == [] and session.crawler_uploads == {}
+
+
+def test_runs_lock_apply_reports_the_counts_and_skips_verify(monkeypatch: pytest.MonkeyPatch):
+    session = RunsSession()
+    monkeypatch.setattr(s, "_McpSession", lambda: session)
+    monkeypatch.setattr(
+        s, "verify_lock", lambda *a, **k: pytest.fail("a runs lock must not be verified as a fleet")
+    )
+    out = json.loads(
+        s.upload_experiment(
+            dump_lock(make_runs_lock()), mode="real", experiment_id=181, dry_run=False
+        )
+    )
+    assert out["success"] is True and out["kind"] == "runs"
+    assert out["queues_posted"] == 2 and out["queues_skipped_existing"] == 0
+    assert out["verify"] == {"skipped": "verify does not compare a runs lock yet"}
+    assert sorted(session.crawler_uploads) == [10, 11]

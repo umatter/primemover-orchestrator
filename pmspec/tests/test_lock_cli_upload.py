@@ -449,3 +449,70 @@ def test_generate_reports_an_anchor_error(tmp_path, monkeypatch):
     assert out.exit_code == 1, out.output
     assert "cannot parse start time" in out.output
     assert not isinstance(out.exception, AnchorError)
+
+
+# --- a runs lock -----------------------------------------------------------
+
+
+@pytest.fixture
+def runs_lock_file(tmp_path: Path) -> Path:
+    from .test_lock_runs_upload import make_runs_lock
+
+    p = tmp_path / "day.lock.yaml"
+    p.write_text(dump_lock(make_runs_lock()))
+    return p
+
+
+@pytest.fixture
+def runs_session(monkeypatch: pytest.MonkeyPatch):
+    from .test_lock_runs_upload import RunsSession
+
+    session = RunsSession()
+    monkeypatch.setattr(cli_module, "_session_from_env", lambda: session)
+    return session
+
+
+def test_runs_dry_run_prints_the_plan_and_writes_nothing(runs_lock_file, runs_session):
+    out = CliRunner().invoke(
+        cli, ["upload", str(runs_lock_file), "--mode", "real", "-e", "181", "--dry-run"]
+    )
+    assert out.exit_code == 0, out.output
+    assert "experiment 181 (base lock OK)" in out.output
+    assert "2 to append, 0 already live of 2" in out.output
+    assert "Dry run - not uploading" in out.output
+    assert runs_session.crawler_uploads == {} and runs_session.experiment_puts == []
+
+
+def test_runs_dry_run_reports_a_refusal_and_exits_nonzero(runs_lock_file, monkeypatch):
+    from .test_lock_runs_upload import RunsSession
+
+    monkeypatch.setattr(cli_module, "_session_from_env", lambda: RunsSession(live_mode="test"))
+    out = CliRunner().invoke(
+        cli, ["upload", str(runs_lock_file), "--mode", "real", "-e", "181", "--dry-run"]
+    )
+    assert out.exit_code == 1
+    assert "Refused: experiment 181 is a test experiment" in out.output
+
+
+def test_runs_dry_run_needs_an_experiment_id(runs_lock_file, runs_session):
+    """The -e refusal is the first check, so it is what a dry run says too."""
+    out = CliRunner().invoke(cli, ["upload", str(runs_lock_file), "--mode", "real", "--dry-run"])
+    assert out.exit_code == 1
+    assert "Refused: a runs lock appends to an experiment: pass -e <id>" in out.output
+    assert runs_session.calls == []
+
+
+def test_runs_upload_prints_queue_counts_and_does_not_verify(
+    runs_lock_file, runs_session, monkeypatch
+):
+    monkeypatch.setattr(
+        cli_module,
+        "verify_lock",
+        lambda *a, **k: pytest.fail("a runs lock must not be verified as a fleet"),
+    )
+    out = CliRunner().invoke(cli, ["upload", str(runs_lock_file), "--mode", "real", "-e", "181"])
+    assert out.exit_code == 0, out.output
+    assert "Queues: 2 (skipped 0 already live)" in out.output
+    assert "kind=runs" in out.output
+    assert "Verify: not compared" in out.output
+    assert sorted(runs_session.crawler_uploads) == [10, 11]

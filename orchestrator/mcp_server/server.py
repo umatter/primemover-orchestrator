@@ -26,7 +26,13 @@ from pmspec.lock.diff import diff_locks
 from pmspec.lock.io import LockError, dump_lock, is_lock_document, load_lock
 from pmspec.lock.secrets import InsecureSecretsFile, SecretStore, find_placeholders
 from pmspec.lock.status import experiment_status
-from pmspec.lock.upload import MODES, UploadOptions, UploadRefused, upload_lock
+from pmspec.lock.upload import (
+    MODES,
+    UploadOptions,
+    UploadRefused,
+    plan_runs_upload,
+    upload_lock,
+)
 from pmspec.lock.verify import redact_differences, verify_lock
 
 
@@ -681,6 +687,22 @@ class _McpSession:
 
     def __init__(self) -> None:
         self.base_url = get_settings().pm_api_base_url
+        self._pref_update: bool | None = None
+
+    def supports_preference_update(self, configuration: dict[str, Any]) -> bool:
+        """Does this API sync `preferences` on PUT configurations/{id}?
+
+        Probed once per session, exactly as ApiSession does it. The probe is a
+        PUT of the configuration's own current values plus an empty preferences
+        list -- it changes nothing under either API version, and the only
+        caller (upload_lock, for a runs lock carrying `updates:`) runs behind
+        _require_local_write_target().
+        """
+        if self._pref_update is None:
+            from pmspec.lock.upload import probe_preference_update
+
+            self._pref_update = probe_preference_update(self, configuration)
+        return self._pref_update
 
     def get(self, path: str, params: dict[str, Any] | None = None) -> Any:
         return _unwrap(_api_request("GET", path, params=params))
@@ -2523,13 +2545,21 @@ def upload_experiment(
         lock_content: a lock, not a spec -- call compile_experiment_spec first
         mode: 'test' -> VM runner, name becomes 'test-<name>-<date>', dirty commit
             allowed; 'real' -> as named in the lock, refused without a clean commit
-        experiment_id: append to this experiment instead of creating one
+        experiment_id: append to this experiment instead of creating one.
+            REQUIRED for a `kind: runs` lock, which adds queues to the crawlers
+            of the experiment its base fleet lock created.
         dry_run: preview only. Defaults to True; pass False to apply.
         deep_verify: also compare each queue's jobs/behaviours, not just schedule
         allow_dirty: 'real' mode only -- let a dirty-commit or commit-less lock
             through anyway. Never needed for 'test' mode, which already allows it.
         allow_past: let a schedule anchor that is already in the past through
             (the runner will never pick it up; use for backfilling a record).
+
+    A runs lock (`kind: runs`) appends queues to existing crawlers matched by
+    name, is idempotent (a queue already live at the same name and wall-clock
+    start is skipped), and applies `updates:` only on an API that syncs
+    preferences. Its dry run reports the plan -- crawlers, queues, would_skip,
+    updates -- after running every refusal against the live experiment.
 
     Secrets: ${secret:...} placeholders resolve from PMSPEC_SECRETS_FILE on this
     host. A dry run loads the same store (never printing a value) and reports
@@ -2551,6 +2581,43 @@ def upload_experiment(
         return json.dumps({"success": False, "error": "invalid lock", "errors": e.errors})
 
     needed = sorted(find_placeholders(lock.crawlers))
+    if dry_run and lock.is_runs:
+        # A runs lock's dry run is a conversation with the live experiment:
+        # the base-lock, mode and crawler-name checks are reads of it, and the
+        # preference-support probe is a PUT that changes no value. One of its
+        # requests is a write verb, so it runs behind the same guard as an
+        # apply rather than in the pure-local branch below.
+        guard = _require_local_write_target()
+        if guard:
+            return json.dumps({"success": False, "error": guard})
+        try:
+            plan = plan_runs_upload(
+                lock_content,
+                session=_McpSession(),
+                options=UploadOptions(
+                    mode=mode,
+                    experiment_id=experiment_id,
+                    contact="PrimeMover Orchestrator MCP",
+                    allow_dirty=allow_dirty,
+                    allow_past=allow_past,
+                ),
+            )
+        except (UploadRefused, LockError) as e:
+            return json.dumps({"success": False, "dry_run": True, "error": str(e)})
+        except Exception as e:
+            return json.dumps({"success": False, "dry_run": True, "error": f"Plan failed: {e}"})
+        return json.dumps(
+            {
+                "success": True,
+                "dry_run": True,
+                "mode": mode,
+                "experiment_name": lock.experiment["name"],
+                "git_commit": lock.provenance.git_commit,
+                "base_lock_sha256": lock.provenance.base_lock_sha256,
+                **plan,
+                "to_apply": "call again with dry_run=false",
+            }
+        )
     if dry_run:
         secrets_missing: list[str] = []
         secrets_store = "ok"
@@ -2628,7 +2695,18 @@ def upload_experiment(
         "lock_sha256": result.lock_sha256,
         "anchor": result.anchor,
         "record": result.record_line,
+        "kind": result.kind,
     }
+    if result.kind == "runs":
+        response["queues_posted"] = result.queue_count
+        response["queues_skipped_existing"] = result.skipped_existing
+        response["updates_applied"] = result.updates_applied
+        # verify_lock compares a *fleet*: crawler shape, params, proxy. A runs
+        # lock owns none of that and would read as all-different. Comparing
+        # only the queues it uploaded is its own piece of work; saying nothing
+        # is better than reporting a difference that is not one.
+        response["verify"] = {"skipped": "verify does not compare a runs lock yet"}
+        return json.dumps(response)
 
     # Outside any earlier try: the upload itself already succeeded, and an
     # exception here (an httpx failure fetching the export under deep_verify,

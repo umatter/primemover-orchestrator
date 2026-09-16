@@ -335,6 +335,14 @@ def _mutating_tools() -> dict[str, bool]:
             if isinstance(sub.func, ast.Name) and sub.func.id == "upload_lock":
                 mutates = True
 
+            # plan_runs_upload(...): a runs lock's dry run. It is read-only in
+            # effect, but not in method -- the preference-support probe is a
+            # PUT (of the configuration's own current values, so nothing
+            # changes). A request with a write verb belongs behind the guard,
+            # and the scan has to see it to say so.
+            if isinstance(sub.func, ast.Name) and sub.func.id == "plan_runs_upload":
+                mutates = True
+
             # delete_experiments(...): pm_cleanup_test_experiments's own deletion loop
             # lives in pmspec.lock.cleanup, not in this module's source, so
             # without this line it is exactly as invisible to the scan as upload_lock was.
