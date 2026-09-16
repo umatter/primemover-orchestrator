@@ -179,7 +179,7 @@ together:
 |---|---|---|
 | design expansion | factor cells, `design.parameters` distributions | the seed itself |
 | `files` | `!file {select: random}` | `random.Random(f"{parser_seed}:files")` |
-| `pools` | a data pool's `{select: random}` / `top` tie-breaks | `random.Random(f"{parser_seed}:pools")` |
+| `pools` | a data pool's `{select: random}` | `random.Random(f"{parser_seed}:pools")` |
 | `assign:<name>` | one pool row per crawler for an `assign:` entry | `random.Random(f"{seed}:assign:<name>")` |
 | `<i>` | per-bot template `with:` draws for crawler *i* | `random.Random(f"{seed}:{i}")` |
 | `start:<i>:<j>` | a session's start within its jitter window | `random.Random(f"{seed}:start:{i}:{j}")` |
@@ -187,6 +187,11 @@ together:
 
 (`parser_seed` is `seed + 1`, the parser's base; it is not recorded separately —
 `provenance.seed` is the one number, and every stream above is a function of it.)
+`select: top` and `select: first` draw nothing — `top` sorts by the `score:`
+expression and `first` slices — so only `select: random` consumes the `pools`
+stream. `DataPoolManager` builds a `FileLoader` of its own to read pool sources;
+it shares the `pools` stream and never samples from it.
+
 The `files` and `pools` streams were split in 2026-09; before that both were seeded
 with `parser_seed` directly and both select with `rng.sample`, so a `!file
 {select: random}` and a pool `{select: random}` over lists of the same length drew

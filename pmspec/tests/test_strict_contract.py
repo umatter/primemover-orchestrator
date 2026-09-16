@@ -238,6 +238,10 @@ class TestMapsToPrefixRule:
             ("proxy.pool", "{control: pool_a, treatment: pool_b}"),
             ("name", "{control: a, treatment: b}"),
             ("description", "{control: a, treatment: b}"),
+            # _convert_crawler reads these two as well (`active: 1 if ...`), so a
+            # design that switches a bot off per arm works and must not be refused.
+            ("active", "{control: true, treatment: false}"),
+            ("testing", "{control: false, treatment: true}"),
         ],
     )
     def test_a_converter_read_prefix_is_clean(self, path, level_map):
@@ -256,6 +260,27 @@ class TestMapsToPrefixRule:
         )
         r = _validate(text)
         assert r.valid, r.errors
+
+    def test_a_crawler_pool_reference_does_not_rescue_a_prefix_less_write(self):
+        """`{crawler.<name>}` in a pool `score:` reads the crawler's
+        *configuration.params* context, so it can consume a `design.parameters`
+        draw -- but never a prefix-less maps_to write, which landed at
+        crawler["notafield"]["wobble"] instead. Only a plain `{name}`
+        substitution counts as the hatch for this rule."""
+        text = self._spec("notafield.wobble", "{control: 1, treatment: 2}") + (
+            "data_pools:\n  outlets:\n    source: ./outlets.csv\n"
+        )
+        text = text.replace(
+            "  - name: bot\n",
+            "  - name: bot\n    configuration:\n      params:\n"
+            "        media_outlet_urls:\n          from_pool: outlets\n"
+            "          select: top\n          count: 1\n"
+            '          score: "{crawler.wobble}"\n',
+        )
+        r = _validate(text)
+        assert any(
+            "maps_to.notafield.wobble: 'notafield' is not a crawler field" in e for e in r.errors
+        ), r.errors
 
     def test_the_drop_names_the_first_segment_and_the_fix(self):
         r = _validate(self._spec("params.pi", "{control: 0, treatment: 1}"))

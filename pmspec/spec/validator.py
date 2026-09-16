@@ -113,7 +113,7 @@ class SpecValidator:
     # crawler["configuration"]["preferences"] -- verified against the converted
     # JSON, where the default value survives untouched.)
     _CRAWLER_FIELDS: frozenset[str] = frozenset(
-        {"configuration", "agent", "proxy", "name", "description"}
+        {"configuration", "agent", "proxy", "name", "description", "active", "testing"}
     )
 
     # Params the current converter/API/runner/decision-function pipeline actually
@@ -510,15 +510,25 @@ class SpecValidator:
 
         design = spec.get("design") or {}
         factors = design.get("factors") or {}
-        # A maps_to value also resolves as a `{leaf}` / `{full.path}`
-        # substitution variable (DesignExpander._general_substitute), and that
-        # happens whether or not the write lands anywhere. So a referenced path
-        # has done its work and is not a drop -- the same escape hatch a
-        # non-standard design.parameters name gets below. A factor's own name is
-        # not that escape: _general_substitute resolves `{name}` from
-        # cell.factor_values *first*, so `{usage_type}` next to a factor called
-        # usage_type is the level id, and the maps_to write still reaches nobody.
-        referenced = (self._referenced_placeholders(spec) - set(factors)) if factors else set()
+        # A maps_to value also resolves as a `{leaf}` substitution variable
+        # (DesignExpander._general_substitute), and that happens whether or not
+        # the write lands anywhere. So a substituted path has done its work and
+        # is not a drop -- the same escape hatch a non-standard design.parameters
+        # name gets below. Two things are *not* that escape:
+        #   - a factor's own name: _general_substitute resolves `{name}` from
+        #     cell.factor_values *first*, so `{usage_type}` next to a factor
+        #     called usage_type is the level id and the write still reaches
+        #     nobody;
+        #   - `{crawler.<name>}` in a pool `score:`/`filter:` expression: that
+        #     context is built from configuration.params, where a prefix-less
+        #     write never arrives (hence crawler_refs=False).
+        # Only the leaf is looked up: `_PLACEHOLDER_RE` cannot match a dotted
+        # name, so a full path could never be in the set.
+        substituted = (
+            (self._referenced_placeholders(spec, crawler_refs=False) - set(factors))
+            if factors
+            else set()
+        )
         for fname, fdef in factors.items():
             if not isinstance(fdef, dict):
                 continue  # _validate_design has already reported it as an error
@@ -527,9 +537,7 @@ class SpecValidator:
                 leaf = parts[-1]
                 if not isinstance(level_map, dict):
                     continue
-                if parts[0] not in self._CRAWLER_FIELDS and not (
-                    leaf in referenced or str(path) in referenced
-                ):
+                if parts[0] not in self._CRAWLER_FIELDS and leaf not in substituted:
                     self.drops.report(
                         f"design.factors.{fname}.maps_to.{path}",
                         f"'{parts[0]}' is not a crawler field the pipeline reads",
@@ -576,9 +584,9 @@ class SpecValidator:
         if isinstance(parameters, dict):
             non_standard = [name for name in parameters if name not in self._KNOWN_PARAMS]
             if non_standard:
-                referenced = self._referenced_placeholders(spec)
+                consumed = self._referenced_placeholders(spec)
                 for name in non_standard:
-                    if name not in referenced:
+                    if name not in consumed:
                         self.drops.report(
                             f"design.parameters.{name}",
                             "sampled value lands in configuration.params, which the API drops",
@@ -646,7 +654,9 @@ class SpecValidator:
         return reached
 
     @classmethod
-    def _referenced_placeholders(cls, spec: dict[str, Any]) -> set[str]:
+    def _referenced_placeholders(
+        cls, spec: dict[str, Any], *, crawler_refs: bool = True
+    ) -> set[str]:
         """Names used as `{name}` / `{name:fmt}`, or as `{crawler.name}` in a
         pool expression, under crawlers or a template some crawler reaches.
 
@@ -655,7 +665,11 @@ class SpecValidator:
         `_convert_configuration` strips the sampled name (`SpecConverter.convert`
         orders it that way on purpose), so a draw used only in a `score:` or
         `filter:` expression has already done its work by the time the key is
-        removed. Reached templates count because the parser splices them into the
+        removed. That context is built out of `configuration.params` and nothing
+        else, so `{crawler.<name>}` can rescue a *sampled parameter* and never a
+        prefix-less `maps_to` write, which lands somewhere else entirely:
+        ``crawler_refs=False`` is how the maps_to-prefix rule asks for plain
+        `{name}` substitutions only. Reached templates count because the parser splices them into the
         crawler's workflow before the expander substitutes, so `{alpha_draw}`
         in such a template body is consumed exactly like one written on the
         crawler. An orphan template (`_reachable_templates`) does not: its
@@ -672,8 +686,9 @@ class SpecValidator:
             if isinstance(node, str):
                 for m in _PLACEHOLDER_RE.finditer(node):
                     names.add(m.group(1))
-                for m in _CRAWLER_REF_RE.finditer(node):
-                    names.add(m.group(1))
+                if crawler_refs:
+                    for m in _CRAWLER_REF_RE.finditer(node):
+                        names.add(m.group(1))
             elif isinstance(node, dict):
                 for key, value in node.items():
                     if key != "multilogin_profile":
