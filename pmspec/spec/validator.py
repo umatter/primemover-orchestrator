@@ -24,11 +24,20 @@ except ImportError:
     HAS_JSONSCHEMA = False
 
 from .assign import ASSIGN_KEYS, ASSIGN_SELECTS
+from .converter import DEFAULT_MULTILOGIN_PROFILE
 from .draws import is_draw, is_valid_name, select_error
 from .drops import Drops
 from .job_registry import JobRegistry
 from .time_utils import is_relative_time
 from .timing import parse_duration
+
+# The 17 flags DEFAULT_MULTILOGIN_PROFILE actually sets. Multilogin ignores an
+# unknown flag key silently at profile creation, so a `parameters.flags.<key>`
+# outside this set -- via `maps_to` or an explicit crawler agent block -- is a
+# drop. Values are not checked here: the repo holds no authoritative
+# per-flag vocabulary, and Multilogin rejects a bad value at profile creation,
+# which the runner reports as a failed job rather than silently (spec §4).
+_MLX_FLAGS: frozenset[str] = frozenset(DEFAULT_MULTILOGIN_PROFILE["parameters"]["flags"])
 
 _TEMPLATE_VAR_RE = re.compile(r"\$\{(?!secret:)[^}]*\}|\{[A-Za-z_][A-Za-z0-9_]*(?::[^}]*)?\}")
 _INDEX_RE = re.compile(r"\[\d+\]")
@@ -509,6 +518,16 @@ class SpecValidator:
                         "route it through a template `with:` variable or a lambda_select "
                         "`strategy` + `treatment` block",
                     )
+                elif (
+                    parts[:4] == ["agent", "multilogin_profile", "parameters", "flags"]
+                    and len(parts) == 5
+                    and leaf not in _MLX_FLAGS
+                ):
+                    self.drops.report(
+                        f"design.factors.{fname}.maps_to.{path}",
+                        "unknown Multilogin flag; the profile ignores it",
+                        "one of: " + ", ".join(sorted(_MLX_FLAGS)),
+                    )
 
         # A sampled parameter (design.parameters.<name>) is written by
         # DesignExpander._apply_cell_to_template into configuration.params.<name>
@@ -948,6 +967,23 @@ class SpecValidator:
                 errors.append(f"{prefix}: from_design=true but no design is defined")
 
             self._validate_assign(crawler, prefix, spec, errors)
+
+            # An explicit agent.multilogin_profile.parameters.flags.<key> the
+            # converter's deep-merge would carry straight through to the API --
+            # same unknown-flag-is-a-drop rule as the maps_to path above (§4).
+            agent = crawler.get("agent")
+            if isinstance(agent, dict):
+                profile = agent.get("multilogin_profile")
+                if isinstance(profile, dict):
+                    flags = (profile.get("parameters") or {}).get("flags")
+                    if isinstance(flags, dict):
+                        for key in flags:
+                            if key not in _MLX_FLAGS:
+                                self.drops.report(
+                                    f"{prefix}.agent.multilogin_profile.parameters.flags.{key}",
+                                    "unknown Multilogin flag; the profile ignores it",
+                                    "one of: " + ", ".join(sorted(_MLX_FLAGS)),
+                                )
 
             # Validate proxy if defined.
             #

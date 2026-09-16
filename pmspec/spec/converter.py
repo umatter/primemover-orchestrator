@@ -71,7 +71,7 @@ class ConversionResult:
 
 
 # Default multilogin profile template
-DEFAULT_MULTILOGIN_PROFILE = {
+DEFAULT_MULTILOGIN_PROFILE: dict[str, Any] = {
     "name": "%%AGENTID%%",
     "browser_type": "mimic",
     "folder_id": "%%FOLDERID%%",
