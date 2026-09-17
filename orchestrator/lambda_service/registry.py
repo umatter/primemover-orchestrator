@@ -20,6 +20,11 @@ Box-specific, outside git, like ``secrets.toml``: ``DECISION_FUNCTIONS_FILE``
     path = "/opt/primemover/bot-decision-yt/bot-decision-EN"
     # entry = "lambda_function:select_recommendation"   # the default
 
+A **relative** ``path`` resolves against the registry file's own directory, not
+against the process cwd -- the server's cwd is whatever its launcher chose, and
+resolving against it is the same class of bug as the cwd-relative data read this
+change exists to remove.
+
 **No file is not an error.** It means exactly today's behaviour: the
 ``orchestrator/lambda_service/decision`` symlink is the one function, named
 ``bot-decision-yt``, and ``/health`` says the registry is absent. A *malformed*
@@ -41,7 +46,20 @@ duration of that import, and every module the import pulled *out of that
 directory* is then re-keyed in ``sys.modules`` under the same unique prefix and
 removed from its bare name. The module objects stay alive (the importing module
 holds references), the bare names are free for the next package, and nothing
-imported from site-packages (pandas, openai, ...) is touched.
+imported from site-packages (pandas, openai, ...) is touched. Because those two
+are process globals, the whole insert/import/re-key window is serialised under
+one module-level lock rather than a per-function one.
+
+The health hook
+---------------
+A package may define ``health() -> dict`` and ``/health`` reports it under that
+function's name. The contract for whoever writes one: it is **fast, local and
+non-blocking** -- read the files the package already owns, return a dict with
+``ok`` (and ``problems`` when not ok). No network, no API call, no lock that
+another request holds. It runs on the health path, under a
+:data:`HOOK_TIMEOUT_SECONDS` deadline in a daemon thread; a hook that overruns
+is reported as a problem, because a check that did not finish is not a check
+that passed.
 """
 
 from __future__ import annotations
@@ -74,6 +92,14 @@ DEFAULT_ENTRY = "lambda_function:select_recommendation"
 
 #: Prefix for the unique ``sys.modules`` name each package is imported under.
 MODULE_PREFIX = "pm_decision_"
+
+#: How long a package's ``health()`` hook may take before /health gives up on it.
+HOOK_TIMEOUT_SECONDS = 2.0
+
+#: Serialises the import of *any* package. ``sys.path`` and ``sys.modules`` are
+#: process globals, so a per-function lock is not enough: see
+#: :meth:`DecisionFunction._import_isolated`.
+_IMPORT_LOCK = threading.Lock()
 
 
 class UnknownFunctionError(LookupError):
@@ -152,21 +178,20 @@ class DecisionFunction:
             problem = self.path_problem()
             if problem:
                 self._error = problem
-                raise ImportError(f"decision function '{self.name}': {problem}")
+                raise ImportError(self._import_failure(problem))
 
             try:
                 module = self._import_isolated()
             except Exception as exc:
                 self._error = f"{type(exc).__name__}: {exc}"
                 raise ImportError(
-                    f"decision function '{self.name}' failed to import "
-                    f"({self.module_file}): {type(exc).__name__}: {exc}"
+                    self._import_failure(f"{self.module_file}: {type(exc).__name__}: {exc}")
                 ) from exc
 
             func = getattr(module, self.attribute, None)
             if not callable(func):
                 self._error = f"{self.module_name}.py defines no callable {self.attribute}()"
-                raise ImportError(f"decision function '{self.name}': {self._error}")
+                raise ImportError(self._import_failure(self._error))
 
             typed: Callable[[str], Any] = func
             self._module = module
@@ -180,34 +205,55 @@ class DecisionFunction:
             )
             return typed
 
+    def _import_failure(self, detail: str) -> str:
+        """The one message shape for "this function did not load".
+
+        The server hands it straight back to the runner as the ``error`` of a
+        degraded verdict, so it names the function first and the cause second.
+        """
+        return f"decision function '{self.name}' failed to import: {detail}"
+
     def _import_isolated(self) -> ModuleType:
         """Import ``module_file`` under a unique name, then free the bare names.
 
         See the module docstring: two packages both called ``lambda_function``,
         both with a ``helpers`` next to it, must not shadow each other.
+
+        Held under the **module-level** :data:`_IMPORT_LOCK`, not this
+        function's own lock. ``sys.path`` and ``sys.modules`` are process
+        globals: two functions importing for the first time in parallel -- which
+        is the normal state of a restarted server under 15 bots -- would
+        interleave their path insert / import / re-key windows, and the loser
+        binds the winner's ``helper``. That is not a crash; it is one study's
+        code answering under another study's name, for the life of the process,
+        with ``/health`` reporting both as loaded. Reproduced before this lock
+        existed; :mod:`orchestrator.tests.test_decision_registry` runs two
+        threads through a barrier twenty times over.
         """
         import importlib.util
 
         unique = f"{MODULE_PREFIX}{_slug(self.name)}"
-        spec = importlib.util.spec_from_file_location(unique, self.module_file)
-        if spec is None or spec.loader is None:
-            raise ImportError(f"could not build an import spec for {self.module_file}")
 
-        module = importlib.util.module_from_spec(spec)
-        before = set(sys.modules)
-        sys.modules[unique] = module
-        sys.path.insert(0, str(self.path))
-        try:
-            spec.loader.exec_module(module)
-        except BaseException:
-            sys.modules.pop(unique, None)
-            raise
-        finally:
+        with _IMPORT_LOCK:
+            spec = importlib.util.spec_from_file_location(unique, self.module_file)
+            if spec is None or spec.loader is None:
+                raise ImportError(f"could not build an import spec for {self.module_file}")
+
+            module = importlib.util.module_from_spec(spec)
+            before = set(sys.modules)
+            sys.modules[unique] = module
+            sys.path.insert(0, str(self.path))
             try:
-                sys.path.remove(str(self.path))
-            except ValueError:  # pragma: no cover - only if someone else removed it
-                pass
-            self._rekey_package_modules(before, unique)
+                spec.loader.exec_module(module)
+            except BaseException:
+                sys.modules.pop(unique, None)
+                raise
+            finally:
+                try:
+                    sys.path.remove(str(self.path))
+                except ValueError:  # pragma: no cover - only if someone else removed it
+                    pass
+                self._rekey_package_modules(before, unique)
         return module
 
     def _rekey_package_modules(self, before: set[str], unique: str) -> None:
@@ -241,6 +287,13 @@ class DecisionFunction:
         ``mainstream_media_channels.csv`` is intact is a fact about
         bot-decision-yt, and hard-coding it here is why this server could only
         ever host one study.
+
+        Run under a deadline (:data:`HOOK_TIMEOUT_SECONDS`) in a daemon thread,
+        because a hook is somebody else's code on the health path: one that
+        reaches for the network, or blocks on a lock, would hang ``/health``,
+        and a health check that hangs reads as *down* to everything watching it.
+        A hook that overruns is reported as a problem, which is the honest
+        reading -- a check that did not finish is not a check that passed.
         """
         module = self._module
         if module is None:
@@ -248,10 +301,31 @@ class DecisionFunction:
         hook = getattr(module, "health", None)
         if not callable(hook):
             return None
-        try:
-            result = hook()
-        except Exception as exc:  # noqa: BLE001 - a broken hook must not break /health
-            return {"ok": False, "problems": [f"health() raised {type(exc).__name__}: {exc}"]}
+
+        outcome: dict[str, Any] = {}
+
+        def _run() -> None:
+            try:
+                outcome["result"] = hook()
+            except Exception as exc:  # noqa: BLE001 - a broken hook must not break /health
+                outcome["error"] = f"health() raised {type(exc).__name__}: {exc}"
+
+        thread = threading.Thread(target=_run, name=f"health-{_slug(self.name)}", daemon=True)
+        thread.start()
+        thread.join(HOOK_TIMEOUT_SECONDS)
+
+        if thread.is_alive():
+            # The thread is left running: it is daemon, and killing a thread
+            # mid-way through somebody's file read is worse than leaking one.
+            return {
+                "ok": False,
+                "problems": [f"health() did not return within {HOOK_TIMEOUT_SECONDS:g}s"],
+            }
+
+        if "error" in outcome:
+            return {"ok": False, "problems": [outcome["error"]]}
+
+        result = outcome.get("result")
         if not isinstance(result, dict):
             return {
                 "ok": False,
@@ -365,6 +439,20 @@ def registry_path(settings: Any | None = None) -> Path:
     return Path(raw).expanduser()
 
 
+def _slug_collisions(functions: dict[str, DecisionFunction]) -> dict[str, list[str]]:
+    """Names that would share one ``sys.modules`` key (``a.b`` and ``a-b``).
+
+    The slug is what makes the isolation work; two names slugging to the same
+    key would put two packages under one module name, which is the shadowing
+    this module exists to prevent -- only arrived at through the registry
+    instead of through Python's import system.
+    """
+    by_slug: dict[str, list[str]] = {}
+    for name in functions:
+        by_slug.setdefault(_slug(name), []).append(name)
+    return {slug: names for slug, names in by_slug.items() if len(names) > 1}
+
+
 def fallback_registry(decision_dir: Path) -> Registry:
     """The no-registry case: the symlinked decision dir, named ``bot-decision-yt``."""
     return Registry(
@@ -414,11 +502,23 @@ def load_registry(path: Path | None, decision_dir: Path) -> Registry:
         if not isinstance(entry_point, str) or ":" not in entry_point:
             problems.append(f"{path}: [functions.{name}] entry must look like 'module:attribute'")
             continue
-        functions[name] = DecisionFunction(
-            name=name,
-            path=Path(raw_path).expanduser(),
-            entry=entry_point,
+        # A relative path is read against the registry file's directory: the
+        # process cwd belongs to whoever launched the server, and is exactly
+        # the thing this change stopped trusting.
+        target = Path(raw_path).expanduser()
+        if not target.is_absolute():
+            target = (path.parent / target).resolve()
+
+        functions[name] = DecisionFunction(name=name, path=target, entry=entry_point)
+
+    collisions = _slug_collisions(functions)
+    for key, names in collisions.items():
+        problems.append(
+            f"{path}: {' and '.join(sorted(names))} both import as module '{MODULE_PREFIX}{key}', "
+            "so one would silently serve the other's code; rename one. Neither is registered."
         )
+        for name in names:
+            functions.pop(name, None)
 
     default = data.get("default")
     if default is None:

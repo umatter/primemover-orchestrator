@@ -519,9 +519,11 @@ invocation contract. This is **on by default** (`orchestrator up`); pass
   named the function it wants — the `lambda_select` behaviour's `function`
   field, which AWS mode passes straight to `LambdaCaller.invokeAws`. Locally
   that name used to be dropped and one directory served, so a box could host
-  exactly one study. `invokeLocal` now sends it as **`X-Function-Name`** and the
-  server dispatches on it against a registry
-  (`orchestrator/lambda_service/registry.py`):
+  exactly one study. The server now dispatches on an **`X-Function-Name`**
+  header against a registry (`orchestrator/lambda_service/registry.py`), and
+  `invokeLocal` sends it **from the jar built off `primemover_runner` PR #88 —
+  until that is deployed every local request arrives without one**, which is the
+  case the `default` exists for:
   - **The registry is box-specific and outside git, like `secrets.toml`**:
     `DECISION_FUNCTIONS_FILE` (env or `.env`), default
     `~/.config/primemover/decision-functions.toml`, a `default = "<name>"` plus
@@ -536,22 +538,36 @@ invocation contract. This is **on by default** (`orchestrator up`); pass
     different thing and never falls back silently: serving some other study's
     function would be invisible in every indicator the system has, so every
     `/invoke` then answers the degraded shape and `/health` goes degraded.
-  - **No header → the `default`. An unknown name → HTTP 200** with
-    `degraded: true`, `treatment_lost: true` and an `error` naming what *is*
-    registered, plus one WARNING carrying the correlation id — never a 5xx,
-    which the runner would retry as a transport failure instead of recording a
-    decision that did not apply.
+  - **No header → the `default`. A function this box cannot serve → HTTP 200**
+    with `degraded: true`, `treatment_lost: true`, an `error` naming the cause,
+    and one WARNING carrying the correlation id. That covers both an unknown
+    name and a *registered* package that will not import: for the job in hand
+    they are the same fact, its treatment did not happen, and only a verdict
+    reaches the job row analyses join on. Never a 5xx, which the runner retries
+    as a transport failure — a 5xx now means a failure *inside* a decision that
+    did load.
   - **Each package is imported under its own module name** (`pm_decision_<name>`)
     with its directory on `sys.path` only for that import, and the modules it
     pulled out of that directory are re-keyed under the same prefix. Two
     packages both called `lambda_function`, both with a same-named helper next
     to them, would otherwise shadow each other — and that failure does not
     raise, it returns a plausible recommendation computed by the wrong study's
-    code.
+    code. **The whole import runs under one process-wide lock**, because
+    `sys.path`/`sys.modules` are global: a per-function lock let two *first*
+    imports interleave, and the loser bound the winner's helper for the life of
+    the process with `/health` calling both loaded (reproduced; the test races
+    two threads through a barrier twenty times). Two names that differ only in
+    a character Python cannot put in a module name (`bot.yt` vs `bot-yt`) are
+    refused as a pair for the same reason. A **relative** `path` in the registry
+    resolves against the registry file's directory, never the process cwd.
   - **`/health` is per function**: `{status, registry, default, functions:
     {<name>: {path, entry, loaded, error, health}}, open_files, cwd}`, degraded
     if any function fails to import or its own `health()` hook reports a
-    problem. `orchestrator doctor` prints one line per function, checks each
+    problem. The hook is the project's own data check (bot-decision-yt reports
+    its CSV verdict there) and its contract is **fast, local, non-blocking** —
+    it runs on the health path under a 2 s deadline in a daemon thread, and one
+    that overruns is reported as a problem, since a check that did not finish is
+    not a check that passed. `orchestrator doctor` prints one line per function, checks each
     path holds `lambda_function.py`, and adds the `journalctl -u
     primemover-lambda` line when the running service reports one un-importable.
 - **Served by waitress, not `app.run`.** `main()` serves the Flask app with
@@ -578,7 +594,7 @@ invocation contract. This is **on by default** (`orchestrator up`); pass
   reuse was broken. Check `open_files` under a *concurrent* burst, never a
   sequential one.
 - **Decision code**: `orchestrator/lambda_service/decision`, a **symlink** to
-  `bot-decision-yt/bot-decision-EN`. Since the registry it is the *fallback*
+  `bot-decision-yt/bot-decision-EN`. Since the registry, it is the *fallback*
   function — required only on a box with no registry file, which is every dev
   checkout. `LambdaServerComponent.validate()` errors if it (or
   `lambda_function.py` inside it) is missing **when no registry names the
@@ -1247,7 +1263,9 @@ grep -nE '127\.0\.0\.1:.*(3307|8889)|ALLOW_EMPTY' ../primemover_api/docker-compo
   verify the `orchestrator/lambda_service/decision` symlink resolves and that
   `decision/lambda_function.py` exists
 - **A job whose decision came back `degraded` with `unknown decision function
-  '<name>'`** is not a broken function — it is a name this box does not host.
+  '<name>'`** is not a broken function — it is a name this box does not host
+  (`decision function '<name>' failed to import: …` is the other half: the name
+  is right and this box's copy is broken).
   Compare the bot's `lambda_select` behaviour `function` value with
   `GET :5001/health`'s `functions` keys (and remember an un-rebuilt runner sends
   no name at all, so it lands on `default`)

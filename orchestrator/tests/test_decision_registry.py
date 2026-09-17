@@ -88,7 +88,8 @@ def _registry_file(root: Path, functions: dict[str, Path], default: str | None =
     if default is not None:
         lines.append(f'default = "{default}"\n')
     for name, target in functions.items():
-        lines.append(f'\n[functions.{name}]\npath = "{target}"\n')
+        # Quoted: a name may contain a dot, which is a table separator bare.
+        lines.append(f'\n[functions."{name}"]\npath = "{target}"\n')
     path.write_text("".join(lines))
     return path
 
@@ -101,14 +102,6 @@ def clean_loaded_packages():
     for name in set(sys.modules) - before:
         if name.startswith(reg.MODULE_PREFIX):
             del sys.modules[name]
-
-
-@pytest.fixture(autouse=True)
-def restore_cwd():
-    """The fallback path chdirs on purpose; never leak that."""
-    original = os.getcwd()
-    yield
-    os.chdir(original)
 
 
 @pytest.fixture
@@ -618,3 +611,274 @@ def test_json_is_still_what_the_function_receives(two_functions):
     result = function(json.dumps({"job_id": "j-2"}))
 
     assert result["payload"] == {"job_id": "j-2"}
+
+
+# ---------------------------------------------------------------------------
+# Concurrent first imports
+# ---------------------------------------------------------------------------
+#
+# `sys.path` and `sys.modules` are process globals, so a per-function lock is
+# not enough: two functions importing for the first time in parallel -- the
+# normal state of a restarted server under 15 bots -- interleave their
+# insert/import/re-key windows, and the loser binds the winner's `helper`. It
+# does not raise. One study's code then answers under another study's name for
+# the life of the process, with /health reporting both as loaded.
+
+#: A package that takes long enough to import for the interleaving to be
+#: reproducible rather than theoretical.
+_SLOW_LAMBDA_FUNCTION = """
+import time
+
+from helper import whoami
+
+time.sleep(0.02)
+
+
+def select_recommendation(payload):
+    return {"function": "%s", "helper": whoami()}
+"""
+
+
+def _slow_package(root: Path, name: str) -> Path:
+    path = root / name
+    path.mkdir(parents=True, exist_ok=True)
+    (path / "helper.py").write_text(f'def whoami():\n    return "{name}-helper"\n')
+    (path / "lambda_function.py").write_text(_SLOW_LAMBDA_FUNCTION % name)
+    return path
+
+
+def _race_one_round(registry: reg.Registry, names: list[str]) -> dict[str, object]:
+    """Load every named function from its own thread, all released together."""
+    import threading
+
+    barrier = threading.Barrier(len(names))
+    answers: dict[str, object] = {}
+    errors: list[BaseException] = []
+
+    def _first_request(name: str) -> None:
+        try:
+            function = registry.get(name)
+            barrier.wait(timeout=5)
+            answers[name] = function.load()("{}")
+        except BaseException as exc:  # noqa: BLE001 - re-raised by the caller
+            errors.append(exc)
+
+    threads = [threading.Thread(target=_first_request, args=(name,)) for name in names]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=10)
+
+    assert not errors, errors
+    return answers
+
+
+def test_two_first_imports_in_parallel_do_not_cross_contaminate(tmp_path: Path):
+    """Run twenty times: a race that fails one round in five is still a race."""
+    names = ["alpha", "beta"]
+    paths = {name: _slow_package(tmp_path, name) for name in names}
+    registry_file = _registry_file(tmp_path, paths, default="alpha")
+
+    for round_number in range(20):
+        registry = reg.load_registry(registry_file, tmp_path / "decision")
+        answers = _race_one_round(registry, names)
+
+        for name in names:
+            assert answers[name] == {
+                "function": name,
+                "helper": f"{name}-helper",
+            }, f"round {round_number}: {name} answered {answers[name]}"
+
+
+# ---------------------------------------------------------------------------
+# A registered function whose package will not import
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def broken_package(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """One good function and one registered package that raises on import."""
+    broken = tmp_path / "broken"
+    broken.mkdir()
+    (broken / "lambda_function.py").write_text("import nonexistent_module_xyz\n")
+    path = _registry_file(
+        tmp_path, {"good": _package(tmp_path, "good"), "broken": broken}, default="good"
+    )
+    monkeypatch.setenv("DECISION_FUNCTIONS_FILE", str(path))
+    monkeypatch.setattr(server, "_registry", None)
+    return broken
+
+
+def test_a_package_that_will_not_import_is_a_degraded_200_not_a_500(client, broken_package):
+    """For this job the treatment did not happen -- which is a verdict, not a 500.
+
+    A 5xx is a transport failure to the runner: it retries and records a failed
+    job, and the verdict the analysis joins on never gets written. A broken copy
+    of a study's function is the same fact as a name nobody registered, seen
+    from the other side.
+    """
+    response = client.post("/invoke", json={}, headers={"X-Function-Name": "broken"})
+
+    assert response.status_code == 200
+    body = response.get_json()
+    assert body["degraded"] is True
+    assert body["treatment_lost"] is True
+    assert "decision function 'broken' failed to import" in body["error"]
+    assert "nonexistent_module_xyz" in body["error"]
+    assert body["xpath"] == ""
+
+
+def test_the_import_failure_verdict_reads_as_lost_not_unknown(client, broken_package):
+    """`status.lambda_verdict` is what every consumer reads; it must not say unknown."""
+    from orchestrator.status import lambda_verdict
+
+    body = client.post("/invoke", json={}, headers={"X-Function-Name": "broken"}).get_json()
+    verdict = lambda_verdict(body)
+
+    assert verdict.reported is True
+    assert verdict.degraded is True
+    assert verdict.treatment_lost is True
+
+
+def test_the_import_failure_logs_one_warning_with_the_correlation_id(
+    client, broken_package, caplog: pytest.LogCaptureFixture
+):
+    caplog.set_level(logging.DEBUG)
+
+    client.post(
+        "/invoke",
+        json={},
+        headers={"X-Function-Name": "broken", "X-Correlation-Id": "exp-2|j-8"},
+    )
+
+    warnings = [m for m in _warnings(caplog) if "decision not served" in m]
+    assert len(warnings) == 1, _warnings(caplog)
+    assert "exp-2|j-8" in warnings[0]
+
+
+def test_a_registered_path_that_is_missing_is_the_same_degraded_answer(
+    client, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    path = _registry_file(tmp_path, {"gone": tmp_path / "not-here"}, default="gone")
+    monkeypatch.setenv("DECISION_FUNCTIONS_FILE", str(path))
+    monkeypatch.setattr(server, "_registry", None)
+
+    body = client.post("/invoke", json={}).get_json()
+
+    assert body["treatment_lost"] is True
+    assert "failed to import" in body["error"]
+    assert "path not found" in body["error"]
+
+
+def test_an_import_error_raised_by_the_decision_itself_is_still_a_500(
+    client, two_functions, monkeypatch: pytest.MonkeyPatch
+):
+    """The distinction that keeps the verdict honest: loaded fine, then blew up."""
+
+    def _lazy_import_boom(payload: str):
+        raise ImportError("no module named 'openai'")
+
+    monkeypatch.setattr(server, "get_decision_function", lambda name=None: _lazy_import_boom)
+
+    response = client.post("/invoke", json={})
+
+    assert response.status_code == 500
+    assert "ImportError" in response.get_json()["error"]
+
+
+# ---------------------------------------------------------------------------
+# The health() hook runs under a deadline
+# ---------------------------------------------------------------------------
+
+
+def test_a_hook_that_blocks_does_not_hang_health(
+    client, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """A hook is somebody else's code on the health path.
+
+    One that reaches for the network would hang /health, and a health check that
+    hangs reads as *down* to everything watching it.
+    """
+    monkeypatch.setattr(reg, "HOOK_TIMEOUT_SECONDS", 0.05)
+    slow = _package(tmp_path, "slow")
+    (slow / "lambda_function.py").write_text(
+        "import time\n\n\ndef select_recommendation(p):\n    return {}\n\n\n"
+        "def health():\n    time.sleep(5)\n    return {'ok': True}\n"
+    )
+    path = _registry_file(tmp_path, {"slow": slow}, default="slow")
+    monkeypatch.setenv("DECISION_FUNCTIONS_FILE", str(path))
+    monkeypatch.setattr(server, "_registry", None)
+
+    body = client.get("/health").get_json()
+
+    hook = body["functions"]["slow"]["health"]
+    assert hook["ok"] is False
+    assert "did not return within" in hook["problems"][0]
+    # A check that did not finish is not a check that passed.
+    assert body["status"] == "degraded"
+
+
+def test_the_hook_deadline_is_two_seconds():
+    """Pinned: the value is part of the contract a hook author is held to."""
+    assert reg.HOOK_TIMEOUT_SECONDS == 2.0
+
+
+# ---------------------------------------------------------------------------
+# Registry paths and names
+# ---------------------------------------------------------------------------
+
+
+def test_a_relative_path_resolves_against_the_registry_file(
+    client, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """Not against the process cwd, which belongs to whoever launched the server."""
+    _package(tmp_path, "near")
+    path = tmp_path / "decision-functions.toml"
+    path.write_text('default = "near"\n\n[functions.near]\npath = "near"\n')
+    monkeypatch.setenv("DECISION_FUNCTIONS_FILE", str(path))
+    monkeypatch.setattr(server, "_registry", None)
+    os.chdir(tmp_path.parent)  # a cwd that knows nothing about the package
+
+    assert client.post("/invoke", json={}).get_json()["function"] == "near"
+
+
+def test_two_names_that_slug_to_one_module_key_are_refused(
+    client, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """``bot.yt`` and ``bot-yt`` would share one sys.modules key.
+
+    That is the same shadowing the unique names prevent, arrived at through the
+    registry instead of through Python -- so neither is registered, and the
+    registry says why rather than serving a coin toss.
+    """
+    path = _registry_file(
+        tmp_path,
+        {"bot.yt": _package(tmp_path, "one"), "bot-yt": _package(tmp_path, "two")},
+        default="bot-yt",
+    )
+    monkeypatch.setenv("DECISION_FUNCTIONS_FILE", str(path))
+    monkeypatch.setattr(server, "_registry", None)
+
+    body = client.get("/health").get_json()
+
+    assert body["functions"] == {}
+    assert any("both import as module" in p for p in body["registry_problems"])
+    assert body["status"] == "degraded"
+
+    served = client.post("/invoke", json={}, headers={"X-Function-Name": "bot-yt"}).get_json()
+    assert served["treatment_lost"] is True
+
+
+def test_the_log_names_the_function_that_ran_not_the_slot(
+    client, two_functions, caplog: pytest.LogCaptureFixture
+):
+    """``<default>`` says which slot was used, not which study ran."""
+    caplog.set_level(logging.DEBUG)
+
+    client.post("/invoke", json={})
+
+    lines = [
+        r.getMessage() for r in caplog.records if "video selection requested" in r.getMessage()
+    ]
+    assert lines and "function=alpha" in lines[0], lines
+    assert "<default>" not in " ".join(lines)

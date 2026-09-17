@@ -211,6 +211,22 @@ def isolate_decision_registry(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.fixture(autouse=True)
+def restore_cwd() -> Generator[None, None, None]:
+    """No test may leave the process in another directory.
+
+    The lambda service chdirs on purpose in its no-registry fallback, and a
+    leaked cwd is the worst kind of test pollution: every relative path in every
+    later test resolves somewhere else, and the failure surfaces far from the
+    test that caused it. Global, next to the registry isolation above, because
+    the chdir is reachable from any test that touches /health or /invoke -- not
+    only from the files that mean to.
+    """
+    original = os.getcwd()
+    yield
+    os.chdir(original)
+
+
+@pytest.fixture(autouse=True)
 def block_network_in_mcp_tests(
     request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch
 ) -> None:

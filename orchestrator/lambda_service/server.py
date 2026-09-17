@@ -20,10 +20,13 @@ directory served, so a box could host exactly one study.
 
 It now dispatches on the ``X-Function-Name`` header against the registry in
 :mod:`orchestrator.lambda_service.registry`. No header means the registry's
-``default`` (so an un-rebuilt runner keeps working), and an unknown name is
-answered with HTTP 200 and the degraded report shape -- never a 5xx, because a
-5xx is the one answer the runner turns into a retry loop rather than a recorded
-verdict.
+``default`` (so an un-rebuilt runner keeps working), and a function this box
+cannot serve -- an unknown name, or a registered package that will not import --
+is answered with HTTP 200 and the degraded report shape (``degraded``,
+``treatment_lost``, ``error``) rather than a 5xx. Both are the same fact for the
+job in hand: its treatment did not happen. Only a verdict reaches the job row
+that analyses join on; a 5xx is a transport failure the runner retries and
+records as a failed job instead.
 
 Working directory
 -----------------
@@ -680,8 +683,24 @@ def _requested_function() -> str | None:
     return None
 
 
-def _unknown_function_response(request_id: str, message: str):
-    """Answer a request for a function this box does not host.
+def _resolved_function_name(requested: str | None) -> str:
+    """The name that actually served the request, for the log line.
+
+    ``<default>`` says which *slot* was used and not which study ran, and the
+    whole point of the registry is that those are now different questions. Falls
+    back to the literal only if the registry cannot name a default at all.
+    """
+    if requested:
+        return requested
+    try:
+        return get_registry().default or "<default>"
+    except Exception:  # noqa: BLE001 - a log line must never fail a decision
+        return "<default>"
+
+
+def _undelivered_decision(request_id: str, message: str):
+    """Answer a request this box cannot serve: unknown name, or a package that
+    will not import.
 
     Deliberately HTTP **200** with the degraded report, not a 4xx/5xx. The
     runner reads the verdict out of the body and writes it onto the job row; a
@@ -689,8 +708,14 @@ def _unknown_function_response(request_id: str, message: str):
     failed job rather than as a decision that never applied. ``treatment_lost``
     is true because nothing requested was applied -- whatever this session
     produced, it is not the arm the experiment asked for.
+
+    A broken copy of a registered function is the same fact as a name nobody
+    registered, seen from the other side: for *this job*, the treatment did not
+    happen. Reporting one as a 500 and the other as a verdict would split one
+    experimental failure across two incident types, and only the verdict reaches
+    the job row that analyses join on.
     """
-    _log(logging.WARNING, request_id, f"unknown decision function requested: {message}")
+    _log(logging.WARNING, request_id, f"decision not served: {message}")
     return (
         jsonify(
             {
@@ -721,10 +746,18 @@ def invoke():
     request_id = _correlation_id(event)
     requested = _requested_function()
 
+    # Resolution is its own step: a function this box cannot serve is a verdict,
+    # while a failure *inside* the decision is still a 500. Only the load is
+    # caught here, so an ImportError raised by the decision itself keeps its
+    # old answer.
     try:
-        # Get the decision function
         select_recommendation = get_decision_function(requested)
+    except (UnknownFunctionError, ImportError) as exc:
+        return _undelivered_decision(request_id, str(exc))
 
+    resolved = _resolved_function_name(requested)
+
+    try:
         # Get the request payload
         if not request.is_json:
             _log(logging.WARNING, request_id, "rejected: request body was not JSON")
@@ -742,8 +775,7 @@ def invoke():
         _log(
             logging.INFO,
             request_id,
-            f"invoke: video selection requested from function="
-            f"{requested or '<default>'} (payload keys={keys})",
+            f"invoke: video selection requested from function={resolved} (payload keys={keys})",
         )
 
         # Call the decision function (it expects a JSON string)
@@ -754,15 +786,19 @@ def invoke():
 
         return jsonify(result)
 
-    except UnknownFunctionError as e:
-        return _unknown_function_response(request_id, str(e))
     except ImportError as e:
+        # Raised *inside* the decision (a lazy import of a missing dependency),
+        # not by loading it: that is caught above and answered as a verdict.
         elapsed_ms = (time.monotonic() - started) * 1000
-        _log(logging.ERROR, request_id, f"import error after {elapsed_ms:.0f} ms: {e}")
+        _log(
+            logging.ERROR,
+            request_id,
+            f"decision function '{resolved}' raised ImportError after {elapsed_ms:.0f} ms: {e}",
+        )
         return (
             jsonify(
                 {
-                    "error": f"Failed to load decision function: {str(e)}",
+                    "error": f"Decision function raised ImportError: {str(e)}",
                     "xpath": "",
                 }
             ),

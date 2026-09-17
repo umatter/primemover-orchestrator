@@ -33,14 +33,6 @@ _HAS_SIBLING_REPO = (REAL_DECISION_DIR / "lambda_function.py").exists() and (
 
 
 @pytest.fixture(autouse=True)
-def restore_cwd():
-    """Several code paths chdir on purpose; never leak that into other tests."""
-    original = os.getcwd()
-    yield
-    os.chdir(original)
-
-
-@pytest.fixture(autouse=True)
 def reset_cwd_announced(monkeypatch: pytest.MonkeyPatch):
     """The 'logged the cwd once' flag is module state; keep tests independent."""
     monkeypatch.setattr(server, "_cwd_announced", False)
