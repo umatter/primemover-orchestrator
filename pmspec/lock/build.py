@@ -66,9 +66,17 @@ def merge_reports(
 
 
 def parser_seed(seed: int | None) -> int | None:
-    """The seed for the parser's stream (pools, `!file` selections): ``seed + 1``.
-    The converter's design-expansion stream draws from ``seed`` itself. Two
-    independent streams, one recorded number -- and ``0`` is a seed, so this
+    """The base for the parser's streams: ``seed + 1``.
+
+    The converter's design-expansion stream draws from ``seed`` itself; the
+    parser's two samplers take named sub-streams of *this* number --
+    ``f"{parser_seed}:files"`` for `!file` selections and
+    ``f"{parser_seed}:pools"`` for data pools (see
+    :func:`pmspec.spec.parser.stream_seed`). They used to share this seed
+    directly, which made a `!file {select: random}` and a pool
+    `{select: random}` over lists of equal length draw the same rows.
+
+    Independent streams, one recorded number -- and ``0`` is a seed, so this
     tests ``is not None``, never truthiness."""
     return None if seed is None else seed + 1
 

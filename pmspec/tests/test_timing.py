@@ -342,6 +342,61 @@ def test_the_cli_reports_a_bad_jitter_instead_of_crashing(tmp_path):
     assert "is not a duration" in out.output, out.output
 
 
+@pytest.mark.parametrize(
+    ("bad", "needle"),
+    [
+        ('from: "+1h", jitter: "soon"', "jitter 'soon' is not a duration"),
+        ('jitter: "6h"', "needs both from and jitter"),
+        ('from: "tomorrow", jitter: "6h"', "cannot parse start time 'tomorrow'"),
+    ],
+)
+def test_one_bad_jitter_is_one_message_with_a_count(tmp_path, bad, needle):
+    """One mistake in one spec is one message, however many sessions carry it.
+
+    A 500-bot spec used to print 500 identical lines differing only in the
+    index, burying whatever else went wrong. Grouped the way
+    `converter._scan_unresolved` groups: `[*]` for the indices, one line with
+    the count and the first concrete place.
+    """
+    text = JITTER_SPEC.replace('from: "+1h", jitter: "6h"', bad)
+    parsed = SpecParser(base_dir=tmp_path, seed=8).parse(text)
+    result = SpecConverter(seed=7, resolve_times=False).convert(parsed)
+
+    hits = [e for e in result.errors if needle in e]
+    assert hits == [
+        f"crawlers[*].queues[*].start_at: {needle} "
+        "(3 occurrence(s); first at crawlers[0].queues[0])"
+    ], result.errors
+
+
+def test_a_single_bad_jitter_still_names_its_own_session(tmp_path):
+    """No count, no `[*]`, when there is only one of them: the concrete path is
+    strictly more useful than a group of one."""
+    text = JITTER_SPEC.replace("      levels: [a, b, c]\n", "      levels: [a]\n").replace(
+        'from: "+1h", jitter: "6h"', 'from: "+1h", jitter: "soon"'
+    )
+    parsed = SpecParser(base_dir=tmp_path, seed=8).parse(text)
+    result = SpecConverter(seed=7, resolve_times=False).convert(parsed)
+    assert [e for e in result.errors if "is not a duration" in e] == [
+        "crawlers[0].queues[0].start_at: jitter 'soon' is not a duration"
+    ], result.errors
+
+
+def test_two_different_jitter_mistakes_stay_two_messages(tmp_path):
+    """Grouping is per message, not per spec: a spec with two distinct problems
+    must still say both."""
+    text = JITTER_SPEC.replace(
+        "crawlers:\n",
+        "crawlers:\n  - name: odd_one\n    session:\n"
+        '      start_at: {from: "tomorrow", jitter: "6h"}\n'
+        "      workflow:\n        - wait: 5s\n",
+    ).replace('from: "+1h", jitter: "6h"', 'from: "+1h", jitter: "soon"')
+    parsed = SpecParser(base_dir=tmp_path, seed=8).parse(text)
+    result = SpecConverter(seed=7, resolve_times=False).convert(parsed)
+    assert any("jitter 'soon' is not a duration" in e for e in result.errors), result.errors
+    assert any("cannot parse start time 'tomorrow'" in e for e in result.errors), result.errors
+
+
 def test_the_unseeded_jitter_error_is_reported_once(tmp_path):
     # Three crawlers, one message -- not one per session.
     parsed = SpecParser(base_dir=tmp_path).parse(JITTER_SPEC.replace("  seed: 7\n", ""))

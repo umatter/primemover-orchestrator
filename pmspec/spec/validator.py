@@ -101,6 +101,21 @@ class SpecValidator:
     # arm. See CLAUDE.md and docs/integration-contract.md.
     _SWITCH_PARAMS: tuple[str, ...] = ("pi", "psi", "kappa", "tau")
 
+    # The crawler keys SpecConverter._convert_crawler reads. A `maps_to:` path
+    # is written onto the crawler dict verbatim by
+    # DesignExpander._set_nested_value, so a path whose first segment is not one
+    # of these lands somewhere nothing reads: `params.pi` becomes
+    # crawler["params"]["pi"] while the converter only ever looks at
+    # crawler["configuration"]["params"], and the treated arm ships as a second
+    # control. (`preferences.<x>` bare is the same trap: the expander's
+    # preferences special case builds the array at whatever level the path names,
+    # so a bare path builds crawler["preferences"], not
+    # crawler["configuration"]["preferences"] -- verified against the converted
+    # JSON, where the default value survives untouched.)
+    _CRAWLER_FIELDS: frozenset[str] = frozenset(
+        {"configuration", "agent", "proxy", "name", "description", "active", "testing"}
+    )
+
     # Params the current converter/API/runner/decision-function pipeline actually
     # carries. Anything else survives the DSL but is dropped downstream today, so
     # it is reported as a drop rather than silently lost. (Making this channel
@@ -494,13 +509,41 @@ class SpecValidator:
         warnings: list[str] = []
 
         design = spec.get("design") or {}
-        for fname, fdef in (design.get("factors") or {}).items():
+        factors = design.get("factors") or {}
+        # A maps_to value also resolves as a `{leaf}` substitution variable
+        # (DesignExpander._general_substitute), and that happens whether or not
+        # the write lands anywhere. So a substituted path has done its work and
+        # is not a drop -- the same escape hatch a non-standard design.parameters
+        # name gets below. Two things are *not* that escape:
+        #   - a factor's own name: _general_substitute resolves `{name}` from
+        #     cell.factor_values *first*, so `{usage_type}` next to a factor
+        #     called usage_type is the level id and the write still reaches
+        #     nobody;
+        #   - `{crawler.<name>}` in a pool `score:`/`filter:` expression: that
+        #     context is built from configuration.params, where a prefix-less
+        #     write never arrives (hence crawler_refs=False).
+        # Only the leaf is looked up: `_PLACEHOLDER_RE` cannot match a dotted
+        # name, so a full path could never be in the set.
+        substituted = (
+            (self._referenced_placeholders(spec, crawler_refs=False) - set(factors))
+            if factors
+            else set()
+        )
+        for fname, fdef in factors.items():
             if not isinstance(fdef, dict):
                 continue  # _validate_design has already reported it as an error
             for path, level_map in (fdef.get("maps_to") or {}).items():
                 parts = str(path).split(".")
                 leaf = parts[-1]
                 if not isinstance(level_map, dict):
+                    continue
+                if parts[0] not in self._CRAWLER_FIELDS and leaf not in substituted:
+                    self.drops.report(
+                        f"design.factors.{fname}.maps_to.{path}",
+                        f"'{parts[0]}' is not a crawler field the pipeline reads",
+                        "use configuration.params.<x>, configuration.preferences.<x>, "
+                        "agent.<x> or proxy.<x>",
+                    )
                     continue
                 if leaf in self._SWITCH_PARAMS:
                     for level, value in level_map.items():
@@ -541,9 +584,9 @@ class SpecValidator:
         if isinstance(parameters, dict):
             non_standard = [name for name in parameters if name not in self._KNOWN_PARAMS]
             if non_standard:
-                referenced = self._referenced_placeholders(spec)
+                consumed = self._referenced_placeholders(spec)
                 for name in non_standard:
-                    if name not in referenced:
+                    if name not in consumed:
                         self.drops.report(
                             f"design.parameters.{name}",
                             "sampled value lands in configuration.params, which the API drops",
@@ -611,7 +654,9 @@ class SpecValidator:
         return reached
 
     @classmethod
-    def _referenced_placeholders(cls, spec: dict[str, Any]) -> set[str]:
+    def _referenced_placeholders(
+        cls, spec: dict[str, Any], *, crawler_refs: bool = True
+    ) -> set[str]:
         """Names used as `{name}` / `{name:fmt}`, or as `{crawler.name}` in a
         pool expression, under crawlers or a template some crawler reaches.
 
@@ -620,7 +665,11 @@ class SpecValidator:
         `_convert_configuration` strips the sampled name (`SpecConverter.convert`
         orders it that way on purpose), so a draw used only in a `score:` or
         `filter:` expression has already done its work by the time the key is
-        removed. Reached templates count because the parser splices them into the
+        removed. That context is built out of `configuration.params` and nothing
+        else, so `{crawler.<name>}` can rescue a *sampled parameter* and never a
+        prefix-less `maps_to` write, which lands somewhere else entirely:
+        ``crawler_refs=False`` is how the maps_to-prefix rule asks for plain
+        `{name}` substitutions only. Reached templates count because the parser splices them into the
         crawler's workflow before the expander substitutes, so `{alpha_draw}`
         in such a template body is consumed exactly like one written on the
         crawler. An orphan template (`_reachable_templates`) does not: its
@@ -637,8 +686,9 @@ class SpecValidator:
             if isinstance(node, str):
                 for m in _PLACEHOLDER_RE.finditer(node):
                     names.add(m.group(1))
-                for m in _CRAWLER_REF_RE.finditer(node):
-                    names.add(m.group(1))
+                if crawler_refs:
+                    for m in _CRAWLER_REF_RE.finditer(node):
+                        names.add(m.group(1))
             elif isinstance(node, dict):
                 for key, value in node.items():
                     if key != "multilogin_profile":
