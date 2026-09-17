@@ -1593,22 +1593,38 @@ def _get_job_examples(job_type: str) -> list:
     return examples.get(job_type, ["# No examples available"])
 
 
+# The names `init --template` offers. Spelled out because the decorator below
+# runs at import, before the builders further down this module exist; the test
+# that validates every template asserts this tuple and `spec_templates()` still
+# name the same set.
+SPEC_TEMPLATE_NAMES = ("default", "google", "youtube")
+
+
+def spec_templates() -> dict[str, str]:
+    """Every spec `init` can emit, by name.
+
+    One map, read by the command and by the test that validates each of them,
+    so a template cannot be offered without being checked.
+    """
+    return {
+        "default": _get_default_template(),
+        "youtube": _get_youtube_template(),
+        "google": _get_google_template(),
+    }
+
+
 @cli.command()
 @click.option(
     "--template",
     "-t",
-    type=click.Choice(["default", "youtube", "google"]),
+    type=click.Choice(SPEC_TEMPLATE_NAMES),
     default="default",
     help="Template to use",
 )
 @click.option("--output", "-o", type=click.Path(), help="Output file")
 def init(template: str, output: str | None):
     """Create a new experiment spec from template."""
-    templates = {
-        "default": _get_default_template(),
-        "youtube": _get_youtube_template(),
-        "google": _get_google_template(),
-    }
+    templates = spec_templates()
 
     spec = templates.get(template, templates["default"])
 
@@ -1672,12 +1688,18 @@ crawlers:
 
 
 def _get_youtube_template() -> str:
-    return """# YouTube Research Experiment
+    return """# YouTube Recommendation Study
+#
+# Two treatment switches, one factor: pi (aversion to mainstream-media
+# channels) and kappa (preference for similar videos). The decision function
+# reads them as int(round(x)) == 1, so ONLY 0 or 1 are meaningful -- a level of
+# 0.5 rounds to 0 and silently turns the treated arm into a second control,
+# with no error anywhere.
 version: "1.0"
 
 experiment:
   name: "YouTube Recommendation Study"
-  description: "Studying recommendation algorithm pathways"
+  description: "Does the recommendation trail change when the bot is treated?"
 
 defaults:
   location: US-IL-CHICAGO
@@ -1687,48 +1709,46 @@ defaults:
 
 templates:
   cookie_consent:
-    - try_click: "//button[contains(text(),'Accept')]"
+    - try_click: "//button[contains(., 'Accept all')]"
     - wait: 2s
 
   watch_and_recommend:
-    - wait: 10s
     - lambda_select:
         task: youtube_video_select
         function: bot-decision-yt
+    - wait: 30s
+    - scroll: 10s
+    - wait: 5s
 
 design:
   type: factorial
   factors:
-    political_orientation:
-      levels: [left, center, right]
+    condition:
+      levels: [control, treated]
       maps_to:
-        preferences.preference_political_videos:
-          left: 1
-          center: 0
-          right: -1
-        configuration.params.pi:
-          left: -0.5
-          center: 0
-          right: 0.5
-    starting_content:
-      levels: [news, entertainment]
-      maps_to:
-        initial_channel:
-          news: "@CNN"
-          entertainment: "@MrBeast"
-  replications: 3
+        configuration.params.pi: {control: 0, treated: 1}
+        configuration.params.kappa: {control: 0, treated: 1}
+  replications: 2
 
 crawlers:
   - from_design: true
-    name: "yt_{political_orientation}_{starting_content}_{replica:02d}"
-    description: "YouTube bot"
+    name: "yt_{condition}_{replica:02d}"
+    description: "YouTube bot, {condition} arm"
 
     configuration:
       params:
+        psi: 0
+        tau: 0
         alpha: 1
       preferences:
+        - name: location
+          value: "US-IL-CHICAGO"
+        # Consumed by the runner: accept_all true -> "Accept all", false ->
+        # "Reject all", which switches off the personalisation a study measures.
+        - name: cookie_pref
+          value: '{"accept_all": true}'
         - name: usage_type
-          value: only_search
+          value: "only_search"
 
     proxy:
       hostname: "proxy.example.com"
@@ -1737,23 +1757,26 @@ crawlers:
 
     agent:
       identification: mlx
+      location: US-IL-CHICAGO
 
     session:
-      name: "Daily Session"
-      start: "2025-02-01T10:00:00Z"
-      schedule: daily
+      name: "Session 1"
+      # Wall clock in the API's zone; must be in the future or the runner
+      # never picks the queue up.
+      start_at: "+1h"
 
       workflow:
         - visit: https://youtube.com
         - wait: 5s
         - template: cookie_consent
         - type:
-            text: "{initial_search}"
+            text: "today breaking news"
             selector: "//*[@id='search']"
             submit: true
         - wait: 5s
-        - repeat: 10
-            template: watch_and_recommend
+        - scroll: 10s
+        - repeat: 5
+          template: watch_and_recommend
 """
 
 
