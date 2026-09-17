@@ -140,3 +140,170 @@ crawlers:
         assert result.lock is not None, result.errors
         assert any("geolocaton_masking" in w for w in result.warnings), result.warnings
         assert any("would have been dropped (lax mode)" in w for w in result.warnings)
+
+
+def _crawler_with_flags(flags: str) -> dict:
+    spec = yaml.safe_load(
+        """
+version: "1.0"
+experiment:
+  name: MLX flags
+crawlers:
+  - name: bot
+    agent:
+      multilogin_profile:
+        parameters:
+          flags:
+"""
+        + flags
+        + """
+    session:
+      start: "+1m"
+      workflow:
+        - visit: https://example.com
+"""
+    )
+    assert isinstance(spec, dict)
+    return spec
+
+
+class TestFlagValuesAreCheckedAgainstTheApisVocabulary:
+    """docs/multilogin-profile-flags.md §2: the API validates `parameters.flags`
+    *values* -- a wrong one is a 400 at profile creation, i.e. every bot in the
+    spec fails setup on the VM. pmspec checked only the keys, so the whole table
+    the spike measured is now a compile-time check."""
+
+    def test_the_constant_covers_exactly_the_profiles_own_flags(self):
+        from pmspec.spec.multilogin import MLX_FLAG_VALUES
+
+        assert set(MLX_FLAG_VALUES) == set(_DEFAULT_FLAGS)
+
+    def test_the_default_profile_is_a_profile_multilogin_would_accept(self):
+        from pmspec.spec.multilogin import MLX_FLAG_VALUES
+
+        for flag, value in _DEFAULT_FLAGS.items():
+            assert value in MLX_FLAG_VALUES[flag], (flag, value)
+
+    def test_canvas_blocking_is_accepted(self):
+        """The one value that expresses the canvas-blocking privacy arm."""
+        result = SpecValidator().validate(_crawler_with_flags("            canvas_noise: disabled"))
+        assert result.valid, result.errors
+        assert result.dropped == 0
+
+    def test_geolocation_blocking_is_accepted(self):
+        result = SpecValidator().validate(
+            _crawler_with_flags("            geolocation_popup: block")
+        )
+        assert result.valid, result.errors
+
+    def test_a_value_the_api_rejects_is_an_error(self):
+        """`block` is the geolocation vocabulary, not the canvas one: the API
+        answers 400 "wrong canvas noise flag"."""
+        result = SpecValidator().validate(_crawler_with_flags("            canvas_noise: block"))
+        assert not result.valid
+        assert any(
+            "flags.canvas_noise: 'block' is not accepted by Multilogin for canvas_noise" in e
+            for e in result.errors
+        ), result.errors
+        assert any("disabled" in e and "mask" in e for e in result.errors), result.errors
+
+    def test_startup_behavior_is_pinned_although_the_api_validates_nothing(self):
+        """The API takes any string here and stores it verbatim, so a typo is
+        silent -- which is exactly why pmspec pins it."""
+        result = SpecValidator().validate(
+            _crawler_with_flags("            startup_behavior: whatever")
+        )
+        assert not result.valid
+        assert any("startup_behavior" in e and "whatever" in e for e in result.errors)
+
+    def test_a_bad_maps_to_level_value_is_an_error(self):
+        text = SPEC.replace(
+            "agent.multilogin_profile.parameters.flags.geolocation_masking: "
+            "{none: mask, geo: custom}",
+            "agent.multilogin_profile.parameters.flags.canvas_noise: {none: mask, geo: block}",
+        )
+        result = SpecValidator().validate(yaml.safe_load(text))
+        assert not result.valid
+        assert any(
+            "'block' is not accepted by Multilogin for canvas_noise" in e for e in result.errors
+        ), result.errors
+
+    def test_a_good_maps_to_level_value_is_clean(self):
+        text = SPEC.replace(
+            "agent.multilogin_profile.parameters.flags.geolocation_masking: "
+            "{none: mask, geo: custom}",
+            "agent.multilogin_profile.parameters.flags.canvas_noise: {none: mask, geo: disabled}",
+        )
+        result = SpecValidator().validate(yaml.safe_load(text))
+        assert result.valid, result.errors
+        assert result.dropped == 0
+
+    def test_an_unknown_key_is_still_a_drop_not_a_value_error(self):
+        result = SpecValidator().validate(_crawler_with_flags("            do_not_track: enabled"))
+        assert not result.valid
+        assert any("unknown Multilogin flag" in e for e in result.errors), result.errors
+
+
+TEMPLATED = """
+version: "1.0"
+experiment:
+  name: MLX flags
+design:
+  factors:
+    privacy:
+      levels: [mask, LEVEL_TWO]
+  replications: 1
+crawlers:
+  - from_design: true
+    name: "bot_{privacy}"
+    agent:
+      multilogin_profile:
+        parameters:
+          flags:
+            canvas_noise: "{privacy}"
+    session:
+      start: "+1m"
+      workflow:
+        - visit: https://example.com
+"""
+
+
+class TestASubstitutedValueIsJudgedAfterExpansion:
+    """A `{placeholder}` is not a value yet, so the raw spec cannot say whether
+    it is accepted. The expanded crawlers can, and that is where it is caught --
+    the same place `validate_expanded` already judges treatments."""
+
+    def test_the_placeholder_itself_is_not_reported(self):
+        raw = yaml.safe_load(TEMPLATED.replace("LEVEL_TWO", "disabled"))
+        result = SpecValidator().validate(raw)
+        assert result.valid, result.errors
+
+    def test_a_good_level_survives_expansion(self, spec_dir: Path):
+        result = _compile(spec_dir, TEMPLATED.replace("LEVEL_TWO", "disabled"))
+        assert result.lock is not None, result.errors
+        flags = _flags_by_crawler_name(result.lock.crawlers)
+        assert flags["bot_disabled"]["canvas_noise"] == "disabled"
+
+    def test_a_bad_level_is_caught_after_expansion(self, spec_dir: Path):
+        result = _compile(spec_dir, TEMPLATED.replace("LEVEL_TWO", "blorp"))
+        assert result.lock is None, "a profile Multilogin would 400 must not compile"
+        assert any(
+            "'blorp' is not accepted by Multilogin for canvas_noise" in e for e in result.errors
+        ), result.errors
+
+    def test_the_same_bad_value_is_reported_once_per_spec_not_once_per_bot(self, spec_dir: Path):
+        text = TEMPLATED.replace("levels: [mask, LEVEL_TWO]", "levels: [blorp]").replace(
+            "replications: 1", "replications: 3"
+        )
+        result = _compile(spec_dir, text)
+        assert result.lock is None
+        hits = [e for e in result.errors if "is not accepted by Multilogin" in e]
+        assert len(hits) == 1, hits
+        assert "3 place(s)" in hits[0], hits
+
+
+def test_the_docs_say_values_are_checked():
+    docs = (Path(__file__).resolve().parents[2] / "docs" / "pmspec.md").read_text()
+    section = docs.split("### Multilogin profile flags", 1)[1].split("###", 1)[0]
+    assert "multilogin-profile-flags.md" in section
+    assert "not checked" not in section

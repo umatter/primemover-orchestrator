@@ -24,20 +24,25 @@ except ImportError:
     HAS_JSONSCHEMA = False
 
 from .assign import ASSIGN_KEYS, ASSIGN_SELECTS
-from .converter import DEFAULT_MULTILOGIN_PROFILE
 from .draws import is_draw, is_valid_name, select_error
 from .drops import Drops
 from .job_registry import JobRegistry
+from .multilogin import MLX_FLAGS, flag_value_error
 from .time_utils import is_relative_time
 from .timing import parse_duration
 
-# The 17 flags DEFAULT_MULTILOGIN_PROFILE actually sets. Multilogin ignores an
-# unknown flag key silently at profile creation, so a `parameters.flags.<key>`
-# outside this set -- via `maps_to` or an explicit crawler agent block -- is a
-# drop. Values are not checked here: the repo holds no authoritative
-# per-flag vocabulary, and Multilogin rejects a bad value at profile creation,
-# which the runner reports as a failed job rather than silently (spec §4).
-_MLX_FLAGS: frozenset[str] = frozenset(DEFAULT_MULTILOGIN_PROFILE["parameters"]["flags"])
+# The 17 flags the default profile sets. Multilogin ignores an unknown flag key
+# silently at profile creation, so a `parameters.flags.<key>` outside this set
+# -- via `maps_to` or an explicit crawler agent block -- is a drop (spec §4).
+#
+# A bad *value* under a known key is an error instead, because the API does
+# check those: `POST /profile/create` answers 400 "wrong <x> flag" and the bot
+# never runs, so a whole experiment fails at setup on the VM. The accepted
+# vocabulary is `MLX_FLAG_VALUES`, measured against the live API in
+# docs/multilogin-profile-flags.md §2. A value still carrying a `{...}`
+# placeholder is not a value yet and is judged after expansion instead
+# (`validate_expanded`).
+_MLX_FLAGS: frozenset[str] = MLX_FLAGS
 
 _TEMPLATE_VAR_RE = re.compile(r"\$\{(?!secret:)[^}]*\}|\{[A-Za-z_][A-Za-z0-9_]*(?::[^}]*)?\}")
 _INDEX_RE = re.compile(r"\[\d+\]")
@@ -392,6 +397,10 @@ class SpecValidator:
         # check and reset per validate(); None until then, so a spec with no
         # `assign:` never reads a pool file.
         self._pool_columns_cache: dict[str, list[str]] | None = None
+        # (flag, value) pairs already reported as unaccepted on the raw spec,
+        # so validate_expanded does not repeat them for the expanded crawlers
+        # those very values landed on.
+        self._reported_flag_values: set[tuple[str, str]] = set()
         self._load_schema(schema_path)
 
     def _load_schema(self, schema_path: str | None = None) -> None:
@@ -430,6 +439,7 @@ class SpecValidator:
         self.drops = Drops(self.lax)
         self._strategy_schemas = spec.get("strategy_schemas") or {}
         self._pool_columns_cache = None
+        self._reported_flag_values = set()
 
         # 0. Unknown keys (first, so the message a reader sees first names the typo)
         self._validate_unknown_keys(spec)
@@ -564,13 +574,19 @@ class SpecValidator:
                 elif (
                     parts[:4] == ["agent", "multilogin_profile", "parameters", "flags"]
                     and len(parts) == 5
-                    and leaf not in _MLX_FLAGS
                 ):
-                    self.drops.report(
-                        f"design.factors.{fname}.maps_to.{path}",
-                        "unknown Multilogin flag; the profile ignores it",
-                        "one of: " + ", ".join(sorted(_MLX_FLAGS)),
-                    )
+                    if leaf not in _MLX_FLAGS:
+                        self.drops.report(
+                            f"design.factors.{fname}.maps_to.{path}",
+                            "unknown Multilogin flag; the profile ignores it",
+                            "one of: " + ", ".join(sorted(_MLX_FLAGS)),
+                        )
+                    else:
+                        errors.extend(
+                            self._flag_value_errors(
+                                f"design.factors.{fname}.maps_to.{path}", leaf, level_map.values()
+                            )
+                        )
 
         # A sampled parameter (design.parameters.<name>) is written by
         # DesignExpander._apply_cell_to_template into configuration.params.<name>
@@ -1027,13 +1043,16 @@ class SpecValidator:
                 if isinstance(profile, dict):
                     flags = (profile.get("parameters") or {}).get("flags")
                     if isinstance(flags, dict):
-                        for key in flags:
+                        for key, value in flags.items():
+                            flag_path = f"{prefix}.agent.multilogin_profile.parameters.flags.{key}"
                             if key not in _MLX_FLAGS:
                                 self.drops.report(
-                                    f"{prefix}.agent.multilogin_profile.parameters.flags.{key}",
+                                    flag_path,
                                     "unknown Multilogin flag; the profile ignores it",
                                     "one of: " + ", ".join(sorted(_MLX_FLAGS)),
                                 )
+                            else:
+                                errors.extend(self._flag_value_errors(flag_path, str(key), [value]))
 
             # Validate proxy if defined.
             #
@@ -1550,8 +1569,59 @@ class SpecValidator:
                 f"at {location}: {exc.message}"
             )
 
+    def _flag_value_errors(self, path: str, flag: str, values: Any) -> list[str]:
+        """Every value under one `parameters.flags.<flag>` the API would refuse.
+
+        Reported pairs are remembered so `validate_expanded` does not say the
+        same thing again about the expanded crawler the level value landed on.
+        """
+        out = []
+        for value in values:
+            message = flag_value_error(path, flag, value)
+            if message is None:
+                continue
+            self._reported_flag_values.add((flag, str(value)))
+            out.append(message)
+        return out
+
+    def _expanded_flag_value_errors(self, api_crawlers: list[dict[str, Any]]) -> list[str]:
+        """The same value check over the expanded crawlers' merged profiles.
+
+        This is where a substituted value (`canvas_noise: "{privacy}"`, a
+        `with:` variable) finally has a value to judge. Grouped across crawlers,
+        since one bad level id is one mistake however many bots carry it, and
+        skipping whatever the raw pass already named.
+        """
+        groups: dict[tuple[str, str], list[str]] = {}
+        for i, crawler in enumerate(api_crawlers):
+            profile = (crawler.get("agent") or {}).get("multilogin_profile")
+            if not isinstance(profile, dict):
+                continue
+            flags = (profile.get("parameters") or {}).get("flags")
+            if not isinstance(flags, dict):
+                continue
+            for flag, value in flags.items():
+                key = (str(flag), str(value))
+                if key in self._reported_flag_values:
+                    continue
+                if flag_value_error("", str(flag), value) is None:
+                    continue
+                groups.setdefault(key, []).append(
+                    f"crawlers[{i}].agent.multilogin_profile.parameters.flags.{flag}"
+                )
+        out = []
+        for (flag, value), paths in groups.items():
+            if len(paths) == 1:
+                out.append(flag_value_error(paths[0], flag, value) or "")
+            else:
+                generic = _INDEX_RE.sub("[*]", paths[0])
+                message = flag_value_error(generic, flag, value) or ""
+                out.append(f"{message} ({len(paths)} place(s), first: {paths[0]})")
+        return out
+
     def validate_expanded(self, api_crawlers: list[dict[str, Any]]) -> list[str]:
-        """Validate every expanded job's treatment against its strategy schema.
+        """Validate every expanded job's treatment against its strategy schema,
+        and every expanded profile's Multilogin flag values.
 
         After expansion a lambda_select's treatment is flat: `strategy` and the
         treatment keys sit next to the job-control behaviours (task, linkType,
@@ -1560,8 +1630,9 @@ class SpecValidator:
         Identical failures are grouped across crawlers -- a bad template value
         would otherwise be reported once per bot.
         """
+        flag_errors = self._expanded_flag_value_errors(api_crawlers)
         if not HAS_JSONSCHEMA:
-            return []
+            return flag_errors
         groups: dict[tuple[str, str], list[str]] = {}
         for i, crawler in enumerate(api_crawlers):
             for j, queue in enumerate(crawler.get("queues") or []):
@@ -1592,7 +1663,7 @@ class SpecValidator:
                             f"{exc.message}"
                         )
                         groups.setdefault((_INDEX_RE.sub("[*]", path), message), []).append(path)
-        out = []
+        out = list(flag_errors)
         for (generic, message), paths in groups.items():
             if len(paths) == 1:
                 out.append(f"{paths[0]}: {message}")
