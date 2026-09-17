@@ -3,6 +3,7 @@ Shared pytest fixtures for orchestrator tests.
 """
 
 import os
+import sys
 from collections.abc import Generator
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -183,6 +184,46 @@ def reset_settings_cache() -> Generator[None, None, None]:
     get_settings.cache_clear()
     yield
     get_settings.cache_clear()
+
+
+@pytest.fixture(autouse=True)
+def isolate_decision_registry(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Never let the developer's own decision-function registry decide a test.
+
+    ``DECISION_FUNCTIONS_FILE`` defaults to
+    ``~/.config/primemover/decision-functions.toml``, which exists on the VM and
+    on any box where somebody set one up. A test that reads it would pass or
+    fail depending on whose machine it runs on, and the first symptom would be
+    a CI/laptop disagreement nobody can reproduce. Point it at a path that
+    cannot exist; a test that wants a registry writes one under ``tmp_path`` and
+    sets the variable itself (a later ``setenv`` wins).
+
+    Also drops the server's cached registry, which is module state.
+    """
+    monkeypatch.setenv("DECISION_FUNCTIONS_FILE", "/nonexistent/decision-functions.toml")
+
+    if "orchestrator.lambda_service.server" in sys.modules:
+        # Imported inside the guard: most tests never touch the lambda service,
+        # and importing it installs a log handler and pulls in flask.
+        from orchestrator.lambda_service import server
+
+        server._registry = None
+
+
+@pytest.fixture(autouse=True)
+def restore_cwd() -> Generator[None, None, None]:
+    """No test may leave the process in another directory.
+
+    The lambda service chdirs on purpose in its no-registry fallback, and a
+    leaked cwd is the worst kind of test pollution: every relative path in every
+    later test resolves somewhere else, and the failure surfaces far from the
+    test that caused it. Global, next to the registry isolation above, because
+    the chdir is reachable from any test that touches /health or /invoke -- not
+    only from the files that mean to.
+    """
+    original = os.getcwd()
+    yield
+    os.chdir(original)
 
 
 @pytest.fixture(autouse=True)

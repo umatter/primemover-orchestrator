@@ -784,7 +784,34 @@ consumer that cares about arm integrity has to read the fields below.
 | `treatment_lost` | bool | **new** | true iff `degraded` **and** no requested treatment actually applied - the bot was configured to be treated and produced control-arm data. The single unambiguous alarm condition. Always false for a control crawler. |
 | `filters` | object | **new** | `{name: "ok" \| "skipped" \| "not_implemented" \| "failed: <ExcClass>: <msg>"}`, six keys in fixed order: `already_watched`, `mainstream_media`, `children_entertainment`, `similar`, `political`, `fringe`. **`"skipped"` means NOT REQUESTED and `"not_implemented"` means the caller supplied nothing to filter against - neither may be counted as a failure.** Only a `failed:` prefix is one. |
 | `llm` | object | **new** | `{available: bool, error_type: str\|null, error: str\|null}` |
-| `error` | string | **new** | present **only** on a hard 4xx/5xx from the lambda server |
+| `error` | string | **new** | present on a hard 4xx/5xx from the lambda server, **and** on the local server's degraded-200 replies below (unknown function, failed import), where it is the diagnosis: `unknown decision function '<name>'; registered: …` or `decision function '<name>' failed to import: …` |
+
+#### 7.3.0 Which function answers - `X-Function-Name`
+
+The local server hosts **N** decision functions, one per study, and dispatches on
+a request header. The name is the one the runner already carries: the
+`lambda_select` behaviour's `function` field, which AWS mode passes verbatim to
+`LambdaCaller.invokeAws`.
+
+| header | sent by | since | meaning |
+|---|---|---|---|
+| `X-Function-Name` | runner `invokeLocal` | **pending its jar** (primemover_runner PR #88) | the decision function to run. Absent -> the server's registry `default`, which is why an un-rebuilt runner keeps working and the orchestrator can deploy first. |
+| `X-Correlation-Id` | runner | existing | unchanged |
+
+**A function the server cannot serve is a verdict, not an error.** Both an
+unknown name and a registered package that will not import answer **HTTP 200**
+with `degraded: true`, `treatment_lost: true`, an `error` naming the cause, and
+an empty `xpath`. That is deliberate: for the job in hand the treatment did not
+happen, and only a verdict reaches the job row analyses join on. A 5xx is a
+transport failure the runner retries and records as a failed job, which loses
+the one fact worth keeping. A 5xx is therefore reserved for a failure *inside* a
+decision that did load.
+
+Where the list of functions lives is the deployment's business, not this
+contract's: `DECISION_FUNCTIONS_FILE`, default
+`~/.config/primemover/decision-functions.toml`, read once per process (see the
+orchestrator's `infrastructure/decision-functions.example.toml`). A function
+reads its data files relative to its own file; the server does not chdir.
 
 #### 7.3.1 The watch history loop - `already_watched`
 

@@ -33,14 +33,6 @@ _HAS_SIBLING_REPO = (REAL_DECISION_DIR / "lambda_function.py").exists() and (
 
 
 @pytest.fixture(autouse=True)
-def restore_cwd():
-    """Several code paths chdir on purpose; never leak that into other tests."""
-    original = os.getcwd()
-    yield
-    os.chdir(original)
-
-
-@pytest.fixture(autouse=True)
 def reset_cwd_announced(monkeypatch: pytest.MonkeyPatch):
     """The 'logged the cwd once' flag is module state; keep tests independent."""
     monkeypatch.setattr(server, "_cwd_announced", False)
@@ -69,7 +61,9 @@ def fake_decision(monkeypatch: pytest.MonkeyPatch):
         calls.append(payload)
         return holder["response"]
 
-    monkeypatch.setattr(server, "_select_recommendation", _fake)
+    # Patch the dispatch seam, not a cached callable: which function runs is now
+    # a lookup, and a test that bypassed the lookup could not see it break.
+    monkeypatch.setattr(server, "get_decision_function", lambda name=None: _fake)
     holder["calls"] = calls
     return holder
 
@@ -313,7 +307,7 @@ def test_decision_exception_returns_500_and_logs_with_the_id(
     def _boom(payload: str):
         raise RuntimeError("kaboom")
 
-    monkeypatch.setattr(server, "_select_recommendation", _boom)
+    monkeypatch.setattr(server, "get_decision_function", lambda name=None: _boom)
 
     response = client.post("/invoke", json={}, headers={"X-Correlation-Id": "exp-9|j-9"})
 
@@ -525,51 +519,15 @@ def test_csv_check_degrades_to_presence_only_without_the_helpers(
 # ---------------------------------------------------------------------------
 
 
-def test_health_reports_cwd_and_csv_state(client, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
-    decision = _decision_dir(tmp_path)
-    monkeypatch.setattr(server, "DECISION_DIR", decision)
-    monkeypatch.setattr(server, "_load_csv_checkers", lambda: (None, None, "stubbed"))
-    os.chdir(decision)
-
-    body = client.get("/health").get_json()
-
-    assert body["status"] == "healthy"
-    assert body["cwd_ok"] is True
-    assert body["cwd"] == str(decision.resolve())
-    assert body["mainstream_media_csv"]["present"] is True
-    assert body["mainstream_media_csv"]["ok"] is True
-
-
-def test_health_is_degraded_when_the_csv_is_missing(
-    client, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-):
-    decision = _decision_dir(tmp_path, csv=None)
-    monkeypatch.setattr(server, "DECISION_DIR", decision)
-    os.chdir(decision)
-
-    response = client.get("/health")
-    body = response.get_json()
-
-    # Still 200: /health is a liveness probe and callers use the status code.
-    assert response.status_code == 200
-    assert body["status"] == "degraded"
-    assert body["mainstream_media_csv"]["present"] is False
-
-
-def test_health_is_degraded_when_the_cwd_is_wrong(
-    client, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-):
-    """The production bug: right files, wrong cwd, everything reports success."""
-    decision = _decision_dir(tmp_path)
-    monkeypatch.setattr(server, "DECISION_DIR", decision)
-    monkeypatch.setattr(server, "_load_csv_checkers", lambda: (None, None, "stubbed"))
-    os.chdir(tmp_path.parent)
-
-    body = client.get("/health").get_json()
-
-    assert body["cwd_ok"] is False
-    assert body["status"] == "degraded"
-    assert body["expected_cwd"] == str(decision.resolve())
+# The cwd and the mainstream-media CSV are no longer part of /health.
+#
+# One server now hosts N project decision functions, so neither judgement is the
+# server's to make: there is no single cwd to be right about, and whether
+# mainstream_media_channels.csv is intact is a fact about bot-decision-yt, which
+# reports it through the health() hook the registry calls. The replacements live
+# in test_decision_registry.py (registry shape, hook results, dispatch); what
+# stays here is the cwd gate itself, which still runs in the no-registry
+# fallback, and the fd rule below.
 
 
 # ---------------------------------------------------------------------------
@@ -621,7 +579,11 @@ def test_component_validate_accepts_a_healthy_csv(tmp_path: Path, monkeypatch: p
 # /health now reports the count so the next occurrence is a glance.
 
 
-def test_health_reports_open_file_descriptors(client):
+def test_health_reports_open_file_descriptors(client, tmp_path: Path, monkeypatch):
+    # A tmp decision package, so this test measures fds rather than whether the
+    # sibling bot-decision-yt checkout happens to be importable on this box.
+    monkeypatch.setattr(server, "DECISION_DIR", _decision_dir(tmp_path))
+
     body = client.get("/health").get_json()
     assert "open_files" in body
     fds = body["open_files"]
@@ -631,7 +593,8 @@ def test_health_reports_open_file_descriptors(client):
     assert fds["near_limit"] is False
 
 
-def test_health_goes_degraded_near_the_fd_ceiling(client, monkeypatch):
+def test_health_goes_degraded_near_the_fd_ceiling(client, tmp_path: Path, monkeypatch):
+    monkeypatch.setattr(server, "DECISION_DIR", _decision_dir(tmp_path))
     # Simulate a process about to hit the wall: near_limit must flip status,
     # which is the whole point -- it warns before calls start failing.
     monkeypatch.setattr(

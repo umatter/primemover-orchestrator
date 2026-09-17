@@ -1,0 +1,54 @@
+# Decision-function registry for the local Lambda server.
+#
+# Copy to ~/.config/primemover/decision-functions.toml (or anywhere, and point
+# DECISION_FUNCTIONS_FILE at it), then restart the service:
+#
+#     sudo systemctl restart primemover-lambda
+#
+# This file is box-specific and lives OUTSIDE git, like secrets.toml: which
+# studies a machine hosts is a property of the machine, and nothing in the repo
+# can know the list.
+#
+# The runner picks the function per job: the `lambda_select` behaviour's
+# `function` field travels as the X-Function-Name header (runner PR #88; until
+# that jar ships, every request arrives without one). A request without the
+# header gets `default`, so a runner built before the header existed keeps
+# working. A name that is not registered here -- or one whose package will not
+# import -- is answered with HTTP 200 and a degraded verdict (degraded +
+# treatment_lost), never a 5xx: the job records that its treatment did not apply
+# instead of failing as a transport error.
+#
+# Names are the runner's function names. Two that differ only in a character
+# Python cannot use in a module name (`bot.yt` vs `bot-yt`) are refused as a
+# pair, because they would share one module and one would serve the other's code.
+#
+# With no file at all, the server serves the orchestrator/lambda_service/decision
+# symlink under the name "bot-decision-yt" -- exactly the behaviour that
+# predates this registry.
+
+default = "bot-decision-yt"
+
+[functions.bot-decision-yt]
+# The directory holding lambda_function.py. Its data files are read relative to
+# that file, not to the process cwd -- the server does not chdir per function,
+# and N functions cannot share one cwd. A RELATIVE path here resolves against
+# this file's directory, never against the server's cwd.
+path = "/opt/primemover/bot-decision-yt/bot-decision-EN"
+# entry = "lambda_function:select_recommendation"   # the default
+
+# Optional, and worth having: if the package defines `health() -> dict`, its
+# result is reported per function by GET :5001/health and by `orchestrator
+# doctor`, and an `ok: false` (or a non-empty `problems`) marks the service
+# degraded. That is where a project puts its own data-integrity check --
+# bot-decision-yt reports its mainstream_media_channels.csv verdict there.
+# The hook must be fast, local and non-blocking: no network, no API call, no
+# lock somebody else holds. It runs on the health path under a 2-second
+# deadline, and a hook that overruns is reported as a problem, because a check
+# that did not finish is not a check that passed.
+
+# A second study on the same box: a different checkout, its own name, its own
+# data files. Both are imported under distinct module names, so two packages
+# that both define `lambda_function` (and same-named helpers next to it) cannot
+# shadow each other.
+# [functions.bot-decision-news]
+# path = "/opt/primemover/bot-decision-news/decision"

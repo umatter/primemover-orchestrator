@@ -5,7 +5,7 @@ Command-line interface for monitoring, debugging, and managing experiments.
 """
 
 from pathlib import Path
-from typing import TypedDict
+from typing import Any, TypedDict
 
 import click
 from rich.console import Console
@@ -1158,6 +1158,30 @@ def restart(
         )
 
 
+def _decision_function_health(port: int = 5001) -> dict[str, Any]:
+    """What the *running* lambda service says about each decision function.
+
+    A registry entry can point at a perfectly good directory and the package
+    still fail to import -- a missing dependency, a syntax error, a data file
+    the hook rejects. That is only visible where the import happens, so doctor
+    asks the service rather than guessing.
+
+    Returns ``{}`` when the service is not running or does not answer: a check
+    that cannot be made is not a check that passed, and the caller reports the
+    filesystem facts either way.
+    """
+    try:
+        import requests
+
+        response = requests.get(f"http://127.0.0.1:{port}/health", timeout=2)
+        if response.status_code != 200:
+            return {}
+        functions = response.json().get("functions")
+    except Exception:  # noqa: BLE001 - an unreachable service is not doctor's failure
+        return {}
+    return functions if isinstance(functions, dict) else {}
+
+
 @cli.command()
 @click.pass_context
 def doctor(ctx: click.Context) -> None:
@@ -1380,19 +1404,30 @@ def doctor(ctx: click.Context) -> None:
         else:
             console.print(f"  [yellow]⚠[/yellow] {label} not set")
 
-    # The decision symlink: the local Lambda server refuses to start without it.
+    # The decision symlink: the local Lambda server falls back to it when no
+    # registry names the functions this box hosts.
+    from orchestrator.lambda_service.registry import hook_problem, load_registry, registry_path
+
     decision = settings.get_orchestrator_path() / "orchestrator" / "lambda_service" / "decision"
+    registry = load_registry(registry_path(settings), decision)
+
     if (decision / "lambda_function.py").exists():
         console.print(
             f"  [green]✓[/green] decision symlink resolves ({decision} → bot-decision-EN)"
         )
-    else:
+    elif registry.fallback:
         console.print(
             f"  [red]✗[/red] decision symlink broken or missing: {decision}\n"
             "      [dim]ln -s ../../../bot-decision-yt/bot-decision-EN "
             "orchestrator/lambda_service/decision[/dim]"
         )
         all_ok = False
+    else:
+        # Not a failure: with a registry the symlink is only the fallback, and a
+        # box that hosts its studies from the registry need not have one.
+        console.print(
+            "  [dim]-[/dim] no decision symlink (not needed: the registry names the functions)"
+        )
 
     # The job-data (MinIO) reader: without a working key, `debug job` /
     # `lambda invocations` silently return nothing rather than failing.
@@ -1413,6 +1448,55 @@ def doctor(ctx: click.Context) -> None:
                 f"  [red]✗[/red] job-data store NOT reachable ({store.endpoint}): "
                 f"{str(exc)[:80]}"
             )
+            all_ok = False
+
+    # The decision functions this box hosts.
+    #
+    # One local server now serves N project functions, addressed by the
+    # X-Function-Name header the runner sends. A name nobody registered answers
+    # with a degraded verdict rather than a failure, which is right for the
+    # runner and useless for a person -- so the list belongs somewhere a person
+    # looks before a run, not only in a payload afterwards.
+    console.print("\n[bold]Checking decision functions...[/bold]\n")
+
+    if registry.fallback:
+        console.print(
+            f"  [dim]-[/dim] no registry at {registry_path(settings)}; serving the decision "
+            "symlink as 'bot-decision-yt'"
+        )
+        console.print("      [dim]template: infrastructure/decision-functions.example.toml[/dim]")
+    else:
+        console.print(f"  [green]✓[/green] registry: {registry.source}")
+
+    for problem in registry.problems:
+        console.print(f"  [red]✗[/red] {problem}")
+        all_ok = False
+
+    reported = _decision_function_health()
+
+    for name in registry.names:
+        function = registry.functions[name]
+        label = f"{name} (default)" if name == registry.default else name
+        reported_state = reported.get(name) or {}
+        path_problem = function.path_problem()
+
+        if path_problem:
+            console.print(f"  [red]✗[/red] {label}: {path_problem}")
+            all_ok = False
+            continue
+
+        if reported_state.get("error"):
+            console.print(f"  [red]✗[/red] {label} → {function.path}: {reported_state['error']}")
+            console.print("      [dim]journalctl -u primemover-lambda -n 50[/dim]")
+            all_ok = False
+            continue
+
+        console.print(f"  [green]✓[/green] {label} → {function.path}")
+
+        hook = reported_state.get("health") or {}
+        if hook_problem(hook):
+            problems = "; ".join(str(p) for p in hook.get("problems") or ["not ok"])
+            console.print(f"      [yellow]![/yellow] its health() reports: {problems[:160]}")
             all_ok = False
 
     # The standing treatment canary, if this deployment runs one.
