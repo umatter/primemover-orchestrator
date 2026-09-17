@@ -860,7 +860,9 @@ def main():
     try:
         get_decision_function()
     except (ImportError, UnknownFunctionError) as exc:
-        logger.warning("Default decision function not available - /invoke will fail: %s", exc)
+        logger.warning(
+            "Default decision function not importable - /invoke answers degraded: %s", exc
+        )
 
     if args.debug:
         # The werkzeug reloader/debugger only exists on app.run(); keep it for

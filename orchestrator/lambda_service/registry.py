@@ -182,7 +182,12 @@ class DecisionFunction:
 
             try:
                 module = self._import_isolated()
-            except Exception as exc:
+            except KeyboardInterrupt:
+                raise
+            except BaseException as exc:  # noqa: BLE001 -- a package must not kill the server
+                # `except Exception` would let a module-level `sys.exit()` (SystemExit is
+                # a BaseException) escape every layer above and turn into a Flask 500 on
+                # /health and /invoke -- the one path that could take the probe down.
                 self._error = f"{type(exc).__name__}: {exc}"
                 raise ImportError(
                     self._import_failure(f"{self.module_file}: {type(exc).__name__}: {exc}")

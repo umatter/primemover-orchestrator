@@ -882,3 +882,30 @@ def test_the_log_names_the_function_that_ran_not_the_slot(
     ]
     assert lines and "function=alpha" in lines[0], lines
     assert "<default>" not in " ".join(lines)
+
+
+def test_a_package_that_calls_sys_exit_at_import_is_a_verdict_not_a_500(tmp_path, monkeypatch):
+    """SystemExit is a BaseException: `except Exception` let a module-level
+    sys.exit() escape every layer and turn into a Flask 500 on /health and
+    /invoke -- the one path that could take the liveness probe down."""
+    pkg = tmp_path / "quitter"
+    pkg.mkdir()
+    (pkg / "lambda_function.py").write_text("import sys\nsys.exit(3)\n")
+    reg = tmp_path / "decision-functions.toml"
+    reg.write_text(f'default = "quitter"\n\n[functions.quitter]\npath = "{pkg}"\n')
+    monkeypatch.setenv("DECISION_FUNCTIONS_FILE", str(reg))
+    from orchestrator.lambda_service import server
+
+    server._registry = None
+    client = server.app.test_client()
+
+    health = client.get("/health")
+    assert health.status_code == 200
+    assert health.get_json()["status"] == "degraded"
+    assert "SystemExit" in (health.get_json()["functions"]["quitter"]["error"] or "")
+
+    reply = client.post(
+        "/invoke", json={"pagesource": "<html></html>"}, headers={"X-Function-Name": "quitter"}
+    )
+    assert reply.status_code == 200
+    assert reply.get_json()["treatment_lost"] is True
