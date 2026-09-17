@@ -1,10 +1,18 @@
 # Web Search Personalization and Political Polarization Study
 # Based on: examples/experiment designs/websearch_polarization.Rmd (July 2021)
 #
-# Key design elements:
-# - N = 300 bots across 3 proxy providers
-# - Factorial design: political_type × usage_type × language × privacy_setting × kappa
-# - Per-city pairing: liberal and conservative bots have mirrored π values
+# Key design elements, as this file stands:
+# - 90 bots: political_type(3) × usage_type(3) × language(2) × privacy_setting(5),
+#   1 replication. The study it is based on wanted N = 300 across three proxy
+#   providers; those three provider pools are still declared below, but nothing
+#   draws from them -- every bot here takes one Oxylabs exit IP from the runner's
+#   own account (see the proxy block), and a from_pool draw would need one row per
+#   bot per location.
+# - Every bot is in US-IL-CHICAGO. The per-city pairing the design describes
+#   (liberal and conservative bots with mirrored π in the same city) is not
+#   expressed here: the crawler block used to write "{location}", a placeholder
+#   nothing ever supplied, so it reached the bot as that literal string. A real
+#   run makes location a factor or one crawler block per city.
 # - Daily workflow: partisan visits, partisan searches, neutral visits, test searches
 #
 version: "1.0"
@@ -64,8 +72,9 @@ data_pools:
     type: json
     source: "data/neutralsearchterms_pool.json"
     description: |
-      21 neutral search terms: 15 from GDELT (trending persons/orgs) +
-      6 from Google Trends. Updated weekly. All bots use same 3 terms/day.
+      Neutral search terms, from GDELT (trending persons/orgs) and Google
+      Trends, refreshed weekly; all bots use the same 3 terms/day. The study
+      uses 21; the sample file here holds 6.
 
   # Proxy configurations per provider
   proxies_geosurf:

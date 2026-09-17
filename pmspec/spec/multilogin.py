@@ -16,6 +16,7 @@ and silently discarded, which is why that stays a drop.
 
 from __future__ import annotations
 
+import json
 from typing import Any
 
 # Default multilogin profile template
@@ -107,19 +108,50 @@ MLX_FLAG_VALUES: dict[str, frozenset[str]] = {
 MLX_FLAGS: frozenset[str] = frozenset(DEFAULT_MULTILOGIN_PROFILE["parameters"]["flags"])
 
 
+def as_written(value: Any) -> str:
+    """A flag value rendered the way its author wrote it in YAML.
+
+    `str()` would put a Python repr in the message -- `True` for a YAML `true`,
+    `{'control': 'mask'}` for a mapping -- which names a value nobody typed.
+    Scalars print themselves, booleans and null print YAML's spelling, and a
+    mapping or sequence prints as JSON, which is also valid YAML flow style.
+    """
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if value is None:
+        return "null"
+    if isinstance(value, str | int | float):
+        return str(value)
+    try:
+        return json.dumps(value, ensure_ascii=False)
+    except (TypeError, ValueError):
+        return str(value)
+
+
 def flag_value_error(path: str, flag: str, value: Any) -> str | None:
     """The message for a `parameters.flags.<flag>` value the API would refuse.
 
-    `None` when the value is accepted, or when it still carries a `{...}`
-    placeholder -- a substitution is not a value yet, and the expanded crawlers
-    are where it becomes one (see `SpecValidator.validate_expanded`).
+    `None` when the value is accepted, or when it is a **string** still
+    carrying a `{...}` placeholder -- a substitution is not a value yet, and
+    the expanded crawlers are where it becomes one (see
+    `SpecValidator.validate_expanded`).
+
+    Only a string can be a placeholder, and the distinction is load-bearing: a
+    mapping written where a value belongs (`canvas_noise: {control: mask,
+    treated: disabled}` -- a `maps_to` level map in the crawler's own agent
+    block, where nothing expands it) also contains a brace, and skipping it
+    would deep-merge the whole mapping into the profile and 400 every bot at
+    setup. Anything that is not a string is a final value and is checked.
     """
     accepted = MLX_FLAG_VALUES.get(flag)
     if accepted is None:
         return None  # an unknown key: reported as a drop, not as a bad value
-    text = str(value)
-    if "{" in text:
-        return None
+    if isinstance(value, str):
+        if "{" in value:
+            return None
+        if value in accepted:
+            return None
+    text = as_written(value)
     if text in accepted:
         return None
     return (

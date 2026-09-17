@@ -425,11 +425,15 @@ Flag **values are checked too**, against the vocabulary
 `{prompt, allow, block}`, `natural` rather than `real` everywhere, and so on. A value outside its
 flag's set is an **error**, not a drop: the API answers 400 `wrong <x> flag` at profile creation,
 so the bot never runs and every bot in the experiment fails at setup on the VM — the same failure
-shape as `core_version: 142`. `startup_behavior` is pinned to `{recover, custom}` precisely because the API
-does not validate it at all: it stores any string verbatim, so a typo there is otherwise silent. A value that still carries a `{placeholder}` is judged after expansion, when
-it has a value; note that `<flag>_masking: custom` on fonts/localization/media_devices/navigator/
-timezone/webrtc is accepted here but needs the matching `parameters.fingerprint.<block>`, which
-pmspec does not check.
+shape as `core_version: 142`. `startup_behavior` is pinned to `{recover, custom}` precisely
+because the API does not validate it at all: it stores any string verbatim, so a typo there is
+otherwise silent. A **string** value that still carries a `{placeholder}` is judged after
+expansion, when it has a value — anything that is not a string is already final, so a mapping
+written where a value belongs (`canvas_noise: {control: mask, treated: disabled}`, a `maps_to`
+level map in the crawler's own agent block) is refused rather than mistaken for a placeholder.
+Note that `<flag>_masking: custom` on fonts/localization/media_devices/navigator/timezone/webrtc
+is accepted here but needs the matching `parameters.fingerprint.<block>`, which pmspec does not
+check.
 
 Note the drop rule only sees the leaf — a typo one level up (`parameter.flags`, `flag`) is an
 unknown key on `multilogin_profile`, which is deep-merged through unexamined, so check the

@@ -307,3 +307,56 @@ def test_the_docs_say_values_are_checked():
     section = docs.split("### Multilogin profile flags", 1)[1].split("###", 1)[0]
     assert "multilogin-profile-flags.md" in section
     assert "not checked" not in section
+
+
+class TestANonStringValueIsStillAValue:
+    """A `maps_to`-shaped mapping written in the crawler's own agent block is
+    the easy version of this mistake: `canvas_noise: {control: mask, treated:
+    disabled}` looks like a factor mapping but sits where a value belongs, and
+    the whole mapping is what reaches `/profile/create`. Skipping it as though
+    it were a `{placeholder}` would compile a profile Multilogin 400s on for
+    every bot."""
+
+    def test_a_mapping_where_a_value_belongs_is_an_error(self):
+        result = SpecValidator().validate(
+            _crawler_with_flags(
+                "            canvas_noise:\n"
+                "              control: mask\n"
+                "              treated: disabled"
+            )
+        )
+        assert not result.valid, "a flags mapping must not pass as a placeholder"
+        assert any(
+            "is not accepted by Multilogin for canvas_noise" in e for e in result.errors
+        ), result.errors
+
+    def test_the_message_shows_what_the_author_wrote(self):
+        result = SpecValidator().validate(
+            _crawler_with_flags(
+                "            canvas_noise:\n"
+                "              control: mask\n"
+                "              treated: disabled"
+            )
+        )
+        message = next(e for e in result.errors if "canvas_noise" in e)
+        assert '{"control": "mask", "treated": "disabled"}' in message, message
+        assert "'{'control'" not in message, "a Python repr is not what the author wrote"
+
+    def test_a_yaml_boolean_reads_back_as_yaml(self):
+        result = SpecValidator().validate(_crawler_with_flags("            quic_mode: true"))
+        assert not result.valid
+        message = next(e for e in result.errors if "quic_mode" in e)
+        assert "'true' is not accepted by Multilogin for quic_mode" in message, message
+
+    def test_a_list_is_an_error_too(self):
+        result = SpecValidator().validate(
+            _crawler_with_flags("            canvas_noise: [mask, disabled]")
+        )
+        assert not result.valid
+        assert any("canvas_noise" in e for e in result.errors), result.errors
+
+    def test_a_string_placeholder_is_still_skipped(self):
+        result = SpecValidator().validate(
+            _crawler_with_flags('            canvas_noise: "{privacy}"')
+        )
+        assert result.valid, result.errors

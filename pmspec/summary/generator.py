@@ -112,10 +112,17 @@ class SummaryGenerator:
         #
         # Strict, always: `summary` has no `--lax` flag, so it judges a spec
         # the way `validate` judges one by default -- a drop is a refusal.
+        #
+        # Except for a runs spec whose base lock could not be read, where
+        # `pmspec validate` returns the prep error alone and so does this. Such
+        # a spec cannot be judged as a fleet spec -- `runs_for:` is not a fleet
+        # key and a runs spec carries no `experiment:` block -- so validating
+        # it here would bury the one real problem under four invented ones.
         validator_errors: list[str] = []
         validator_warnings: list[str] = []
         dropped = parsed.dropped + result.dropped
-        if isinstance(raw, dict):
+        runs_without_base = prepared.is_runs and base is None
+        if isinstance(raw, dict) and not runs_without_base:
             validator = SpecValidator(base_dir=base_dir or Path.cwd(), lax=False, runs=is_runs)
             validation_result = validator.validate(raw)
             dropped += validation_result.dropped
@@ -127,17 +134,24 @@ class SummaryGenerator:
                 )
             validator_warnings = list(validation_result.warnings)
 
-        all_errors, all_warnings = merge_reports(
-            [
-                runs_errors,
-                validator_errors,
-                list(parsed.errors),
-                list(result.errors),
-            ],
-            [raw_warnings, validator_warnings, list(parsed.warnings), list(result.warnings)],
-            dropped,
-            lax=False,
-        )
+        if runs_without_base:
+            # Where `pmspec validate` stops as well: with no base lock there is
+            # no fleet to expand against, so the parser's and converter's
+            # complaints ("experiment.name is required" -- a runs spec has no
+            # experiment block) describe the missing lock, not the spec.
+            all_errors, all_warnings = merge_reports([runs_errors], [raw_warnings], 0, lax=False)
+        else:
+            all_errors, all_warnings = merge_reports(
+                [
+                    runs_errors,
+                    validator_errors,
+                    list(parsed.errors),
+                    list(result.errors),
+                ],
+                [raw_warnings, validator_warnings, list(parsed.warnings), list(result.warnings)],
+                dropped,
+                lax=False,
+            )
 
         # Build summary from parsed spec and conversion result
         experiment = base.lock.experiment if base is not None else parsed.experiment

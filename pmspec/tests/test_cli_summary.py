@@ -103,6 +103,21 @@ class TestInvalidSpecExitsOne:
         for fake in FABRICATED:
             assert fake not in out.output
 
+    def test_the_missing_lock_is_the_only_complaint(self, tmp_path):
+        """A runs spec cannot be judged as a fleet spec: `runs_for:` is not a
+        fleet key, and a runs spec carries no `experiment:` block. Validating
+        one without its base lock therefore invents refusals -- four of them --
+        on top of the one real problem, and buries it. `pmspec validate`
+        returns the prep error alone here; so does the summary."""
+        out = CliRunner().invoke(
+            cli, ["summary", _write(tmp_path, "s.yaml", RUNS_WITHOUT_BASE), "-f", "json"]
+        )
+        assert out.exit_code == 1, out.output
+        errors = json.loads(out.output)["errors"]
+        assert all("nowhere.lock.yaml" in e for e in errors), errors
+        for invented in ("unknown key", "experiment.name is required"):
+            assert not any(invented in e for e in errors), errors
+
     def test_it_says_no_summary_is_available(self, tmp_path):
         out = CliRunner().invoke(cli, ["summary", _write(tmp_path, "s.yaml", NO_NAME)])
         assert "Summary not available: spec is invalid" in out.output

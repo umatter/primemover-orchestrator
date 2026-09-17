@@ -1,7 +1,8 @@
 """The checked-in experiment-spec schema must equal `build_schema()`'s output,
-and every shipped example spec must validate against it (modulo
-websearch-polarization-study.yaml's one known pre-existing construct the
-parser has never actually supported: a dict-form `wait:`)."""
+and every shipped example spec must validate against it -- and against the
+validator, and compile. There used to be an exception for
+websearch-polarization-study.yaml's dict-form `wait:`, a construct the parser
+never supported; the example was fixed instead."""
 
 from __future__ import annotations
 
