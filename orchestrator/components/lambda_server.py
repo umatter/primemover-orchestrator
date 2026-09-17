@@ -100,10 +100,14 @@ class LambdaServerComponent(BaseComponent):
             # Build environment: inherit current env + load .env file
             env = self._build_env()
 
-            # Start server as subprocess
-            # Use decision module directory as cwd so that relative file reads
-            # (e.g. mainstream_media_channels.csv) resolve correctly, matching
-            # the AWS Lambda task root behavior.
+            # Start server as subprocess.
+            #
+            # The cwd only matters for the no-registry fallback, where the
+            # decision package may still read its data files relative to the
+            # cwd; the server chdirs itself in that case and ignores the cwd
+            # entirely when a registry names the functions. The environment is
+            # built from .env above, so the server finds DECISION_FUNCTIONS_FILE
+            # regardless of where it is started from.
             decision_cwd = self.orchestrator_path / "orchestrator" / "lambda_service" / "decision"
             if not decision_cwd.exists():
                 decision_cwd = self.orchestrator_path
@@ -284,26 +288,37 @@ class LambdaServerComponent(BaseComponent):
         """
         errors = []
 
-        # Check if decision symlink exists
         decision_path = self.orchestrator_path / "orchestrator" / "lambda_service" / "decision"
-        if not decision_path.exists():
-            errors.append(
-                f"Decision symlink not found: {decision_path}. "
-                "Create it with: ln -s /path/to/bot-decision-yt/bot-decision-EN decision"
-            )
+        registry = self._registry()
 
-        # Check if lambda_function.py exists in decision
-        lambda_func = decision_path / "lambda_function.py"
-        if decision_path.exists() and not lambda_func.exists():
-            errors.append(f"lambda_function.py not found in {decision_path}")
+        if registry is not None and not registry.fallback:
+            # A registry replaces the symlink: it says which functions this box
+            # hosts. Validate what it names, not what a single-study layout
+            # would have needed.
+            errors.extend(self._validate_registry(registry))
+        else:
+            # Check if decision symlink exists
+            if not decision_path.exists():
+                errors.append(
+                    f"Decision symlink not found: {decision_path}. "
+                    "Create it with: ln -s /path/to/bot-decision-yt/bot-decision-EN decision"
+                )
 
-        # Check the data file behind the mainstream-media-aversion treatment arm.
-        # A missing or corrupted copy fails nothing at runtime: the decision
-        # function swallows the read error and the treated crawler quietly
-        # behaves like a control. Refusing to start is the only moment this is
-        # visible.
-        if decision_path.exists():
-            errors.extend(self._validate_decision_data(decision_path))
+            # Check if lambda_function.py exists in decision
+            lambda_func = decision_path / "lambda_function.py"
+            if decision_path.exists() and not lambda_func.exists():
+                errors.append(f"lambda_function.py not found in {decision_path}")
+
+            # Check the data file behind the mainstream-media-aversion treatment
+            # arm. A missing or corrupted copy fails nothing at runtime: the
+            # decision function swallows the read error and the treated crawler
+            # quietly behaves like a control. Refusing to start is the only
+            # moment this is visible.
+            #
+            # Only in the fallback: with a registry this file is one project's
+            # business, reported by that project's own health() hook.
+            if decision_path.exists():
+                errors.extend(self._validate_decision_data(decision_path))
 
         # Check if port is available (only if not already running)
         if not self.is_running():
@@ -317,6 +332,38 @@ class LambdaServerComponent(BaseComponent):
                 errors.append(f"Port {self.port} is already in use")
 
         return len(errors) == 0, errors
+
+    def _registry(self):
+        """The decision-function registry, or ``None`` if it cannot be read.
+
+        Guarded like :meth:`_validate_decision_data`: importing the registry
+        pulls in the settings layer, and a broken one must not turn
+        ``validate()`` into a traceback.
+        """
+        try:
+            from orchestrator.lambda_service.registry import load_registry, registry_path
+
+            decision_path = self.orchestrator_path / "orchestrator" / "lambda_service" / "decision"
+            return load_registry(registry_path(), decision_path)
+        except Exception:  # noqa: BLE001 - validate() must still report the rest
+            return None
+
+    def _validate_registry(self, registry) -> list[str]:
+        """Check every registered function's directory and entry module.
+
+        Filesystem only -- no imports. ``orchestrator up`` runs this before the
+        server exists, and a package whose dependencies are missing is a
+        different (and later, /health-reported) problem from one whose path is
+        wrong.
+        """
+        errors = [f"decision registry: {problem}" for problem in registry.problems]
+        for name in registry.names:
+            problem = registry.functions[name].path_problem()
+            if problem:
+                errors.append(f"decision function '{name}': {problem}")
+        if not registry.functions and not registry.problems:
+            errors.append(f"decision registry {registry.source} registers no functions")
+        return errors
 
     def _validate_decision_data(self, decision_path: Path) -> list[str]:
         """Check the decision function's data files.

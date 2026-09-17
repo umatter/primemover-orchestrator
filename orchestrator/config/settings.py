@@ -185,8 +185,30 @@ class Settings(BaseSettings):
     )
 
     # ==========================================================================
+    # Decision functions (local Lambda server)
+    # ==========================================================================
+    # Which decision functions this box hosts, and which one answers a request
+    # with no X-Function-Name header. Box-specific and outside git, like
+    # secrets.toml: a research VM hosts the studies it runs, and nothing in the
+    # repo can know that list. Unset means the default location; no file there
+    # means the single symlinked bot-decision-yt, exactly as before the registry
+    # existed.
+    decision_functions_file: Path | None = Field(
+        default=None,
+        alias="DECISION_FUNCTIONS_FILE",
+        description="TOML registry of decision functions "
+        "(default: ~/.config/primemover/decision-functions.toml)",
+    )
+
+    # ==========================================================================
     # Helper Methods
     # ==========================================================================
+    def get_decision_functions_file(self) -> Path:
+        """The registry path, expanded. The file need not exist."""
+        from orchestrator.lambda_service.registry import registry_path
+
+        return registry_path(self)
+
     def get_api_path(self) -> Path:
         """Get resolved API path."""
         return Path(self.pm_api_path).resolve()

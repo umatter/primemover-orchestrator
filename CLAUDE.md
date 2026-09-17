@@ -515,6 +515,45 @@ invocation contract. This is **on by default** (`orchestrator up`); pass
 - **Service**: `orchestrator/lambda_service/server.py` — exposes `GET /health`
   and `POST /invoke` on `127.0.0.1:5001`. `/invoke` calls
   `select_recommendation(json.dumps(event))` and returns its dict as JSON.
+- **One server, N decision functions, addressed by name.** The runner has always
+  named the function it wants — the `lambda_select` behaviour's `function`
+  field, which AWS mode passes straight to `LambdaCaller.invokeAws`. Locally
+  that name used to be dropped and one directory served, so a box could host
+  exactly one study. `invokeLocal` now sends it as **`X-Function-Name`** and the
+  server dispatches on it against a registry
+  (`orchestrator/lambda_service/registry.py`):
+  - **The registry is box-specific and outside git, like `secrets.toml`**:
+    `DECISION_FUNCTIONS_FILE` (env or `.env`), default
+    `~/.config/primemover/decision-functions.toml`, a `default = "<name>"` plus
+    one `[functions.<name>]` table per function with `path` (the directory
+    holding `lambda_function.py`) and an optional
+    `entry = "lambda_function:select_recommendation"`. Template:
+    `infrastructure/decision-functions.example.toml`.
+  - **No file is not an error** — it is exactly the old behaviour: the
+    `orchestrator/lambda_service/decision` symlink is the one function, named
+    `bot-decision-yt`, and `/health` says `"registry": "absent"`. That fallback
+    is what lets this repo deploy before the runner jar. A *malformed* file is a
+    different thing and never falls back silently: serving some other study's
+    function would be invisible in every indicator the system has, so every
+    `/invoke` then answers the degraded shape and `/health` goes degraded.
+  - **No header → the `default`. An unknown name → HTTP 200** with
+    `degraded: true`, `treatment_lost: true` and an `error` naming what *is*
+    registered, plus one WARNING carrying the correlation id — never a 5xx,
+    which the runner would retry as a transport failure instead of recording a
+    decision that did not apply.
+  - **Each package is imported under its own module name** (`pm_decision_<name>`)
+    with its directory on `sys.path` only for that import, and the modules it
+    pulled out of that directory are re-keyed under the same prefix. Two
+    packages both called `lambda_function`, both with a same-named helper next
+    to them, would otherwise shadow each other — and that failure does not
+    raise, it returns a plausible recommendation computed by the wrong study's
+    code.
+  - **`/health` is per function**: `{status, registry, default, functions:
+    {<name>: {path, entry, loaded, error, health}}, open_files, cwd}`, degraded
+    if any function fails to import or its own `health()` hook reports a
+    problem. `orchestrator doctor` prints one line per function, checks each
+    path holds `lambda_function.py`, and adds the `journalctl -u
+    primemover-lambda` line when the running service reports one un-importable.
 - **Served by waitress, not `app.run`.** `main()` serves the Flask app with
   **waitress** in production and uses werkzeug's `app.run` only under `--debug`.
   This is load-bearing, not a preference: werkzeug's development server leaks an
@@ -538,10 +577,13 @@ invocation contract. This is **on by default** (`orchestrator up`); pass
   reused (`_get_shared_openai_client`), so per-call socket growth means that
   reuse was broken. Check `open_files` under a *concurrent* burst, never a
   sequential one.
-- **Decision code**: imported from `orchestrator/lambda_service/decision`,
-  a **symlink** to `bot-decision-yt/bot-decision-EN`. The symlink is a
-  prerequisite — `LambdaServerComponent.validate()` errors if it (or
-  `lambda_function.py` inside it) is missing. Recreate it **relative**, from the
+- **Decision code**: `orchestrator/lambda_service/decision`, a **symlink** to
+  `bot-decision-yt/bot-decision-EN`. Since the registry it is the *fallback*
+  function — required only on a box with no registry file, which is every dev
+  checkout. `LambdaServerComponent.validate()` errors if it (or
+  `lambda_function.py` inside it) is missing **when no registry names the
+  functions**; with a registry it validates those entries instead. Recreate it
+  **relative**, from the
   repo root, so the checkout stays portable across machines and paths:
   `ln -s ../../../bot-decision-yt/bot-decision-EN orchestrator/lambda_service/decision`
   Note this points at `bot-decision-EN` specifically. The sibling
@@ -558,14 +600,18 @@ invocation contract. This is **on by default** (`orchestrator up`); pass
   `pi=1` mainstream-media arm ran as a **second control arm**: HTTP 200,
   plausible recommendations, no failed job, nothing at error level. Two
   supervisors, two different sciences, from the same code.
-  `server.py` now calls `ensure_decision_cwd()` and chdirs itself rather than
-  trusting its launcher, which closes the hole for good — but **the fix only
-  applies to a process started after it**, and the unit file is unchanged. Until
-  `primemover-lambda` is restarted, the running server still has the wrong cwd.
-  Check, don't assume:
-  `readlink /proc/$(systemctl show -p MainPID --value primemover-lambda)/cwd`
-  — it must end in `/decision`; `GET :5001/health` now reports the resolved cwd
-  and the CSV's integrity for the same reason.
+  `server.py` closed that hole by chdiring itself rather than trusting its
+  launcher, and **the registry closed it properly**: N functions cannot share
+  one cwd, so a function now reads its data files relative to its own file
+  (`Path(__file__).resolve().parent / …`), which bot-decision-yt does as of its
+  own PR. **The server no longer chdirs** — except in the no-registry fallback,
+  where it still does it once, so a checkout predating that change keeps
+  working through the transition. Consequences for anyone debugging an old
+  box: `readlink /proc/$(systemctl show -p MainPID --value
+  primemover-lambda)/cwd` ending in `/decision` is now evidence of the fallback,
+  not of health, and `/health` reports the cwd for information only — what to
+  read instead is `functions.<name>.health`, the project's own hook (for
+  bot-decision-yt, the CSV integrity check that used to live in this server).
 - **Data files are load-bearing**: `mainstream_media_channels.csv` must keep its
   `channel,verified` header — `lambda_function.py` does
   `drop_duplicates(subset=['channel', 'verified'])`. Never round-trip it through
@@ -1196,19 +1242,29 @@ grep -nE '127\.0\.0\.1:.*(3307|8889)|ALLOW_EMPTY' ../primemover_api/docker-compo
   `systemctl is-active primemover-lambda && journalctl -u primemover-lambda -n 50`
   under systemd (the VM default), or `log/lambda-server.log` when it was started
   by `orchestrator up`. Neither logs to the console.
-- Verify the `orchestrator/lambda_service/decision` symlink resolves and that
+- `orchestrator doctor` lists the registry and every decision function it names,
+  including whether the running service could import each one. With no registry,
+  verify the `orchestrator/lambda_service/decision` symlink resolves and that
   `decision/lambda_function.py` exists
+- **A job whose decision came back `degraded` with `unknown decision function
+  '<name>'`** is not a broken function — it is a name this box does not host.
+  Compare the bot's `lambda_select` behaviour `function` value with
+  `GET :5001/health`'s `functions` keys (and remember an un-rebuilt runner sends
+  no name at all, so it lands on `default`)
 - Suspect `mainstream_media_channels.csv` corruption if the mainstream-media
   arm looks inert (see "Local Lambda Server" above). Note it will **not** show
   up as a failure: `pi=1` crawlers keep returning 200 and behave like controls,
   and the only trace is `Aversion to mainstream media channels ignored` in the
   returned `warnings` list. Check with
-  `cd ../bot-decision-yt && pytest tests/test_mainstream_media_csv.py` — and if
-  that passes, check the **cwd**, which is the actual cause on this VM: the file
-  is read by bare relative path and `primemover-lambda.service` runs from the
-  repo root, not from `decision/`. `readlink /proc/$(systemctl show -p MainPID
-  --value primemover-lambda)/cwd`. A passing CSV test plus a wrong cwd looks
-  exactly like a healthy system.
+  `cd ../bot-decision-yt && pytest tests/test_mainstream_media_csv.py`, or read
+  `functions."bot-decision-yt".health` from `GET :5001/health`, which is that
+  same check run by the package itself. Historically the actual cause on this VM
+  was the **cwd** — the file was read by bare relative path while
+  `primemover-lambda.service` ran from the repo root — and a passing CSV test
+  plus a wrong cwd looked exactly like a healthy system. bot-decision-yt reads
+  relative to `__file__` now, so that cause is gone for a current checkout; on an
+  old one, check `readlink /proc/$(systemctl show -p MainPID --value
+  primemover-lambda)/cwd`.
 - The same filter used to silently lose a treatment via an `IndexError` on a
   collaboration card's channel xpath, unrelated to CSV corruption. Fixed
   2026-09-09 (`bot-decision-yt` #22/#23) — see "Data files are load-bearing"

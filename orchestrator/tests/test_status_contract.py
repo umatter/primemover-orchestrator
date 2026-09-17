@@ -493,7 +493,9 @@ class TestTheLambdaServerGatesTheSameWay:
     def client(self, monkeypatch: pytest.MonkeyPatch):
         holder: dict = {"response": CONTROL_ARM}
 
-        monkeypatch.setattr(server, "_select_recommendation", lambda payload: holder["response"])
+        monkeypatch.setattr(
+            server, "get_decision_function", lambda name=None: lambda payload: holder["response"]
+        )
         monkeypatch.setattr(server, "_missing_correlation_id_logged", False)
         server.app.config["TESTING"] = False
         return server.app.test_client(), holder

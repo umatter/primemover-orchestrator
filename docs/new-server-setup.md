@@ -5,7 +5,7 @@ mechanical part (clone → build → start); everything else here is provisionin
 that cannot be automated because it involves external accounts and secrets.
 
 Run `orchestrator doctor` at the end (and any time after) — it now preflights the
-account-specific pieces (secrets set, decision symlink, job-data store
+account-specific pieces (secrets set, decision functions, job-data store
 reachable), not just Docker/Java/ports.
 
 ## 0. Two kinds of "new"
@@ -36,17 +36,54 @@ orchestrator setup --skip-clone
 Sibling layout (all under one parent): `primemover-orchestrator`,
 `primemover_api`, `primemover_runner`, `bot-decision-yt`, `primemover_gui`.
 
-## 3. The decision symlink (local Lambda server)
+## 3. The decision functions (local Lambda server)
 
-The local Lambda server imports the decision function through a symlink; it
-refuses to start without it. Recreate it **relative**, from the repo root:
+One local server hosts every decision function this box runs, addressed by the
+name the runner already sends (`lambda_select`'s `function` field, carried as the
+`X-Function-Name` header). Two ways to name them, and a box needs **one**:
+
+**a) The registry** — required as soon as the box hosts more than one study, and
+the right choice on a server. It is box-specific and lives outside git, like
+`secrets.toml`:
+
+```bash
+mkdir -p ~/.config/primemover
+cp infrastructure/decision-functions.example.toml \
+   ~/.config/primemover/decision-functions.toml
+$EDITOR ~/.config/primemover/decision-functions.toml   # one [functions.<name>] per study
+```
+
+```toml
+default = "bot-decision-yt"
+
+[functions.bot-decision-yt]
+path = "/opt/primemover/bot-decision-yt/bot-decision-EN"
+```
+
+`default` is what a request with no header gets — an un-rebuilt runner sends
+none, so set it to the study that box actually runs. Put the file elsewhere by
+setting `DECISION_FUNCTIONS_FILE` in `.env`. Restart the service after editing
+it (`sudo systemctl restart primemover-lambda`): it is read once per process.
+
+A name that is not in the registry is answered with HTTP 200 and a degraded
+verdict, never an error — the job records that its treatment did not apply. So
+check the names with `orchestrator doctor` before a run, not afterwards.
+
+**b) The symlink** — the fallback when there is no registry file, which is fine
+for a dev checkout hosting only bot-decision-yt. Recreate it **relative**, from
+the repo root:
 
 ```bash
 ln -s ../../../bot-decision-yt/bot-decision-EN orchestrator/lambda_service/decision
 ```
 
 Point it at `bot-decision-EN` specifically — `bot-decision-EN-arm` and
-`bot-decision-DE` are stale forks.
+`bot-decision-DE` are stale forks. It answers to the name `bot-decision-yt`.
+
+Either way, a decision function must read its data files relative to its own
+file, never to the process cwd: the server does not chdir per function (it
+cannot — N functions, one cwd), and a cwd-relative read is what silently turned
+the `pi=1` mainstream-media arm into a second control arm for months.
 
 ## 4. Configuration & secrets
 
@@ -121,8 +158,9 @@ orchestrator doctor        # machine + config/credentials + systemd preflight
 orchestrator status -v
 ```
 
-`doctor` failing on the decision symlink or an unreachable job-data store is
-real — resolve it before a run. A missing secret is a warning; resolve the ones
+`doctor` prints one line per decision function — its path, whether the running
+service could import it, and what its own `health()` hook says. A ✗ there, or on
+an unreachable job-data store, is real — resolve it before a run. A missing secret is a warning; resolve the ones
 the workload needs.
 
 ## The ex63-specific pieces (for reference)
@@ -232,7 +270,7 @@ plus plain CPU) before trusting any number.
 ### Verify on the new box
 
 `orchestrator doctor` still helps even without the full stack: it checks Docker,
-Java, the decision symlink, the job-data store reachability and the systemd
+Java, the decision functions, the job-data store reachability and the systemd
 units. The API/port checks will show the API as remote (not local) — that is
 expected for a runner-only box.
 

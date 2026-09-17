@@ -1,5 +1,5 @@
 """
-Local Lambda Server - HTTP wrapper for bot-decision-yt Lambda function.
+Local Lambda Server - HTTP wrapper for the project decision functions.
 
 Provides a local HTTP endpoint that mirrors AWS Lambda invocation,
 allowing the runner to call the decision function without AWS costs.
@@ -8,23 +8,37 @@ Usage:
     python -m orchestrator.lambda_service.server [--port PORT] [--host HOST]
 
 Endpoints:
-    GET  /health  - Health check (reports the resolved cwd and CSV integrity)
-    POST /invoke  - Invoke the Lambda function (expects JSON body)
+    GET  /health  - Health check (registry, per-function state, open fds)
+    POST /invoke  - Invoke a decision function (expects JSON body)
+
+Dispatch
+--------
+The runner has always addressed a decision by name -- the ``lambda_select``
+behaviour's ``function`` field, which ``LambdaCaller.invokeAws(functionName)``
+uses verbatim in AWS mode. Locally that name used to be dropped and one
+directory served, so a box could host exactly one study.
+
+It now dispatches on the ``X-Function-Name`` header against the registry in
+:mod:`orchestrator.lambda_service.registry`. No header means the registry's
+``default`` (so an un-rebuilt runner keeps working), and an unknown name is
+answered with HTTP 200 and the degraded report shape -- never a 5xx, because a
+5xx is the one answer the runner turns into a retry loop rather than a recorded
+verdict.
 
 Working directory
 -----------------
-``lambda_function.py`` reads ``mainstream_media_channels.csv`` *relative to the
-process cwd*, mirroring how AWS Lambda runs a function from its task root. Any
-other cwd silently disables the mainstream-media-aversion treatment arm: the
-read raises, an ``except Exception`` inside the decision function degrades it to
-a warning, and the job still returns HTTP 200 with plausible recommendations --
-the treated crawler simply behaves like a control.
+The server no longer chdirs per package, and a function must not depend on the
+cwd: data files are read relative to the function's own file
+(``Path(__file__).resolve().parent / ...``), which bot-decision-yt now does. A
+cwd-relative read is how the ``pi=1`` mainstream-media arm silently became a
+second control arm under systemd for months -- the read raised, an
+``except Exception`` in the decision function degraded it to a warning, and the
+job still returned 200 with plausible recommendations.
 
-This server therefore chdirs into the decision directory itself
-(:func:`ensure_decision_cwd`) rather than trusting whoever started it. That is
-not belt-and-braces: on the production VM the ``primemover-lambda`` unit's
-``WorkingDirectory`` pointed at the orchestrator repo, where the CSV does not
-exist, so the treatment arm had never worked under systemd.
+The one exception is the no-registry fallback, which still chdirs into the
+symlinked decision directory once (:func:`ensure_decision_cwd`) so a checkout of
+bot-decision-yt that predates its file-relative paths keeps working through the
+transition.
 
 Observability
 -------------
@@ -53,7 +67,7 @@ import argparse
 import json
 import logging
 import os
-import sys
+import threading
 import time
 import uuid
 from logging.handlers import RotatingFileHandler
@@ -62,6 +76,14 @@ from typing import Any
 
 from flask import Flask, jsonify, request
 
+from orchestrator.lambda_service.registry import (
+    FALLBACK_NAME,
+    Registry,
+    UnknownFunctionError,
+    hook_problem,
+    load_registry,
+    registry_path,
+)
 from orchestrator.status import lambda_verdict
 
 # Configure logging.
@@ -100,15 +122,22 @@ _add_file_handler()
 
 app = Flask(__name__)
 
-#: The symlink into ``bot-decision-yt/bot-decision-EN``. Both the decision code
-#: and its data files live here, and the process cwd must be this directory.
+#: The symlink into ``bot-decision-yt/bot-decision-EN``. It is the *fallback*
+#: function when no registry file exists, and what ``LambdaServerComponent``
+#: validates on a dev box.
 DECISION_DIR = Path(__file__).resolve().parent / "decision"
 
-#: Data file backing the mainstream-media-aversion treatment arm.
+#: Header the runner sends to name the function it wants.
+FUNCTION_NAME_HEADER = "X-Function-Name"
+
+#: Data file backing the mainstream-media-aversion treatment arm. Still used by
+#: ``LambdaServerComponent.validate()`` and ``check_mainstream_media_csv``; it
+#: is no longer part of /health, which asks each function's own ``health()``.
 CSV_NAME = "mainstream_media_channels.csv"
 
-# Global reference to the decision function (lazy loaded)
-_select_recommendation = None
+# The registry, read once per process (lazy, so a WSGI deployment gets it too).
+_registry: Registry | None = None
+_registry_lock = threading.Lock()
 
 # Whether the resolved cwd has already been announced at INFO once.
 _cwd_announced = False
@@ -123,7 +152,13 @@ _missing_correlation_id_logged = False
 
 
 def ensure_decision_cwd(decision_dir: Path | None = None) -> Path | None:
-    """Make the decision directory the process cwd.
+    """Make the decision directory the process cwd -- fallback path only.
+
+    A registered function must read its data files relative to its own file, so
+    with a registry this is never called: N functions cannot share one cwd, and
+    chdiring per request would be a race in a threaded server. It survives for
+    the no-registry fallback, where the decision package may still be a
+    bot-decision-yt checkout that predates file-relative reads.
 
     Idempotent, so it is safe to call from startup *and* from
     :func:`get_decision_function` (a WSGI deployment never runs :func:`main`).
@@ -288,49 +323,108 @@ def _log_csv_state(state: dict[str, Any]) -> None:
     logger.info("%s OK (checked by %s)", CSV_NAME, state.get("checked_by"))
 
 
-def run_startup_checks() -> dict[str, Any]:
-    """chdir into the decision directory and validate its data files."""
-    cwd = ensure_decision_cwd()
-    csv_state = check_mainstream_media_csv()
-    _log_csv_state(csv_state)
-    return {"cwd": str(cwd) if cwd else None, "mainstream_media_csv": csv_state}
+# ---------------------------------------------------------------------------
+# The registry and the functions it names
+# ---------------------------------------------------------------------------
 
 
-def get_decision_function():
+def get_registry(reload: bool = False) -> Registry:
+    """The decision-function registry, read once per process.
+
+    Lazy on purpose: a WSGI deployment never runs :func:`main`, and the first
+    ``/invoke`` must not find an unconfigured server.
     """
-    Lazy load the select_recommendation function from bot-decision-yt.
+    global _registry
 
-    The decision module is symlinked into this package, so we import it
-    dynamically to avoid import errors if the symlink doesn't exist yet.
-    """
-    global _select_recommendation
+    with _registry_lock:
+        if _registry is None or reload:
+            _registry = load_registry(registry_path(), DECISION_DIR)
+            _announce_registry(_registry)
+            if _registry.fallback:
+                # Transitional, and it has to happen *before* the package is
+                # imported: an un-updated bot-decision-yt may read a data file
+                # at import time by bare relative path. /health imports every
+                # function too, so doing this only in get_decision_function()
+                # would leave the very first request a coin toss.
+                ensure_decision_cwd(_registry.functions[FALLBACK_NAME].path)
+        return _registry
 
-    if _select_recommendation is not None:
-        return _select_recommendation
 
-    # The decision function reads its data files relative to the cwd, so fix the
-    # cwd before the module is imported or called - not only in main(), because
-    # a WSGI deployment never runs main().
-    ensure_decision_cwd()
-
-    # Try to import from the symlinked decision module
-    try:
-        # Add the decision directory to path if needed
-        decision_path = Path(__file__).parent / "decision"
-        if decision_path.exists() and str(decision_path) not in sys.path:
-            sys.path.insert(0, str(decision_path))
-
-        from lambda_function import select_recommendation
-
-        _select_recommendation = select_recommendation
-        logger.info("Successfully loaded select_recommendation function")
-        return _select_recommendation
-    except ImportError as e:
-        logger.error(f"Failed to import lambda_function: {e}")
-        logger.error(
-            "Make sure the 'decision' symlink exists and points to bot-decision-yt/bot-decision-EN"
+def _announce_registry(registry: Registry) -> None:
+    """Say which functions this process will serve, once, at INFO."""
+    if registry.fallback:
+        logger.info(
+            "no decision registry (%s); serving the %s symlink as '%s'",
+            registry_path(),
+            DECISION_DIR,
+            registry.default,
         )
-        raise
+        return
+
+    for problem in registry.problems:
+        logger.error("decision registry: %s", problem)
+
+    logger.info(
+        "decision registry %s: functions=%s default=%s",
+        registry.source,
+        registry.names or "none",
+        registry.default,
+    )
+
+
+def run_startup_checks() -> dict[str, Any]:
+    """Resolve the registry, import each function, and report what is wrong.
+
+    In the no-registry fallback this also chdirs into the symlinked decision
+    directory and checks its CSV, which is exactly the old behaviour: that path
+    exists for a bot-decision-yt checkout predating file-relative data reads.
+    """
+    registry = get_registry(reload=True)
+
+    cwd = None
+    csv_state = None
+    if registry.fallback:
+        cwd = ensure_decision_cwd()
+        csv_state = check_mainstream_media_csv()
+        _log_csv_state(csv_state)
+
+    described = registry.describe()
+    for name, state in described.items():
+        if state.get("error"):
+            logger.error("decision function '%s' is NOT importable: %s", name, state["error"])
+        elif hook_problem(state.get("health")):
+            logger.error(
+                "decision function '%s' reports a problem: %s", name, _trim(state["health"])
+            )
+        else:
+            logger.info("decision function '%s' ready (%s)", name, state["path"])
+
+    return {
+        "registry": str(registry.source) if registry.source else None,
+        "functions": described,
+        "cwd": str(cwd) if cwd else None,
+        "mainstream_media_csv": csv_state,
+    }
+
+
+def get_decision_function(name: str | None = None):
+    """Return the entry callable for *name* (``None`` = the registry default).
+
+    Raises :class:`UnknownFunctionError` when no such function is registered and
+    ``ImportError`` when the registered package cannot be imported. The caller
+    turns each into a different answer: an unknown name is the caller's
+    mistake and comes back as a degraded 200, an unimportable package is this
+    box's fault and comes back as a 500.
+    """
+    registry = get_registry()
+    function = registry.get(name)
+
+    if registry.fallback:
+        # Transitional only: the fallback is an un-updated bot-decision-yt that
+        # may still read its data files relative to the cwd.
+        ensure_decision_cwd(function.path)
+
+    return function.load()
 
 
 # ---------------------------------------------------------------------------
@@ -541,28 +635,72 @@ def _fd_stats() -> dict[str, Any]:
 def health():
     """Health check.
 
-    Always answers 200 (the caller uses it for liveness), but reports the
-    resolved cwd and the CSV verdict, because a wrong cwd or a corrupted CSV
-    disables a treatment arm without failing anything.
+    Always answers 200 (the caller uses it for liveness), but reports every
+    registered function's state, because a package that does not import, or one
+    whose own ``health()`` hook reports corrupted data, disables a treatment arm
+    without failing anything.
+
+    What that data *is* is the project's business, not this server's: the
+    mainstream-media CSV check now lives behind bot-decision-yt's hook. Hosting
+    N studies means this file can no longer know any of them.
     """
-    csv_state = check_mainstream_media_csv()
-    cwd = os.getcwd()
-    expected_cwd = str(DECISION_DIR.resolve()) if DECISION_DIR.exists() else None
+    registry = get_registry()
+    described = registry.describe()
     fds = _fd_stats()
 
-    healthy = csv_state.get("ok") and cwd == expected_cwd and not fds.get("near_limit")
+    healthy = registry.healthy(described) and not fds.get("near_limit")
 
-    return jsonify(
-        {
-            "status": "healthy" if healthy else "degraded",
-            "service": "lambda_service",
-            "cwd": cwd,
-            "expected_cwd": expected_cwd,
-            "cwd_ok": cwd == expected_cwd,
-            "decision_dir": str(DECISION_DIR),
-            "mainstream_media_csv": csv_state,
-            "open_files": fds,
-        }
+    body: dict[str, Any] = {
+        "status": "healthy" if healthy else "degraded",
+        "service": "lambda_service",
+        "registry": str(registry.source) if registry.source else "absent",
+        "default": registry.default,
+        "functions": described,
+        "open_files": fds,
+        # Informational: no function may depend on the cwd any more, but the
+        # fallback still chdirs for an un-updated bot-decision-yt.
+        "cwd": os.getcwd(),
+    }
+    if registry.problems:
+        body["registry_problems"] = registry.problems
+
+    return jsonify(body)
+
+
+def _requested_function() -> str | None:
+    """The function name the caller asked for, or ``None`` for the default.
+
+    An empty or whitespace header is treated as absent rather than as the name
+    ``""``: a header the runner failed to fill in must land on the default, not
+    on an unknown-function report that hides the real problem.
+    """
+    value = request.headers.get(FUNCTION_NAME_HEADER)
+    if value and value.strip():
+        return value.strip()[:120]
+    return None
+
+
+def _unknown_function_response(request_id: str, message: str):
+    """Answer a request for a function this box does not host.
+
+    Deliberately HTTP **200** with the degraded report, not a 4xx/5xx. The
+    runner reads the verdict out of the body and writes it onto the job row; a
+    non-2xx is a transport failure to it, which it retries and records as a
+    failed job rather than as a decision that never applied. ``treatment_lost``
+    is true because nothing requested was applied -- whatever this session
+    produced, it is not the arm the experiment asked for.
+    """
+    _log(logging.WARNING, request_id, f"unknown decision function requested: {message}")
+    return (
+        jsonify(
+            {
+                "degraded": True,
+                "treatment_lost": True,
+                "error": message,
+                "xpath": "",
+            }
+        ),
+        200,
     )
 
 
@@ -573,14 +711,19 @@ def invoke():
 
     Expects JSON body matching the Lambda event format.
     Returns JSON response matching Lambda response format.
+
+    Which function runs comes from the ``X-Function-Name`` header; without one,
+    the registry's default runs, so a runner built before the header existed
+    keeps working unchanged.
     """
     started = time.monotonic()
     event = request.get_json(silent=True)
     request_id = _correlation_id(event)
+    requested = _requested_function()
 
     try:
         # Get the decision function
-        select_recommendation = get_decision_function()
+        select_recommendation = get_decision_function(requested)
 
         # Get the request payload
         if not request.is_json:
@@ -596,7 +739,12 @@ def invoke():
             )
 
         keys = sorted(event.keys()) if isinstance(event, dict) else None
-        _log(logging.INFO, request_id, f"invoke: video selection requested (payload keys={keys})")
+        _log(
+            logging.INFO,
+            request_id,
+            f"invoke: video selection requested from function="
+            f"{requested or '<default>'} (payload keys={keys})",
+        )
 
         # Call the decision function (it expects a JSON string)
         result = select_recommendation(json.dumps(event))
@@ -606,6 +754,8 @@ def invoke():
 
         return jsonify(result)
 
+    except UnknownFunctionError as e:
+        return _unknown_function_response(request_id, str(e))
     except ImportError as e:
         elapsed_ms = (time.monotonic() - started) * 1000
         _log(logging.ERROR, request_id, f"import error after {elapsed_ms:.0f} ms: {e}")
@@ -666,15 +816,15 @@ def main():
 
     logger.info(f"Starting Local Lambda Server on {args.host}:{args.port}")
 
-    # Fix the cwd and validate the data files before anything imports or calls
-    # the decision function.
+    # Resolve the registry and import every function before serving, so a
+    # misconfigured box says so at startup rather than on the first decision.
     run_startup_checks()
 
-    # Verify decision function can be loaded
+    # Verify the default decision function can be loaded
     try:
         get_decision_function()
-    except ImportError:
-        logger.warning("Decision function not available - /invoke will fail until fixed")
+    except (ImportError, UnknownFunctionError) as exc:
+        logger.warning("Default decision function not available - /invoke will fail: %s", exc)
 
     if args.debug:
         # The werkzeug reloader/debugger only exists on app.run(); keep it for
