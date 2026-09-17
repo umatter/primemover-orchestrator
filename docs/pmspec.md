@@ -1205,7 +1205,7 @@ crawlers:
 | `secrets init <lock> [--secrets] [--force]` | Write (or, with --force, merge) a TOML skeleton for a lock's secrets |
 | `generate <file> [-o output.json] [--seed N] [--resolve-secrets]` | Convert a spec or lock to API JSON (GUI upload only; carries no provenance) |
 | `preview <file> [--seed N]` | Preview factorial design; given a lock, its counts, anchor and provenance |
-| `summary <file>... [-e ID] [--compare] [-f text\|json\|html] [--seed N]` | Experiment summary from a spec, a lock, or a live experiment |
+| `summary <file>... [-e ID] [--compare] [-f text\|json\|html] [--seed N]` | Experiment summary from a spec, a lock, or a live experiment; a spec that does not parse or convert is refused (errors, no counts, exit 1) |
 | `schema jobs` | List all job types |
 | `schema job <type>` | Show job type details |
 | `init [-t template]` | Create from template |

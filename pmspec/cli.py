@@ -1384,6 +1384,33 @@ def summary(
                 click.secho(f"JSON: {json_path}", fg="green")
         return
 
+    # A spec the pipeline could not use summarises as a report of zeros -- no
+    # crawlers, no jobs, no job types -- which reads as an empty-but-fine
+    # experiment rather than as a spec nothing can be built from. Same rule for
+    # a spec, a runs spec and a lock: say what is wrong, print none of the
+    # fabricated counts, and exit non-zero.
+    if not summary_data.is_valid:
+        if format == "json":
+            click.echo(
+                json.dumps(
+                    {
+                        "valid": False,
+                        "errors": summary_data.errors,
+                        "warnings": summary_data.warnings,
+                    },
+                    indent=2,
+                )
+            )
+        else:
+            click.secho("Summary FAILED", fg="red", bold=True)
+            for error in summary_data.errors:
+                click.secho(f"  ERROR: {error}", fg="red")
+            for warning in summary_data.warnings:
+                click.secho(f"  WARNING: {warning}", fg="yellow")
+            click.echo()
+            click.secho("Summary not available: spec is invalid", fg="red")
+        sys.exit(1)
+
     # Output based on format
     if format == "text":
         if files:
