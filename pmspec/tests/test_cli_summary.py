@@ -9,6 +9,7 @@ contract exists to prevent.
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 
 from click.testing import CliRunner
@@ -157,3 +158,64 @@ class TestValidSpecIsUnchanged:
         assert payload["summary"]["crawler_count"] == 1
         assert payload["validation"]["is_valid"] is True
         assert "valid" not in payload
+
+
+class TestDomainErrorsReachTheSummary:
+    """`pmspec summary` refuses what `pmspec validate` refuses.
+
+    The summary used to build its validation block from the parser's and the
+    converter's errors only, so every refusal that lives in `SpecValidator` --
+    the 0/1 switch rule, the unknown-params drop, an unknown Multilogin flag --
+    was invisible to it: `pmspec validate` said FAILED and `pmspec summary`
+    printed a plausible report and exited 0 on the same file.
+    """
+
+    def _fractional_pi_copy(self, tmp_path: Path) -> str:
+        """The shipped mini study, with one bot's `pi` put back to 0.7.
+
+        Anchored on the real example so the test keeps exercising a whole
+        shipped spec, but carrying its own fractional value so it survives the
+        example being fixed.
+        """
+        example = Path(__file__).resolve().parents[1] / "examples"
+        text = (example / "trump-search-mini-study.yaml").read_text()
+        broken, count = re.subn(r"(?m)^(\s*)pi: .*$", r"\1pi: 0.7", text, count=1)
+        assert count == 1, "the mini study no longer carries a params.pi line"
+        return _write(tmp_path, "mini.yaml", broken)
+
+    def test_fractional_pi_fails_the_summary(self, tmp_path):
+        out = CliRunner().invoke(cli, ["summary", self._fractional_pi_copy(tmp_path)])
+        assert out.exit_code == 1, out.output
+        assert "0.7 is not 0 or 1" in out.output
+        for fake in FABRICATED:
+            assert fake not in out.output
+
+    def test_fractional_pi_fails_the_json_form(self, tmp_path):
+        out = CliRunner().invoke(cli, ["summary", self._fractional_pi_copy(tmp_path), "-f", "json"])
+        assert out.exit_code == 1, out.output
+        payload = json.loads(out.output)
+        assert payload["valid"] is False
+        assert any("is not 0 or 1" in e for e in payload["errors"])
+
+    def test_a_drop_is_a_refusal_too(self, tmp_path):
+        """A strict-contract drop -- here an unknown Multilogin profile flag,
+        which the API accepts and silently discards -- fails the summary for
+        the same reason it fails `validate`: the construct reaches nobody."""
+        spec = VALID + """    agent:
+      name: "a1"
+      multilogin_profile:
+        parameters:
+          flags:
+            do_not_track: "enabled"
+"""
+        out = CliRunner().invoke(cli, ["summary", _write(tmp_path, "flag.yaml", spec)])
+        assert out.exit_code == 1, out.output
+        assert "do_not_track" in out.output
+
+    def test_shipped_examples_summarise(self):
+        """Every shipped example is a spec `validate` accepts, so every one of
+        them must summarise too -- the wiring must not refuse a good spec."""
+        examples = Path(__file__).resolve().parents[1] / "examples"
+        for path in sorted(examples.glob("*.yaml")):
+            out = CliRunner().invoke(cli, ["summary", str(path)])
+            assert out.exit_code == 0, f"{path.name}: {out.output}"

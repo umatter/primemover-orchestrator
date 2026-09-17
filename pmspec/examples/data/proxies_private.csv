@@ -1,0 +1,4 @@
+hostname,port,username,password,type,location
+private-01.proxy.example,7777,${secret:proxies_private.username},${secret:proxies_private.password},http,US-IL-CHICAGO
+private-02.proxy.example,7777,${secret:proxies_private.username},${secret:proxies_private.password},http,US-CA-LOS_ANGELES
+private-03.proxy.example,7777,${secret:proxies_private.username},${secret:proxies_private.password},http,US-NY-NEW_YORK

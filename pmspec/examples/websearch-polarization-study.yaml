@@ -57,10 +57,12 @@ data_pools:
       Search terms with columns: term, pi (ideology score)
       Used to build each bot's vocabulary L based on distance to bot's π
 
-  # Neutral/test search terms (updated weekly from GDELT + Google Trends)
+  # Neutral/test search terms (updated weekly from GDELT + Google Trends).
+  # The running study refreshes this file from S3 each week; a spec resolves
+  # its pools from disk, so the copy this example reads is a local one.
   neutral_search_terms:
     type: json
-    source: "s3://primemover-data/neutralsearchterms_pool.json"
+    source: "data/neutralsearchterms_pool.json"
     description: |
       21 neutral search terms: 15 from GDELT (trending persons/orgs) +
       6 from Google Trends. Updated weekly. All bots use same 3 terms/day.
@@ -104,10 +106,8 @@ templates:
         task: select_partisan_outlet
         function: bot-decision-websearch
         link_type: FUNCTION_NAME
-        description: "Select outlet based on u_ijt = α - τ*d² + ε"
-    - wait:
-        duration: 30
-        random_range: 60
+        # Select outlet based on u_ijt = α - τ*d² + ε
+    - wait: {min: 30, max: 90}
     - scroll: 30s
 
   # Conduct partisan search (term selected by Lambda based on v_ikt)
@@ -118,14 +118,14 @@ templates:
         task: select_search_term
         function: bot-decision-websearch
         link_type: FUNCTION_NAME
-        description: "Select term based on v_ikt = α - τ*d² + ε"
+        # Select term based on v_ikt = α - τ*d² + ε
     - wait: 5s
     # Select from SERP based on w_ijt
     - lambda_select:
         task: select_from_serp
         function: bot-decision-websearch
         link_type: FUNCTION_NAME
-        description: "Select result based on w_ijt = [1-β(r-1)] + I(j∈K)*(α - τ*d²) + ε"
+        # Select result based on w_ijt = [1-β(r-1)] + I(j∈K)*(α - τ*d²) + ε
     - wait: 20s
     - scroll: 20s
 
@@ -135,10 +135,8 @@ templates:
         task: select_neutral_domain
         function: bot-decision-websearch
         link_type: FUNCTION_NAME
-        description: "Random selection from neutraldomains_pool"
-    - wait:
-        duration: 20
-        random_range: 40
+        # Random selection from neutraldomains_pool
+    - wait: {min: 20, max: 60}
     - scroll: 20s
 
   # Test/neutral search (same terms for all bots)
@@ -149,13 +147,13 @@ templates:
         task: get_daily_test_term
         function: bot-decision-websearch
         link_type: FUNCTION_NAME
-        description: "Get one of 3 daily neutral search terms"
+        # Get one of 3 daily neutral search terms
     - wait: 5s
     - lambda_select:
         task: select_from_serp_neutral
         function: bot-decision-websearch
         link_type: FUNCTION_NAME
-        description: "Select from SERP (record for analysis)"
+        # Select from SERP (record for analysis)
     - wait: 15s
 
 # =============================================================================
@@ -249,10 +247,20 @@ design:
           disable_storage: "true"
 
   # Parameter distributions (applied to each crawler)
+  #
+  # The model's Greek letters are NOT the pipeline's params of the same name.
+  # `pi`, `psi`, `kappa` and `tau` in configuration.params are 0/1 switches the
+  # decision function reads as int(round(x)) == 1; this study's π is a
+  # continuous ideology score, its κ a three-way updating rule, and neither
+  # survives that rounding. So they are sampled under their own names and
+  # recorded on the bot as preferences (see the crawler block below), which is
+  # also what makes them visible to the analysis. Only alpha and beta -- real
+  # params the pipeline carries, and not switches -- are injected into
+  # configuration.params by their standard names.
   parameters:
     # Political orientation: uniform(-1, 1)
     # Note: for liberal/conservative pairs, values are mirrored per city
-    pi:
+    pi_score:
       distribution: uniform
       min: -1.0
       max: 1.0
@@ -264,7 +272,7 @@ design:
       max: 0.5
 
     # Distance penalty (fixed)
-    tau:
+    tau_penalty:
       value: 1.0
 
     # Rank decay in SERP selection
@@ -274,13 +282,13 @@ design:
       max: 0.5
 
     # Additional parameter (exploration tendency)
-    psi:
+    psi_explore:
       distribution: uniform
       min: 0.0
       max: 0.2
 
     # Information processing type
-    kappa:
+    kappa_update:
       distribution: discrete
       values:
         0: 0.25   # No updating
@@ -312,22 +320,33 @@ crawlers:
     configuration:
       name: "Config {political_type}"
       params:
-        # These will be populated from design.parameters
-        pi: "{pi}"
-        alpha: "{alpha}"
-        tau: "{tau}"
-        beta: "{beta}"
-        psi: "{psi}"
-        kappa: "{kappa}"
+        # alpha and beta are sampled per crawler and injected here under their
+        # standard names; nothing else in design.parameters is a param the
+        # pipeline carries, so nothing else belongs in this block. A key the
+        # API does not define a column for is dropped on the way to the bot.
         active: true
-        # Constants from the design
-        known_outlets_count: 10      # |K| = 10
-        search_terms_count: 40       # |L| = 40
-        epsilon_mu: "{epsilon_mu}"
-        epsilon_beta: "{epsilon_beta}"
       preferences:
+        # Everything the pipeline will not carry as a param, recorded where it
+        # does reach the bot and the analysis: the model's own parameters, and
+        # the two design constants.
+        - name: pi_score
+          value: "{pi_score:.4f}"
+        - name: tau_penalty
+          value: "{tau_penalty}"
+        - name: psi_explore
+          value: "{psi_explore:.4f}"
+        - name: kappa_update
+          value: "{kappa_update}"
+        - name: epsilon_mu
+          value: "{epsilon_mu:.7f}"
+        - name: epsilon_beta
+          value: "{epsilon_beta:.7f}"
+        - name: known_outlets_count      # |K| = 10
+          value: "10"
+        - name: search_terms_count       # |L| = 40
+          value: "40"
         - name: location
-          value: "{location}"
+          value: "US-IL-CHICAGO"
         - name: usage_type
           value: "{usage_type}"
         - name: political_type
@@ -343,23 +362,33 @@ crawlers:
         - name: privacy_disable_storage
           value: "{privacy_disable_storage}"
 
-    # Proxy assigned from pool based on location
+    # One exit IP per bot, from the runner's own Oxylabs account: `oxylabs` is
+    # self-configuring (the runner supplies endpoint and credentials, and
+    # geo-targeting follows the agent's location), so no credentials belong in
+    # a spec file.
+    #
+    # The three provider pools declared above are what the running study draws
+    # from instead -- `proxy: {from_pool: true, pool: proxies_geosurf,
+    # match_field: location}`. That form hands out one row per bot without
+    # replacement, so the pool must hold at least one row per bot for that
+    # bot's location; the sample files here hold three rows each, which is why
+    # this example does not use them.
     proxy:
-      from_pool: true
-      pool: "{proxy_pool}"
-      match_field: location
+      type: oxylabs
+      location: "US-IL-CHICAGO"
+      active: true
 
     agent:
       name: "Agent {political_type} {replica:03d}"
       identification: mlx
-      location: "{location}"
+      location: "US-IL-CHICAGO"
 
     # Daily browsing session (10am - 5pm local time)
     session:
       name: "Daily Session"
       start: "2025-03-01T10:00:00"
-      timezone: "{timezone}"
-      timezone_utc_offset: "{timezone_utc_offset}"
+      timezone: "America/Chicago"
+      timezone_utc_offset: "-06:00"
 
       # A template/repeat item carries only template/repeat/with/jobs; there is
       # no `condition:` key (an earlier version of this example wrote one, and it
@@ -389,7 +418,7 @@ crawlers:
     additional_sessions:
       - name: "Synchronized Test Search"
         start: "2025-03-01T18:00:00"  # ~1 hour after last bot finishes
-        timezone: "{timezone}"
+        timezone: "America/Chicago"
         workflow:
           # Third daily test search (synchronized)
           - template: test_search
@@ -420,11 +449,14 @@ crawlers:
 #    - conservative bots in same city: π = -π_liberal (mirrored)
 #    - neutral bots: no π-driven behavior
 #
-# MISSING FILES (must be provided):
-# - data/outlets_pool.csv
-# - data/neutraldomains_pool.csv
-# - data/searchterms_pool.csv
-# - data/proxies_geosurf.csv
-# - data/proxies_rotating.csv
-# - data/proxies_private.csv
-# - S3: neutralsearchterms_pool.json (updated weekly)
+# 4. Data files. Every pool this spec declares now resolves against a small
+#    sample file in data/, so the example validates and compiles as it stands.
+#    They are illustrative, not the study's data: the real run supplies its own
+#    outlets, search terms, neutral domains (and refreshes
+#    neutralsearchterms_pool.json weekly from S3), and one proxy row per bot
+#    per location in each provider pool.
+#
+# 5. The model's parameters (π, τ, ψ, κ, ε) are sampled under their own names
+#    and recorded as preferences, because configuration.params.pi/psi/kappa/tau
+#    are 0/1 switches the decision function reads as int(round(x)) == 1 -- see
+#    the note on design.parameters above.

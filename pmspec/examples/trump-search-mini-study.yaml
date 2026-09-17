@@ -3,6 +3,14 @@
 # All search for "donald trump" on Google after different browsing histories
 # NO PROXIES - runs directly from runner IP (for testing)
 #
+# What makes an arm an arm here is the *browsing history* each bot builds
+# before the search, not a number in params: `pi` is a 0/1 switch the decision
+# function reads as int(round(pi)) == 1 (mainstream-media aversion on/off), so
+# it cannot carry an ideology score. An earlier version of this example wrote
+# pi: 0.7 / -0.8 and so on; every one of those values rounds to 0 or 1 and none
+# of them means what it looks like. The conservative bots run with the switch
+# on, everybody else with it off.
+#
 version: "1.0"
 
 experiment:
@@ -62,7 +70,7 @@ crawlers:
     configuration:
       name: "Right Wing Config"
       params:
-        pi: 0.7
+        pi: 1          # mainstream-media aversion ON
         alpha: 0.4
         tau: 1.0
         kappa: 1
@@ -105,7 +113,7 @@ crawlers:
     configuration:
       name: "Right Wing Config"
       params:
-        pi: 0.8
+        pi: 1          # mainstream-media aversion ON
         alpha: 0.35
         tau: 1.0
         kappa: 1
@@ -151,7 +159,7 @@ crawlers:
     configuration:
       name: "Left Wing Config"
       params:
-        pi: -0.7
+        pi: 0          # switch off; the left-wing arm is its browsing history
         alpha: 0.4
         tau: 1.0
         kappa: 1
@@ -194,7 +202,7 @@ crawlers:
     configuration:
       name: "Left Wing Config"
       params:
-        pi: -0.8
+        pi: 0          # switch off; the left-wing arm is its browsing history
         alpha: 0.35
         tau: 1.0
         kappa: 1
@@ -240,7 +248,7 @@ crawlers:
     configuration:
       name: "Neutral Config"
       params:
-        pi: 0.0
+        pi: 0
         alpha: 0.4
         tau: 1.0
         kappa: 0
@@ -267,7 +275,7 @@ crawlers:
     configuration:
       name: "Neutral Config"
       params:
-        pi: 0.0
+        pi: 0
         alpha: 0.4
         tau: 1.0
         kappa: 0

@@ -1,0 +1,8 @@
+[
+  {"term": "international space station", "source": "gdelt"},
+  {"term": "world cup qualifiers", "source": "gdelt"},
+  {"term": "hurricane season forecast", "source": "gdelt"},
+  {"term": "nobel prize ceremony", "source": "gdelt"},
+  {"term": "daylight saving time", "source": "google_trends"},
+  {"term": "tax filing deadline", "source": "google_trends"}
+]

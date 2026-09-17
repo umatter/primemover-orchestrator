@@ -121,48 +121,77 @@ class TestKeySetsProduceTheContract:
         assert params["additionalProperties"] is True
 
 
-class TestExampleSpecsValidate:
-    CLEAN = [
-        "simple-distribution-study.yaml",
-        "websearch-study.yaml",
-        "trump-search-mini-study.yaml",
-    ]
+EXAMPLE_NAMES = sorted(Path(p).name for p in glob.glob(str(EXAMPLES_DIR / "*.yaml")))
 
-    @pytest.mark.parametrize("name", CLEAN)
-    def test_clean_examples_validate(self, name):
+
+class TestExampleSpecsValidate:
+    """Every shipped example is a spec the whole pipeline accepts.
+
+    Parametrized off the directory listing rather than a hand-kept list, so a
+    new example is covered the moment it lands. There used to be an exception
+    -- websearch-polarization-study.yaml, pinned here by the exact shape of the
+    errors it produced (a dict-form `wait:`, a `lambda_select.description`, a
+    fractional `pi`, five missing pool files). A shipped example nobody can
+    compile is a bug report, not a fixture, so the spec was fixed and the pin
+    is an ordinary assertion again.
+    """
+
+    @pytest.mark.parametrize("name", EXAMPLE_NAMES)
+    def test_example_matches_the_schema(self, name):
         spec = _load_example(EXAMPLES_DIR / name)
         jsonschema.validate(spec, build_schema())
 
-    def test_polarization_example_fails_only_on_its_known_dict_form_wait(self):
-        """`wait: {duration: ..., random_range: ...}` appears twice in this
-        spec's templates. SpecParser._expand_shorthand's `wait` branch only
-        ever accepts int/float/str (`_parse_duration`); a dict silently
-        becomes duration 0 -- it was never a supported construct, so the
-        schema correctly rejects it rather than modelling a shape nothing
-        reads. This is the *only* schema violation; every other construct in
-        the file (data_pools with a documentary-only `type`/`description`,
-        lambda_select's `description`, from_pool proxy assignment, unresolved
-        `{param}` placeholders in configuration.params) is deliberately
-        schema-permissive (see schema_gen.py's `_params_schema` and the
-        `dataPool`/shorthand-options `additionalProperties: true`). Permissive
-        in the *schema* only: `lambda_select.description` is not in
-        `_OPTION_KEYS["lambda_select"]`, so `SpecValidator` reports it as a
-        drop ("unknown option; the runner never sees it") -- the schema leaves
-        it to the validator precisely so that `--lax` can downgrade it."""
-        spec = _load_example(EXAMPLES_DIR / "websearch-polarization-study.yaml")
-        validator = jsonschema.Draft7Validator(build_schema())
-        errors = sorted(validator.iter_errors(spec), key=lambda e: list(e.absolute_path))
-        assert len(errors) == 2, [e.message for e in errors]
-        for e in errors:
-            path = ".".join(str(p) for p in e.absolute_path)
-            assert path.endswith(".wait"), (path, e.message)
-            assert "random_range" in e.message or "duration" in e.message
+    @pytest.mark.parametrize("name", EXAMPLE_NAMES)
+    def test_example_validates_with_no_drops(self, name):
+        """What `pmspec validate <example>` prints: PASSED, and no construct
+        the pipeline would silently discard."""
+        from pmspec.lock.build import load_and_prepare, merge_reports, parse_and_convert
 
-    def test_all_example_yaml_files_are_covered(self):
-        """Pin the example directory's contents so a new example silently
-        skips this test's parametrization instead of being noticed."""
-        names = {Path(p).name for p in glob.glob(str(EXAMPLES_DIR / "*.yaml"))}
-        assert names == set(self.CLEAN) | {"websearch-polarization-study.yaml"}
+        path = EXAMPLES_DIR / name
+        prepared = load_and_prepare(path.read_text(), base_dir=path.parent, seed=1)
+        assert prepared.errors == [], f"{name}: {prepared.errors}"
+
+        validator = SpecValidator(base_dir=path.parent, runs=prepared.is_runs)
+        result = validator.validate(prepared.raw)
+        parsed, converted = parse_and_convert(
+            path.read_text(),
+            base_dir=path.parent,
+            seed=prepared.run_seed,
+            resolve_times=False,
+            report_unknown_items=False,
+        )
+        dropped = result.dropped + parsed.dropped + converted.dropped
+        errors, _ = merge_reports(
+            [
+                result.errors,
+                parsed.errors,
+                converted.errors,
+                validator.validate_expanded(converted.json_data),
+            ],
+            [],
+            dropped,
+            lax=False,
+        )
+        assert errors == [], f"{name}: {errors}"
+        assert dropped == 0, f"{name}: {dropped} dropped construct(s)"
+
+    @pytest.mark.parametrize("name", EXAMPLE_NAMES)
+    def test_example_compiles_to_a_lock(self, name):
+        """And what `pmspec compile <example> --seed 1` produces: a lock. An
+        example that validates but cannot be compiled is still not usable."""
+        from pmspec.lock.build import compile_spec
+
+        path = EXAMPLES_DIR / name
+        result = compile_spec(path.read_text(), base_dir=path.parent, spec_path=name, seed=1)
+        assert result.errors == [], f"{name}: {result.errors}"
+        assert result.lock is not None, name
+        assert result.lock.crawlers, f"{name}: compiled to no crawlers"
+
+    def test_every_example_yaml_file_is_covered(self):
+        """The parametrization is the directory listing; this fails only if the
+        directory is empty or has moved."""
+        assert EXAMPLE_NAMES, f"no examples found under {EXAMPLES_DIR}"
+        assert "websearch-polarization-study.yaml" in EXAMPLE_NAMES
 
 
 class TestWaitScrollScalarValues:

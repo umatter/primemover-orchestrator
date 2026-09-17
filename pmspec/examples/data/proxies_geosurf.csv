@@ -1,0 +1,4 @@
+hostname,port,username,password,type,location
+geosurf-01.proxy.example,7777,${secret:proxies_geosurf.username},${secret:proxies_geosurf.password},http,US-IL-CHICAGO
+geosurf-02.proxy.example,7777,${secret:proxies_geosurf.username},${secret:proxies_geosurf.password},http,US-CA-LOS_ANGELES
+geosurf-03.proxy.example,7777,${secret:proxies_geosurf.username},${secret:proxies_geosurf.password},http,US-NY-NEW_YORK

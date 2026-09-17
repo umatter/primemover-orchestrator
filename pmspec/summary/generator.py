@@ -21,6 +21,9 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 if TYPE_CHECKING:
     from ..lock.model import Lock
 
+from ..lock.build import merge_reports
+from ..lock.runs import unknown_name_errors
+from ..spec.validator import SpecValidator
 from .analyzer import (
     ExperimentAnalyzer,
     compute_job_type_distribution,
@@ -99,6 +102,43 @@ class SummaryGenerator:
             runs=is_runs,
         )
 
+        # The same three components `pmspec validate` runs, in the same order,
+        # merged through the same helper. Without SpecValidator, the summary's
+        # validation block held only the parser's and the converter's errors --
+        # so every refusal the validator owns (the 0/1 switch rule, the
+        # unknown-params and unknown-flag drops, the design/reference checks)
+        # was invisible here, and `pmspec summary` printed a plausible report,
+        # under exit 0, for a spec `pmspec validate` refuses.
+        #
+        # Strict, always: `summary` has no `--lax` flag, so it judges a spec
+        # the way `validate` judges one by default -- a drop is a refusal.
+        validator_errors: list[str] = []
+        validator_warnings: list[str] = []
+        dropped = parsed.dropped + result.dropped
+        if isinstance(raw, dict):
+            validator = SpecValidator(base_dir=base_dir or Path.cwd(), lax=False, runs=is_runs)
+            validation_result = validator.validate(raw)
+            dropped += validation_result.dropped
+            validator_errors = list(validation_result.errors)
+            validator_errors.extend(validator.validate_expanded(result.json_data))
+            if base is not None:
+                validator_errors.extend(
+                    unknown_name_errors([str(c.get("name", "")) for c in result.json_data], base)
+                )
+            validator_warnings = list(validation_result.warnings)
+
+        all_errors, all_warnings = merge_reports(
+            [
+                runs_errors,
+                validator_errors,
+                list(parsed.errors),
+                list(result.errors),
+            ],
+            [raw_warnings, validator_warnings, list(parsed.warnings), list(result.warnings)],
+            dropped,
+            lax=False,
+        )
+
         # Build summary from parsed spec and conversion result
         experiment = base.lock.experiment if base is not None else parsed.experiment
         summary = ExperimentSummary(
@@ -110,11 +150,9 @@ class SummaryGenerator:
             defaults=parsed.defaults,
             template_names=list(parsed.templates.keys()),
             data_pool_names=list(parsed.data_pools.keys()),
-            errors=list(dict.fromkeys(runs_errors + list(parsed.errors) + list(result.errors))),
-            warnings=list(
-                dict.fromkeys(raw_warnings + list(parsed.warnings) + list(result.warnings))
-            ),
-            is_valid=not runs_errors and not parsed.errors and not result.errors,
+            errors=all_errors,
+            warnings=all_warnings,
+            is_valid=not all_errors,
         )
 
         # Extract design information
