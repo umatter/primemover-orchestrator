@@ -1,0 +1,4 @@
+hostname,port,username,password,type,location
+rotating-01.proxy.example,7777,${secret:proxies_rotating.username},${secret:proxies_rotating.password},http,US-IL-CHICAGO
+rotating-02.proxy.example,7777,${secret:proxies_rotating.username},${secret:proxies_rotating.password},http,US-CA-LOS_ANGELES
+rotating-03.proxy.example,7777,${secret:proxies_rotating.username},${secret:proxies_rotating.password},http,US-NY-NEW_YORK

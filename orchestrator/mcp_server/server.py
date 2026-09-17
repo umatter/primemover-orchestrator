@@ -3082,19 +3082,10 @@ def get_job_type_schema(job_type: str) -> str:
     )
 
 
-@mcp.tool()
-def get_spec_template(template_type: str = "default") -> str:
-    """
-    Get a YAML experiment spec template to start from.
-
-    Args:
-        template_type: Template type - 'default', 'youtube', or 'google'
-
-    Returns:
-        YAML template string
-    """
-    templates = {
-        "default": """# Experiment Specification
+# The spec templates `get_spec_template` serves. Module level so the test that
+# validates every one of them can enumerate the set rather than guess it.
+MCP_SPEC_TEMPLATES: dict[str, str] = {
+    "default": """# Experiment Specification
 version: "1.0"
 
 experiment:
@@ -3132,7 +3123,7 @@ crawlers:
         - visit: https://example.com
         - wait: 5s
 """,
-        "youtube": """# YouTube Research Experiment
+    "youtube": """# YouTube Research Experiment
 version: "1.0"
 
 experiment:
@@ -3198,7 +3189,7 @@ crawlers:
         - repeat: 5
           template: watch_and_recommend
 """,
-        "google": """# Google Search Experiment
+    "google": """# Google Search Experiment
 version: "1.0"
 
 experiment:
@@ -3249,7 +3240,21 @@ crawlers:
         - scroll: 30s
         - wait: 5s
 """,
-    }
+}
+
+
+@mcp.tool()
+def get_spec_template(template_type: str = "default") -> str:
+    """
+    Get a YAML experiment spec template to start from.
+
+    Args:
+        template_type: Template type - 'default', 'youtube', or 'google'
+
+    Returns:
+        YAML template string
+    """
+    templates = MCP_SPEC_TEMPLATES
 
     template = templates.get(template_type, templates["default"])
     return json.dumps({"template": template, "type": template_type})

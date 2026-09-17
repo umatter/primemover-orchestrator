@@ -417,12 +417,27 @@ A factor can reach the Multilogin profile itself:
 and an explicit `agent: {multilogin_profile: {parameters: {flags: {…}}}}` on a crawler works the
 same way — both are deep-merged over the default profile and land in the API's agent JSON. A
 `<flag>` that is not one of the default profile's own flags is a **drop** (Multilogin ignores an
-unknown flag silently, so the treatment would simply not exist). Flag *values* are not checked:
-this repo holds no authoritative vocabulary per flag, and Multilogin rejects a bad one at profile
-creation, which the runner reports as a failed job rather than losing quietly. Note the drop rule
-only sees the leaf — a typo one level up (`parameter.flags`, `flag`) is an unknown key on
-`multilogin_profile`, which is deep-merged through unexamined, so check the spelling of the path
-as well as of the flag.
+unknown flag silently, so the treatment would simply not exist).
+
+Flag **values are checked too**, against the vocabulary
+[`docs/multilogin-profile-flags.md`](multilogin-profile-flags.md) §2 measured against the live
+`POST /profile/create` — `canvas_noise` in `{mask, natural, disabled}`, `geolocation_popup` in
+`{prompt, allow, block}`, `natural` rather than `real` everywhere, and so on. A value outside its
+flag's set is an **error**, not a drop: the API answers 400 `wrong <x> flag` at profile creation,
+so the bot never runs and every bot in the experiment fails at setup on the VM — the same failure
+shape as `core_version: 142`. `startup_behavior` is pinned to `{recover, custom}` precisely
+because the API does not validate it at all: it stores any string verbatim, so a typo there is
+otherwise silent. A **string** value that still carries a `{placeholder}` is judged after
+expansion, when it has a value — anything that is not a string is already final, so a mapping
+written where a value belongs (`canvas_noise: {control: mask, treated: disabled}`, a `maps_to`
+level map in the crawler's own agent block) is refused rather than mistaken for a placeholder.
+Note that `<flag>_masking: custom` on fonts/localization/media_devices/navigator/timezone/webrtc
+is accepted here but needs the matching `parameters.fingerprint.<block>`, which pmspec does not
+check.
+
+Note the drop rule only sees the leaf — a typo one level up (`parameter.flags`, `flag`) is an
+unknown key on `multilogin_profile`, which is deep-merged through unexamined, so check the
+spelling of the path as well as of the flag.
 
 ### Strategy schemas
 
@@ -1205,7 +1220,7 @@ crawlers:
 | `secrets init <lock> [--secrets] [--force]` | Write (or, with --force, merge) a TOML skeleton for a lock's secrets |
 | `generate <file> [-o output.json] [--seed N] [--resolve-secrets]` | Convert a spec or lock to API JSON (GUI upload only; carries no provenance) |
 | `preview <file> [--seed N]` | Preview factorial design; given a lock, its counts, anchor and provenance |
-| `summary <file>... [-e ID] [--compare] [-f text\|json\|html] [--seed N]` | Experiment summary from a spec, a lock, or a live experiment |
+| `summary <file>... [-e ID] [--compare] [-f text\|json\|html] [--seed N]` | Experiment summary from a spec, a lock, or a live experiment; a spec `validate` would refuse is refused here too -- same three components, strict -- with the errors, no counts, and exit 1 |
 | `schema jobs` | List all job types |
 | `schema job <type>` | Show job type details |
 | `init [-t template]` | Create from template |

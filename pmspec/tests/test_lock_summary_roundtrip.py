@@ -8,10 +8,9 @@ from pmspec.lock.build import compile_spec
 from pmspec.summary.generator import SummaryGenerator
 
 EXAMPLES = Path(__file__).resolve().parents[1] / "examples"
-COMPILABLE = [
-    "simple-distribution-study.yaml",
-    "websearch-study.yaml",
-]  # the two that pass strict validation
+# Every shipped example, which is every example that passes strict validation
+# (test_schema_gen.py::TestExampleSpecsValidate holds them to that).
+COMPILABLE = sorted(p.name for p in EXAMPLES.glob("*.yaml"))
 
 
 @pytest.mark.parametrize("name", COMPILABLE)

@@ -124,11 +124,11 @@ def _params_schema() -> dict[str, Any]:
 
     `pi`/`psi`/`kappa`/`tau`/`alpha`/`beta` carry no `type`/`enum` restriction
     on purpose: pre-expansion, a raw spec legitimately holds an unresolved
-    `"{pi}"` template placeholder (see `websearch-polarization-study.yaml`,
-    a shipped example) or, for a hand-authored crawler with no design, a
-    literal number outside {0, 1} that only `_validate_treatment_params`'s
-    `_is_switch_value` check -- a semantic rule, not a structural one -- is
-    positioned to catch.
+    `"{pi}"` template placeholder (no shipped example does so today, but a spec
+    whose design supplies the value is entitled to) or, for a hand-authored
+    crawler with no design, a literal number outside {0, 1} that only
+    `_validate_treatment_params`'s `_is_switch_value` check -- a semantic rule,
+    not a structural one -- is positioned to catch.
     """
     fragments = {
         "pi": {"description": "Treatment switch; see docs/integration-contract.md and CLAUDE.md"},
