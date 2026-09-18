@@ -184,6 +184,11 @@ make prereqs  # Check all prerequisites
 
 The orchestrator is the **entry point** for the PrimeMover ecosystem.
 
+> **No Multilogin account?** `orchestrator up --dev` runs the runner on the
+> `chrome-dev` profile — plain headless Chrome, no Multilogin, no proxy, no S3 —
+> and `orchestrator e2e --chrome` drives a real job through it. See
+> [Chrome-only dev](docs/new-server-setup.md#chrome-only-dev-no-multilogin--proxy--s3-accounts).
+
 First, set up GitHub authentication for private repository access (see [Private Repository Setup](#private-repository-setup)), then:
 
 ```bash

@@ -207,12 +207,22 @@ def setup(
         console.print("  [yellow]⚠[/yellow] Chrome not found (required for browser automation)")
         console.print("    [dim]Install: sudo apt install google-chrome-stable[/dim]")
 
-    # Check Multilogin X (optional)
+    # Check Multilogin X.
+    #
+    # It used to be called "optional" here, which is wrong with the defaults: the
+    # runner signs in to Multilogin at boot and the process exits when
+    # multilogin.apiPassword is blank. It is optional only in the sense that
+    # `orchestrator up --dev` does not need it.
     if shutil.which("mlx"):
         console.print("  [green]✓[/green] Multilogin X (mlx) installed")
     else:
         console.print(
-            "  [dim]○[/dim] Multilogin X not found (optional, for production browser profiles)"
+            "  [yellow]⚠[/yellow] Multilogin X not found — required for the default "
+            "(Multilogin) browser; the runner exits at startup without it"
+        )
+        console.print(
+            "    [dim]Not needed with `orchestrator up --dev` (plain Chrome, "
+            "see docs/new-server-setup.md)[/dim]"
         )
 
     # Check Node.js (for GUI - optional if Docker available)
@@ -890,7 +900,7 @@ def setup(
 # =============================================================================
 
 
-def _get_component_manager(settings, lambda_server_enabled: bool = True):
+def _get_component_manager(settings, lambda_server_enabled: bool = True, chrome_dev: bool = False):
     """Create ComponentManager from settings."""
     from orchestrator.components import ComponentManager
 
@@ -905,6 +915,7 @@ def _get_component_manager(settings, lambda_server_enabled: bool = True):
         runner_java_opts=settings.runner_java_opts,
         runner_spring_profile=settings.runner_spring_profile,
         runner_log_path=Path(settings.pm_runner_log_path).resolve(),
+        runner_chrome_dev=chrome_dev,
         lambda_server_enabled=lambda_server_enabled,
     )
 
@@ -1014,8 +1025,21 @@ def _check_url(
 @click.option(
     "--lambda-local/--no-lambda-local", default=True, help="Start local Lambda server (for runner)"
 )
+@click.option(
+    "--dev",
+    is_flag=True,
+    help="Chrome-only dev mode: run the runner with the chrome-dev Spring profile "
+    "(plain headless Chrome, no Multilogin / proxy / S3 account)",
+)
 @click.pass_context
-def up(ctx: click.Context, api: bool, runner: bool, monitoring: bool, lambda_local: bool) -> None:
+def up(
+    ctx: click.Context,
+    api: bool,
+    runner: bool,
+    monitoring: bool,
+    lambda_local: bool,
+    dev: bool,
+) -> None:
     """
     Start PrimeMover components.
 
@@ -1025,10 +1049,14 @@ def up(ctx: click.Context, api: bool, runner: bool, monitoring: bool, lambda_loc
     3. API (Apache, PHP, MySQL, Redis)
     4. Runner (Java process)
 
+    --dev adds the runner's chrome-dev profile: plain headless Chrome, no
+    Multilogin sign-in, no proxy, no S3. Nothing else changes.
+
     Examples:
         orchestrator up                   # Start all components
         orchestrator up --no-runner       # Start API and monitoring only
         orchestrator up --no-lambda-local # Use AWS Lambda instead of local
+        orchestrator up --dev             # Chrome-only, no Multilogin account needed
     """
     settings = ctx.obj["settings"]
 
@@ -1040,8 +1068,14 @@ def up(ctx: click.Context, api: bool, runner: bool, monitoring: bool, lambda_loc
         return
 
     console.print("[bold]Starting PrimeMover components...[/bold]\n")
+    if dev:
+        console.print(
+            "[cyan]chrome-dev mode:[/cyan] runner profile "
+            f"[bold]{settings.runner_spring_profile},chrome-dev[/bold] "
+            "— plain headless Chrome, no Multilogin\n"
+        )
 
-    manager = _get_component_manager(settings, lambda_server_enabled=lambda_local)
+    manager = _get_component_manager(settings, lambda_server_enabled=lambda_local, chrome_dev=dev)
     system_status = manager.start(
         api=api, runner=runner, monitoring=monitoring, lambda_server=lambda_local
     )
@@ -1122,19 +1156,34 @@ def down(
 @click.option("--runner", is_flag=True, help="Restart Runner component")
 @click.option("--monitoring", is_flag=True, help="Restart Monitoring component")
 @click.option("--lambda-local", is_flag=True, help="Restart Lambda Server component")
+@click.option(
+    "--dev",
+    is_flag=True,
+    help="Chrome-only dev mode: relaunch the runner with the chrome-dev Spring profile",
+)
 @click.pass_context
 def restart(
-    ctx: click.Context, api: bool, runner: bool, monitoring: bool, lambda_local: bool
+    ctx: click.Context,
+    api: bool,
+    runner: bool,
+    monitoring: bool,
+    lambda_local: bool,
+    dev: bool,
 ) -> None:
     """
     Restart PrimeMover components.
 
     Stops then starts the specified components.
 
+    --dev relaunches the runner with the chrome-dev profile (as `up --dev`).
+    Without it the runner comes back on the configured profile, so a restart
+    leaves chrome-dev mode.
+
     Examples:
         orchestrator restart              # Restart all components
         orchestrator restart --runner     # Restart just the runner
         orchestrator restart --api --runner  # Restart API and runner
+        orchestrator restart --runner --dev  # Back up in chrome-dev mode
     """
     settings = ctx.obj["settings"]
 
@@ -1143,8 +1192,14 @@ def restart(
         api = runner = monitoring = lambda_local = True
 
     console.print("[bold]Restarting PrimeMover components...[/bold]\n")
+    if dev:
+        console.print(
+            "[cyan]chrome-dev mode:[/cyan] runner profile "
+            f"[bold]{settings.runner_spring_profile},chrome-dev[/bold] "
+            "— plain headless Chrome, no Multilogin\n"
+        )
 
-    manager = _get_component_manager(settings)
+    manager = _get_component_manager(settings, chrome_dev=dev)
     system_status = manager.restart(
         api=api, runner=runner, monitoring=monitoring, lambda_server=lambda_local
     )
@@ -1180,6 +1235,32 @@ def _decision_function_health(port: int = 5001) -> dict[str, Any]:
     except Exception:  # noqa: BLE001 - an unreachable service is not doctor's failure
         return {}
     return functions if isinstance(functions, dict) else {}
+
+
+def _multilogin_secrets_path(settings) -> Path:
+    """Where the runner reads its Multilogin credentials from."""
+    return Path(settings.get_runner_path()) / "primemover-runner" / "config" / "secrets.properties"
+
+
+def _multilogin_password_state(secrets_file: Path) -> str:
+    """Whether ``multilogin.apiPassword`` is usable, without ever reading it out.
+
+    Returns one of ``"missing-file"``, ``"missing-key"``, ``"blank"`` or
+    ``"set"``. The value itself is never returned, logged or printed.
+    """
+    try:
+        content = secrets_file.read_text()
+    except OSError:
+        return "missing-file"
+
+    for line in content.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("#") or stripped.startswith("!") or "=" not in stripped:
+            continue
+        key, _, value = stripped.partition("=")
+        if key.strip() == "multilogin.apiPassword":
+            return "set" if value.strip() else "blank"
+    return "missing-key"
 
 
 @cli.command()
@@ -1403,6 +1484,43 @@ def doctor(ctx: click.Context) -> None:
             console.print(f"  [green]✓[/green] {label.split(' (')[0]} set")
         else:
             console.print(f"  [yellow]⚠[/yellow] {label} not set")
+
+    # Multilogin credentials, runner-side.
+    #
+    # With the default (Multilogin) browser the runner signs in at boot and the
+    # process *exits* when multilogin.apiPassword is blank. `orchestrator up`
+    # then says only "Runner process exited unexpectedly"; the authentication
+    # failure is in runner-stdout.log or the journal. Cheap to see here,
+    # expensive to find there. The value is never read out, only its presence.
+    secrets_file = _multilogin_secrets_path(settings)
+    if _multilogin_password_state(secrets_file) == "set":
+        console.print("  [green]✓[/green] Multilogin credentials: set")
+    else:
+        console.print(
+            "  [yellow]⚠[/yellow] Multilogin credentials: not set — the default runner "
+            "exits at startup; use `orchestrator up --dev` for Chrome-only local work "
+            "or fill in multilogin.apiPassword"
+        )
+        console.print(f"      [dim]{secrets_file}[/dim]")
+
+    # How the runner that is *running right now* was launched. Only reported when
+    # `orchestrator up` started it: a systemd-owned or hand-started runner leaves
+    # no record, and guessing from configuration is how a box comes to claim
+    # chrome-dev while running the Multilogin path.
+    from orchestrator.components.runner import RunnerComponent
+
+    running_profiles = RunnerComponent(
+        path=runner_path, spring_profile=settings.runner_spring_profile
+    ).running_profiles()
+    if running_profiles and RunnerComponent.is_chrome_dev(running_profiles):
+        console.print(
+            f"  [green]✓[/green] runner mode: chrome-dev ({running_profiles}) — "
+            "plain headless Chrome, no Multilogin"
+        )
+    elif running_profiles:
+        console.print(
+            f"  [dim]-[/dim] runner mode: default browser, Multilogin ({running_profiles})"
+        )
 
     # The decision symlink: the local Lambda server falls back to it when no
     # registry names the functions this box hosts.
