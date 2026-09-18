@@ -495,7 +495,9 @@ def test_corrupted_csv_is_detected_with_the_sibling_repos_rules(
 @pytest.mark.skipif(not _HAS_SIBLING_REPO, reason="bot-decision-yt checkout not available")
 def test_the_real_shipped_csv_is_healthy():
     """The gate must pass on the file production actually reads, or it will be bypassed."""
-    state = server.check_mainstream_media_csv()
+    # Explicit: conftest points DECISION_DIR at a stand-in package for every
+    # test, and this is the one test that is *about* the real symlink.
+    state = server.check_mainstream_media_csv(REAL_DECISION_DIR)
     assert state["ok"] is True, state["problems"]
     assert state["checked_by"].endswith("test_mainstream_media_csv.py")
 

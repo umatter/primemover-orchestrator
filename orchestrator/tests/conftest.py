@@ -187,7 +187,9 @@ def reset_settings_cache() -> Generator[None, None, None]:
 
 
 @pytest.fixture(autouse=True)
-def isolate_decision_registry(monkeypatch: pytest.MonkeyPatch) -> None:
+def isolate_decision_registry(
+    monkeypatch: pytest.MonkeyPatch, tmp_path_factory: pytest.TempPathFactory
+) -> None:
     """Never let the developer's own decision-function registry decide a test.
 
     ``DECISION_FUNCTIONS_FILE`` defaults to
@@ -197,6 +199,16 @@ def isolate_decision_registry(monkeypatch: pytest.MonkeyPatch) -> None:
     a CI/laptop disagreement nobody can reproduce. Point it at a path that
     cannot exist; a test that wants a registry writes one under ``tmp_path`` and
     sets the variable itself (a later ``setenv`` wins).
+
+    The same goes for the no-registry fallback's ``decision`` symlink: it
+    resolves into the sibling ``bot-decision-yt`` checkout, which CI never
+    clones. Any request that reaches ``get_registry()`` -- even the log line
+    naming the function that served ``/invoke`` -- runs ``ensure_decision_cwd``
+    and logs an ERROR when that target is missing, so seven tests asserting a
+    clean log passed on every laptop and failed on master's CI (a2b2fac).
+    Point the fallback at a minimal package under a temp dir instead; a test
+    about the symlink itself sets ``server.DECISION_DIR`` (a later ``setattr``
+    wins).
 
     Also drops the server's cached registry, which is module state.
     """
@@ -208,6 +220,11 @@ def isolate_decision_registry(monkeypatch: pytest.MonkeyPatch) -> None:
         from orchestrator.lambda_service import server
 
         server._registry = None
+        decision = tmp_path_factory.mktemp("decision")
+        (decision / "lambda_function.py").write_text(
+            "def select_recommendation(event):\n    return {}\n"
+        )
+        monkeypatch.setattr(server, "DECISION_DIR", decision)
 
 
 @pytest.fixture(autouse=True)
