@@ -1188,8 +1188,23 @@ installed with `sudo scripts/install-systemd-services.sh`:
   `docs/har-spool-drain.md` for setup. Optional; enable when off-host HAR
   archival is wanted.
 
+**Chrome-only dev mode.** `orchestrator up --dev` (and `restart --dev`) adds the
+runner's `chrome-dev` Spring profile to the configured one, so the runner drives
+plain headless Chrome with `multilogin.enabled=false` — a developer with no
+Multilogin account, no proxy and no S3 key can run the stack and `orchestrator
+e2e --chrome`. Only `backend.password` (runner→API), `PM_API_*` and
+`GRAFANA_ADMIN_PASSWORD` are still required. Without it, a blank
+`multilogin.apiPassword` kills the runner during Spring's context refresh and
+`orchestrator up` says only "Runner process exited unexpectedly"; `doctor` now
+warns about the credential before the fact and reports the runner's mode from the
+launch record beside the PID file (`/tmp/primemover-runner.launch`), never from
+settings — a systemd-owned runner leaves no record and reads as unknown.
+`scripts/full-startup.sh --no-multilogin` is the same mode for the manual path.
+Nothing about the default (Multilogin) path changes. Details:
+`docs/new-server-setup.md` § Chrome-only dev.
+
 Helper scripts in `scripts/`:
-- `full-startup.sh [--no-runner|--check]` — brings up VNC, Docker, monitoring,
+- `full-startup.sh [--no-runner|--no-multilogin|--check]` — brings up VNC, Docker, monitoring,
   Multilogin, the Lambda service, and the runner in order (alternative to
   systemd for manual starts). Note its runner step redirects stdout to
   `log/runner-stdout.log` with **no rotation** — that file had reached 208 MB.

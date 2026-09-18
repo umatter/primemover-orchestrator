@@ -11,9 +11,11 @@
 # 6. Runner (if not using systemd)
 #
 # Usage:
-#   ./full-startup.sh              # Start all components
-#   ./full-startup.sh --no-runner  # Start without runner
-#   ./full-startup.sh --check      # Only check, don't start
+#   ./full-startup.sh                  # Start all components
+#   ./full-startup.sh --no-runner      # Start without runner
+#   ./full-startup.sh --no-multilogin  # Chrome-only dev mode: skip VNC + Multilogin
+#                                      # and run the runner with the chrome-dev profile
+#   ./full-startup.sh --check          # Only check, don't start
 #
 
 set -e
@@ -35,11 +37,21 @@ log_warn() { echo -e "${YELLOW}⚠${NC} $1"; }
 
 START_RUNNER=true
 CHECK_ONLY=false
+# Chrome-only dev mode: no Multilogin account, no proxy, no S3. The runner's
+# chrome-dev profile turns Multilogin off and runs headless Chrome, so neither
+# the VNC display nor the Multilogin agent/desktop is needed.
+USE_MULTILOGIN=true
+RUNNER_PROFILES="local"
 
 while [[ $# -gt 0 ]]; do
     case $1 in
         --no-runner)
             START_RUNNER=false
+            shift
+            ;;
+        --no-multilogin)
+            USE_MULTILOGIN=false
+            RUNNER_PROFILES="local,chrome-dev"
             shift
             ;;
         --check)
@@ -63,7 +75,9 @@ echo ""
 # Step 1: VNC Server
 # =============================================================================
 log "Step 1: VNC Server"
-if systemctl is-active --quiet vncserver@1; then
+if [[ "$USE_MULTILOGIN" == "false" ]]; then
+    log_success "Skipped (chrome-dev mode: headless Chrome needs no display)"
+elif systemctl is-active --quiet vncserver@1; then
     log_success "VNC Server already running"
 else
     if [[ "$CHECK_ONLY" == "false" ]]; then
@@ -131,6 +145,10 @@ done
 # =============================================================================
 log "Step 4: Multilogin"
 
+if [[ "$USE_MULTILOGIN" == "false" ]]; then
+    log_success "Skipped (chrome-dev mode: the runner does not sign in to Multilogin)"
+else  # --- the whole Multilogin step, to the "end Multilogin step" marker below
+
 # Start agent
 if pgrep -f "agent.bin" > /dev/null 2>&1; then
     log_success "Multilogin Agent already running"
@@ -175,6 +193,8 @@ else
     log_warn "Multilogin Launcher API not responding - manual login may be required"
 fi
 
+fi  # --- end Multilogin step
+
 # =============================================================================
 # Step 5: Lambda Service
 # =============================================================================
@@ -213,7 +233,7 @@ if [[ "$START_RUNNER" == "true" ]]; then
             RUNNER_DIR="/home/primemover/primemover_runner/primemover-runner"
             cd "$RUNNER_DIR"
             nohup java -Xmx2g -Xms512m -jar target/primemover-runner-*.jar \
-                --spring.profiles.active=local \
+                --spring.profiles.active="$RUNNER_PROFILES" \
                 --spring.config.location=config/ \
                 > log/runner-stdout.log 2>&1 &
             sleep 10
@@ -247,7 +267,7 @@ echo "  $SCRIPT_DIR/monitor-memory.sh --watch"
 echo ""
 
 # Check if Multilogin needs manual login
-if ! curl -sf -k https://launcher.mlx.yt:45001/api/v2 > /dev/null 2>&1; then
+if [[ "$USE_MULTILOGIN" == "true" ]] && ! curl -sf -k https://launcher.mlx.yt:45001/api/v2 > /dev/null 2>&1; then
     echo -e "${YELLOW}NOTE: Multilogin may require manual login via VNC.${NC}"
     echo "Connect to VNC and log in to Multilogin X to enable browser automation."
     echo ""

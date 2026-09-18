@@ -36,6 +36,68 @@ orchestrator setup --skip-clone
 Sibling layout (all under one parent): `primemover-orchestrator`,
 `primemover_api`, `primemover_runner`, `bot-decision-yt`, `primemover_gui`.
 
+### Chrome-only dev (no Multilogin / proxy / S3 accounts)
+
+Everything below §3 provisions external accounts. A developer who only wants to
+drive a bot through a browser locally needs none of them:
+
+```bash
+orchestrator up --dev        # runner on profiles: local,chrome-dev
+orchestrator e2e --chrome    # a real job, plain Chrome, ~3 min
+```
+
+`--dev` adds the runner's **`chrome-dev`** Spring profile
+(`primemover_runner/primemover-runner/config/application-chrome-dev.properties`)
+to the configured one — it is added, not substituted, so the rest of the
+deployment's configuration still applies. That profile sets
+`multilogin.enabled=false` (no MLX beans, so no sign-in is attempted),
+`runner.chromeHeadless=true` (no VNC display needed), `recorder.enabled=false`,
+local job-data storage instead of S3, and `lambda.mode=local`. Nothing else
+about `orchestrator up` changes: monitoring, the API and the local Lambda server
+start exactly as they do by default, and without the flag every launch is the
+production path.
+
+The mode is only in force for as long as that process lives. A plain
+`orchestrator restart` brings the runner back on the configured profile, so use
+`orchestrator restart --runner --dev` to stay in it. `orchestrator status` shows
+`chrome-dev` on the Runner row, and `orchestrator doctor` prints a
+`runner mode:` line — both read what the *running* runner was launched with, not
+what the settings say.
+
+**What still needs credentials**, chrome-dev or not:
+
+| where | key | why |
+|---|---|---|
+| runner `config/secrets.properties` | `backend.password` | the runner logs in to the local API to be given any work at all — the one secret a chrome-dev box cannot do without |
+| orchestrator `.env` | `PM_API_EMAIL`, `PM_API_PASSWORD` | the orchestrator's own API login |
+| orchestrator `.env` | `GRAFANA_ADMIN_PASSWORD` | Grafana refuses to start without it |
+
+`multilogin.apiPassword`, `awsS3.*`, the proxy records and `JOBDATA_S3_*` can all
+stay blank. The decision function's `OPENAI_API_KEY` is only needed for the LLM
+filters — a control-arm workflow runs without it.
+
+**The symptom this fixes.** With the default (Multilogin) browser and a blank
+`multilogin.apiPassword`, the runner signs in during Spring's context refresh and
+the process exits. `orchestrator up` reports only:
+
+```
+Runner process exited unexpectedly
+```
+
+and the actual Multilogin authentication failure is in
+`primemover-runner/log/runner-stdout.log` (or `journalctl -u primemover-runner`
+under systemd). `orchestrator doctor` now says so before the fact:
+
+```
+⚠ Multilogin credentials: not set — the default runner exits at startup;
+  use `orchestrator up --dev` for Chrome-only local work
+  or fill in multilogin.apiPassword
+```
+
+`scripts/full-startup.sh --no-multilogin` is the same thing for the manual
+startup path: it skips the VNC and Multilogin steps and starts the runner on
+`local,chrome-dev`.
+
 ## 3. The decision functions (local Lambda server)
 
 One local server hosts every decision function this box runs, addressed by the

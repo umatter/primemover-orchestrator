@@ -87,7 +87,11 @@ repos:
           - '--baseline'
           - '.secrets.baseline'
           - '--exclude-secrets'
-          - '^(password|pass|testpass|s3cret|secret123|your-password|rotated|PROXY_PASSWORD_PLACEHOLDER|secret|key|MINIO_ACCESS_KEY|MINIO_SECRET_KEY)$'
+          # "ok" is the value of the `secrets_store` field in the /health JSON
+          # documented in CLAUDE.md -- a status word, not a credential. Without
+          # it this hook fails on every commit that touches CLAUDE.md, which is
+          # how a hook teaches people to pass --no-verify.
+          - '^(password|pass|testpass|s3cret|secret123|your-password|rotated|ok|PROXY_PASSWORD_PLACEHOLDER|secret|key|MINIO_ACCESS_KEY|MINIO_SECRET_KEY)$'
         exclude: (package\.lock\.json|^\.secrets\.baseline$)
 
   # Full test suite, on push only.

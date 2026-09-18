@@ -90,6 +90,7 @@ class ComponentManager:
         runner_java_opts: str | None = None,
         runner_spring_profile: str = "local",
         runner_log_path: Path | None = None,
+        runner_chrome_dev: bool = False,
         lambda_server_port: int = 5001,
         lambda_server_enabled: bool = True,
     ):
@@ -107,6 +108,8 @@ class ComponentManager:
             runner_java_opts: JVM options for runner
             runner_spring_profile: Spring profile for runner
             runner_log_path: Custom log directory for runner
+            runner_chrome_dev: Also activate the runner's chrome-dev profile
+                (plain Chrome, no Multilogin)
             lambda_server_port: Port for local Lambda server
             lambda_server_enabled: Whether to enable local Lambda server
         """
@@ -132,6 +135,7 @@ class ComponentManager:
                 java_opts=runner_java_opts,
                 spring_profile=runner_spring_profile,
                 log_path=runner_log_path,
+                chrome_dev=runner_chrome_dev,
             )
 
         if orchestrator_path:
@@ -454,6 +458,11 @@ class ComponentManager:
             runner_details.append(f"PID: {runner.details['pid']}")
         if runner.details.get("memory_mb"):
             runner_details.append(f"{runner.details['memory_mb']}MB")
+        if runner.details.get("chrome_dev"):
+            # Which browser path the runner is on is not cosmetic: chrome-dev runs
+            # plain Chrome with no Multilogin profile, so no fingerprinting and no
+            # per-bot exit IP. That must be visible without --verbose.
+            runner_details.append("chrome-dev")
         table.add_row(
             "Runner",
             f"[{runner_style}]{runner.status.value.upper()}[/{runner_style}]",
@@ -573,7 +582,8 @@ class ComponentManager:
         )
 
         if runner.is_healthy and runner.details.get("profile"):
-            runner_branch.add(f"[dim]Spring Profile: {runner.details['profile']}[/dim]")
+            mode = " (plain Chrome, no Multilogin)" if runner.details.get("chrome_dev") else ""
+            runner_branch.add(f"[dim]Spring Profile: {runner.details['profile']}{mode}[/dim]")
         if runner.details.get("log_file"):
             runner_branch.add(f"[dim]Log: {runner.details['log_file']}[/dim]")
 

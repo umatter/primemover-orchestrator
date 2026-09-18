@@ -5,6 +5,7 @@ Manages the Spring Boot Java runner application with PID-based process tracking.
 """
 
 import fcntl
+import json
 import os
 import shutil
 import signal
@@ -93,12 +94,19 @@ class RunnerComponent(BaseComponent):
     # It never writes PID_FILE, so every PID-file-only check reads "stopped" there.
     SYSTEMD_UNIT = "primemover-runner"
 
+    # Spring profile the runner ships for Chrome-only local work: Multilogin off,
+    # headless Chrome, no recorder, local storage, local lambda. It is *added* to
+    # the configured profile, never substituted for it, so everything else about
+    # the deployment's configuration still applies.
+    CHROME_DEV_PROFILE = "chrome-dev"
+
     def __init__(
         self,
         path: Path,
         java_opts: str | None = None,
         spring_profile: str = "local",
         log_path: Path | None = None,
+        chrome_dev: bool = False,
     ):
         """
         Initialize Runner component.
@@ -108,13 +116,52 @@ class RunnerComponent(BaseComponent):
             java_opts: JVM options (default: -Xmx2g -Xms512m)
             spring_profile: Spring profile to use (default: local)
             log_path: Custom log directory path (default: path/primemover-runner/log)
+            chrome_dev: Also activate the runner's chrome-dev profile (plain Chrome,
+                no Multilogin / proxy / S3 account needed)
         """
         super().__init__(name="Runner", path=path)
         self.java_opts = java_opts or self.DEFAULT_JAVA_OPTS
         self.spring_profile = spring_profile
+        self.chrome_dev = chrome_dev
         self._jar_path: Path | None = None
         self._config_path: Path | None = None
         self._log_path: Path | None = log_path
+
+    @property
+    def active_profiles(self) -> str:
+        """The value passed as ``--spring.profiles.active`` for this configuration."""
+        profiles = [p for p in self.spring_profile.split(",") if p]
+        if self.chrome_dev and self.CHROME_DEV_PROFILE not in profiles:
+            profiles.append(self.CHROME_DEV_PROFILE)
+        return ",".join(profiles)
+
+    @property
+    def launch_file(self) -> Path:
+        """Sidecar recording how the *running* runner was actually launched.
+
+        ``status`` and ``doctor`` are separate invocations that rebuild the
+        component from settings, so without this they would report the profile
+        that would be used *next* time rather than the one in force. Kept next to
+        the PID file so both are written, read and removed together.
+        """
+        return self.PID_FILE.with_suffix(".launch")
+
+    @staticmethod
+    def is_chrome_dev(profiles: str) -> bool:
+        """True when ``profiles`` (a comma-separated list) activates chrome-dev."""
+        return RunnerComponent.CHROME_DEV_PROFILE in [p for p in profiles.split(",") if p]
+
+    def running_profiles(self) -> str | None:
+        """Profiles the live runner was launched with, or None if that is unknown.
+
+        Unknown means unknown: no runner, or one started by something that left no
+        record (systemd, a bare ``java -jar``). Never guess from configuration —
+        that is how a box reports chrome-dev while running the Multilogin path.
+        """
+        pid, source = self._resolve_pid()
+        if pid is None or source != "pidfile":
+            return None
+        return self._launched_profiles(pid)
 
     @property
     def jar_path(self) -> Path | None:
@@ -203,7 +250,7 @@ class RunnerComponent(BaseComponent):
                     *self.java_opts.split(),
                     "-jar",
                     str(jar),
-                    f"--spring.profiles.active={self.spring_profile}",
+                    f"--spring.profiles.active={self.active_profiles}",
                     f"--spring.config.location={self.config_path}/",
                 ]
 
@@ -234,6 +281,7 @@ class RunnerComponent(BaseComponent):
 
                     # Save PID atomically
                     self._write_pid(process.pid)
+                    self._write_launch_record(process.pid, self.active_profiles)
 
                     # Wait for startup
                     if self._wait_for_startup(process.pid):
@@ -243,7 +291,8 @@ class RunnerComponent(BaseComponent):
                             details={
                                 "pid": process.pid,
                                 "log_file": str(log_file),
-                                "profile": self.spring_profile,
+                                "profile": self.active_profiles,
+                                "chrome_dev": self.is_chrome_dev(self.active_profiles),
                             },
                         )
                     else:
@@ -576,12 +625,35 @@ class RunnerComponent(BaseComponent):
             self.PID_FILE.write_text(str(pid))
 
     def _remove_pid_file(self) -> None:
-        """Remove PID file safely."""
+        """Remove PID file (and the launch record beside it) safely."""
+        for path in (self.PID_FILE, self.launch_file):
+            try:
+                if path.exists():
+                    path.unlink()
+            except OSError:
+                pass  # Ignore errors during cleanup
+
+    def _write_launch_record(self, pid: int, profiles: str) -> None:
+        """Record how this launch was configured. Best effort: never fail a start."""
         try:
-            if self.PID_FILE.exists():
-                self.PID_FILE.unlink()
+            self.launch_file.write_text(json.dumps({"pid": pid, "profiles": profiles}))
         except OSError:
-            pass  # Ignore errors during cleanup
+            pass
+
+    def _launched_profiles(self, pid: int) -> str | None:
+        """Profiles recorded for ``pid``, or None if there is no record for it.
+
+        The PID check is what keeps the record honest: a file left behind by an
+        earlier runner must not describe the one running now.
+        """
+        try:
+            record = json.loads(self.launch_file.read_text())
+        except (OSError, ValueError):
+            return None
+        if not isinstance(record, dict) or record.get("pid") != pid:
+            return None
+        profiles = record.get("profiles")
+        return profiles if isinstance(profiles, str) and profiles else None
 
     def _is_process_running(self, pid: int) -> bool:
         """Check if a process with the given PID is running."""
@@ -640,7 +712,11 @@ class RunnerComponent(BaseComponent):
             pass
 
         details["log_file"] = str(self.log_path / "runner-stdout.log")
-        details["profile"] = self.spring_profile
+        # What the running process was started with, when that was recorded;
+        # otherwise the configured value, which is all this component knows.
+        profiles = self._launched_profiles(pid) or self.active_profiles
+        details["profile"] = profiles
+        details["chrome_dev"] = self.is_chrome_dev(profiles)
 
         return details
 
