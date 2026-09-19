@@ -64,6 +64,17 @@ act on. Never guess an id — read it.
   `compile_experiment_spec(files={"<name runs_for: uses>": <lock text>})` to compile one. The DSL, and the treatment-param traps
   (pi/psi/kappa/tau are **0/1 switches**), are in the `doc://pmspec` and
   `doc://treatment-params` MCP resources.
+- **A lock over ~200 KB does not fit in a tool call** (it travels through the context; a 500-bot
+  lock is megabytes). Have the user `scp` it to the box's lock drop directory —
+  `scp my-study.lock.yaml ex63:.local/share/pmspec/locks/` — and pass a reference instead of the
+  text: `upload_experiment(lock_path="my-study.lock.yaml", mode=…)`,
+  `verify_experiment(id, lock_path=…)`, `audit_experiment(id, lock_path=…)`,
+  `experiment_status(id, lock_path=…)`, `diff_locks(lock_a_path=…, lock_b_path=…)`, and
+  `compile_experiment_spec(file_paths={"<name runs_for: uses>": "my-study.lock.yaml"})` for a runs
+  spec's fleet lock. Exactly one of the content and path form per lock. Nothing outside that
+  directory can be read. Report the `lock_sha256` the tool echoes and ask the user to check it
+  against `sha256sum` of the committed lock — a stale copy in the drop directory is otherwise
+  indistinguishable from the right one.
 
 ### Step 3 — Compose the run (preferred: one call)
 Prefer `pm_compose_run` — it builds the run + ordered jobs + each job's behaviours in one go:
@@ -87,6 +98,7 @@ auto-orders and chains) → `pm_set_behaviour` per parameter.
 
 ### Checking on it after upload
 Once a pmspec upload has gone through, `experiment_status(experiment_id, lock_content=<lock text>)`
+— or `experiment_status(experiment_id, lock_path="<name in the drop dir>")` for a big lock —
 is the one call worth reaching for: provenance (what was uploaded), health, and — because a lock is
 in hand — whether the live experiment is still bound to, and identical to, it, all in one response.
 It supersedes a separate `verify_experiment` call for this purpose.

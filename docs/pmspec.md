@@ -292,6 +292,53 @@ locks' provenance, anchor and crawler structure with no live experiment or API c
 `pmspec audit` — did each finished lambda job apply the treatment the lock says it should.
 `summarize_yaml_spec` accepts a lock as well as a spec (auto-detected), like `pmspec summary`.
 
+#### Big locks: the drop directory (`lock_path`)
+
+**A lock much over ~200 KB cannot be passed as `lock_content` at all**, and a 500-bot lock is
+several megabytes: the argument reaches the tool through the model's context, so the studies
+whose randomisation record matters most are exactly the ones that do not fit. Compressing it
+does not help — the argument still travels the same way. Such a lock goes to the box out of
+band and the tool takes a *reference*:
+
+```bash
+scp design/my-study.lock.yaml ex63:.local/share/pmspec/locks/     # once, per lock
+sha256sum design/my-study.lock.yaml                               # to compare with the echo
+```
+
+```
+upload_experiment(lock_path="my-study.lock.yaml", mode="real", dry_run=True)
+verify_experiment(181, lock_path="my-study.lock.yaml")
+audit_experiment(181, lock_path="my-study.lock.yaml", hours=24)
+experiment_status(181, lock_path="my-study.lock.yaml")
+diff_locks(lock_a_path="v1.lock.yaml", lock_b_path="v2.lock.yaml")
+compile_experiment_spec(runs_spec, file_paths={"fleet.lock.yaml": "my-study.lock.yaml"}, seed=…)
+```
+
+Exactly one of `lock_content` and `lock_path` on each of them (`experiment_status` also accepts
+neither, since a status without a lock is a valid question; `diff_locks` takes one form per
+side). `file_paths` on `compile_experiment_spec`/`validate_experiment_spec` is `files` with
+drop-dir paths instead of content — which is how a runs spec's base **fleet lock**, itself a
+lock, gets there — and a name given in both is an error.
+
+Every one of them echoes **`lock_sha256`** (`lock_a_sha256`/`lock_b_sha256` for the diff, a
+`file_sha256` map for compile/validate) for the text it actually read. Compare it with
+`sha256sum` of the committed file: that is the only thing that distinguishes the lock you meant
+from a stale copy left in the drop directory by an earlier attempt.
+
+The directory is `PMSPEC_LOCK_DIR`, default `~/.local/share/pmspec/locks`, and it is **the only
+place the MCP will read a file from**. A relative path resolves inside it; an absolute path must
+already be inside it; `..` is refused; and the check is made after `realpath()`, so a symlink
+dropped there cannot point out of it. That is not tidiness — the shared HTTP MCP is reachable
+with every token in `MCP_AUTH_TOKENS`, and an unfenced path argument would be a general file
+reader (`.env`, `secrets.toml`, another group's study) for anyone holding one.
+
+Scripts do not need the MCP for this at all: the same directory is an ordinary directory, and
+the CLI on the box reads any path.
+
+```bash
+ssh ex63 pmspec upload ~/.local/share/pmspec/locks/my-study.lock.yaml --mode real -e 181
+```
+
 ## The strict contract
 
 `pmspec validate`, `pmspec compile` and MCP `compile_experiment_spec`/`validate_experiment_spec`

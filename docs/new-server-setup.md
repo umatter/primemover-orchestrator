@@ -177,6 +177,17 @@ Decision function: `OPENAI_API_KEY` in the Lambda service's environment (the
 `primemover-lambda` systemd unit's `EnvironmentFile`, or the shell for a manual
 run). Without it the LLM filters are skipped and every treated arm degrades.
 
+The lock drop directory, which the MCP reads `lock_path` arguments from (a
+500-bot lock is megabytes and cannot travel through a tool call):
+
+```bash
+mkdir -p ~/.local/share/pmspec/locks     # or set PMSPEC_LOCK_DIR in .env
+```
+
+It is the **only** directory the MCP will read a file from, so anyone who may
+upload a study needs write access to it and to nothing else; locks arrive by
+`scp`. `orchestrator doctor` prints the path and whether it exists.
+
 ## 5. The job-data (MinIO) reader key
 
 Job data (HAR, page source, lambda payloads) goes to MinIO, and the orchestrator

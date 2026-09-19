@@ -12,6 +12,9 @@ from pathlib import Path
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+#: Where locks are dropped for the MCP when PMSPEC_LOCK_DIR says nothing.
+DEFAULT_PMSPEC_LOCK_DIR = Path.home() / ".local" / "share" / "pmspec" / "locks"
+
 
 class Settings(BaseSettings):
     """Orchestrator configuration from environment variables."""
@@ -201,8 +204,34 @@ class Settings(BaseSettings):
     )
 
     # ==========================================================================
+    # pmspec lock drop directory
+    # ==========================================================================
+    # Where a lock file is left for the MCP to read (`lock_path` on the
+    # lock-taking tools). A 500-bot lock is megabytes of YAML, and a
+    # ``lock_content`` argument travels through the model's context to reach the
+    # tool -- so the biggest studies cannot be uploaded, verified or audited over
+    # the MCP at all. They arrive out of band (scp) and the tool takes a path.
+    #
+    # It is the ONLY directory the MCP will read a lock from, because the shared
+    # HTTP MCP is reachable with other people's bearer tokens and a path argument
+    # must never become a general file reader. Box-specific, like the secrets
+    # store and the decision-function registry.
+    pmspec_lock_dir: Path | None = Field(
+        default=None,
+        alias="PMSPEC_LOCK_DIR",
+        description="Directory the MCP reads lock files from "
+        "(default: ~/.local/share/pmspec/locks)",
+    )
+
+    # ==========================================================================
     # Helper Methods
     # ==========================================================================
+    def get_pmspec_lock_dir(self) -> Path:
+        """The lock drop directory, expanded. The directory need not exist."""
+        if self.pmspec_lock_dir is not None:
+            return Path(self.pmspec_lock_dir).expanduser()
+        return DEFAULT_PMSPEC_LOCK_DIR
+
     def get_decision_functions_file(self) -> Path:
         """The registry path, expanded. The file need not exist."""
         from orchestrator.lambda_service.registry import registry_path
