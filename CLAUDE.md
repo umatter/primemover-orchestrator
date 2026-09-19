@@ -946,6 +946,16 @@ only allows the local API and the `${secret:…}` store is a mode-600 file on th
 secret leaves it. `pmspec secrets init|check` is a one-time shell step on ex63 and deliberately
 not an MCP tool. On a machine that runs the stack itself the CLI does both halves.
 
+**A lock over ~200 KB cannot be passed as `lock_content`** — that argument travels through the
+model's context, and a 500-bot lock is megabytes. It goes to the box out of band
+(`scp x.lock.yaml ex63:.local/share/pmspec/locks/`) and every lock-taking MCP tool takes
+`lock_path="x.lock.yaml"` instead (`file_paths` on compile/validate, for a runs spec's fleet
+lock). `PMSPEC_LOCK_DIR` (default `~/.local/share/pmspec/locks`) is the **only** directory the
+MCP reads a file from — `..` refused, symlinks resolved before the containment check — because
+a path argument on a surface reachable with other people's tokens is otherwise a general file
+reader. Each tool echoes `lock_sha256` of the text it read; compare with `sha256sum`. Scripts
+skip the MCP: `ssh ex63 pmspec upload ~/.local/share/pmspec/locks/x.lock.yaml --mode real -e <id>`.
+
 Day to day, once a study is running: `pmspec status <id> [lock] [--hours N] [--deep]` (provenance +
 health always; with a lock, also `verify`), `pmspec diff <lock_a> <lock_b>` (compare two locks, no
 live experiment involved), `pmspec audit <id> <lock> [--hours N] [--sample K] [--strict]` (did each

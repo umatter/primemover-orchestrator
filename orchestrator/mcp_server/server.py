@@ -23,7 +23,7 @@ from pmspec.lock.audit import audit_experiment, lock_strategies
 from pmspec.lock.build import compile_spec
 from pmspec.lock.cleanup import delete_experiments, find_test_experiments, parse_age
 from pmspec.lock.diff import diff_locks
-from pmspec.lock.io import LockError, dump_lock, is_lock_document, load_lock
+from pmspec.lock.io import LockError, dump_lock, is_lock_document, load_lock, sha256_text
 from pmspec.lock.secrets import InsecureSecretsFile, SecretStore, find_placeholders
 from pmspec.lock.status import experiment_status
 from pmspec.lock.upload import (
@@ -672,6 +672,119 @@ def _materialise_files(files: dict[str, str] | None) -> tempfile.TemporaryDirect
         target = Path(tmp.name) / Path(name).name  # no directory traversal
         target.write_text(content)
     return tmp
+
+
+# =============================================================================
+# Locks by reference: the drop directory
+# =============================================================================
+
+
+class LockRefError(Exception):
+    """A lock reference that cannot be honoured. Its message is caller-facing.
+
+    Raised by the helpers below and turned into this surface's usual
+    ``{"error": ...}`` JSON by each tool -- never allowed to escape as a raised
+    MCP error.
+    """
+
+
+def _resolve_drop_path(path: str) -> Path:
+    """Resolve a caller-supplied lock path inside the lock drop directory.
+
+    The drop directory (``PMSPEC_LOCK_DIR``, default
+    ``~/.local/share/pmspec/locks``) is the ONLY place the MCP reads a lock file
+    from, and that is a security property, not a convenience: the shared HTTP
+    MCP is reachable with every bearer token in ``MCP_AUTH_TOKENS``, so a path
+    argument that could name any file would be a general file reader for anyone
+    holding one -- ``.env``, ``secrets.toml``, another study's data.
+
+    So: a relative path resolves inside the directory; an absolute path is
+    accepted only if it is already inside it; ``..`` is refused outright; and the
+    check is made after ``realpath()``, so a symlink dropped in the directory
+    cannot point out of it. A missing file names the directory, because the
+    caller's next move is to copy the lock there.
+    """
+    drop = get_settings().get_pmspec_lock_dir()
+    if ".." in Path(path).parts:
+        raise LockRefError(
+            f"refusing a path containing '..': {path!r}. Locks are read only from {drop}."
+        )
+    candidate = Path(path) if Path(path).is_absolute() else drop / path
+
+    # realpath both sides: the containment test has to be made on what the path
+    # actually points at, or a symlink in the drop directory reads any file.
+    resolved = candidate.resolve()
+    root = drop.resolve()
+    if resolved != root and root not in resolved.parents:
+        raise LockRefError(
+            f"{path!r} resolves to {resolved}, outside the lock drop directory {drop}. "
+            "Copy the lock into that directory and pass its name."
+        )
+    if not resolved.is_file():
+        raise LockRefError(
+            f"no lock file {path!r} in the lock drop directory {drop}. "
+            f"Copy it there first (scp <file> <this host>:{drop}/)."
+        )
+    return resolved
+
+
+def _read_lock_ref(
+    content: str | None,
+    path: str | None,
+    *,
+    what: str = "lock",
+    path_what: str | None = None,
+    required: bool = True,
+) -> str | None:
+    """Return the lock text a tool should use, from content or from the drop dir.
+
+    Exactly one of the two is expected (``required=False`` also allows neither,
+    for ``experiment_status``, where a lock is optional). ``what`` and
+    ``path_what`` name the two arguments in the error messages, so each tool's
+    message matches its own parameter names -- ``lock_content``/``lock_path`` on
+    most of them, ``lock_a``/``lock_a_path`` on the diff.
+    """
+    path_what = path_what or f"{what}_path"
+    if content is not None and path is not None:
+        raise LockRefError(f"pass either {what} or {path_what}, not both")
+    if content is not None:
+        return content
+    if path is None:
+        if required:
+            raise LockRefError(f"one of {what} or {path_what} is required")
+        return None
+    resolved = _resolve_drop_path(path)
+    try:
+        return resolved.read_text()
+    except OSError as e:
+        raise LockRefError(f"cannot read {path!r}: {e}") from e
+    except UnicodeDecodeError as e:
+        raise LockRefError(f"{path!r} is not text: {e}") from e
+
+
+def _merge_file_paths(
+    files: dict[str, str] | None, file_paths: dict[str, str] | None
+) -> dict[str, str]:
+    """Merge files passed as content with files read from the lock drop directory.
+
+    A runs spec's base fleet lock reaches ``compile``/``validate`` the way a data
+    pool does -- as an entry in ``files`` -- and a fleet lock is exactly the
+    artifact too big to pass as text. ``file_paths`` is the same map with drop-dir
+    paths instead of content. A name given in both is an error rather than a
+    silent winner: which of two different files was used decides what the lock
+    randomises over.
+    """
+    merged = dict(files or {})
+    for name, path in (file_paths or {}).items():
+        if name in merged:
+            raise LockRefError(f"{name!r} is given in both files and file_paths; pass it once")
+        merged[name] = _resolve_drop_path(path).read_text()
+    return merged
+
+
+def _file_shas(files: dict[str, str]) -> dict[str, str]:
+    """sha256 per supplied file, so a caller can check against `sha256sum`."""
+    return {name: sha256_text(content) for name, content in files.items()}
 
 
 class _McpSession:
@@ -2224,6 +2337,7 @@ def compile_experiment_spec(
     lax: bool = False,
     git_commit: str | None = None,
     spec_path: str | None = None,
+    file_paths: dict[str, str] | None = None,
 ) -> str:
     """Compile a YAML spec into a lock: the self-contained, committable artifact
     upload_experiment and verify_experiment read.
@@ -2248,6 +2362,13 @@ def compile_experiment_spec(
         lax: downgrade strict-contract errors to warnings (recorded in the lock)
         git_commit: the spec repo's short HEAD, optionally suffixed "-dirty"
         spec_path: the spec's path relative to that repo's root
+        file_paths: the same map as ``files``, but each value is a path in this
+            host's lock drop directory (PMSPEC_LOCK_DIR, default
+            ``~/.local/share/pmspec/locks``) instead of the content:
+            ``{"fleet.lock.yaml": "fleet.lock.yaml"}``. Use it for anything
+            large -- above ~200 KB the content form cannot reach this tool at
+            all, since it travels through the model's context. A name given in
+            both ``files`` and ``file_paths`` is an error.
 
     A **runs spec** (one carrying ``runs_for: <fleet lock path>``) compiles the
     same way, and its base lock arrives the way a data pool does: put the fleet
@@ -2260,7 +2381,8 @@ def compile_experiment_spec(
     Returns:
         JSON: {"lock": <text>, "kind": "fleet"|"runs", "base_lock_sha256",
         "crawler_count", "seed", "anchor", "git_commit", "spec_path",
-        "warnings", "dropped"} or {"errors": [...], "warnings", "dropped"}
+        "warnings", "dropped", "file_sha256": {name: sha}} or
+        {"errors": [...], "warnings", "dropped"}
     """
     if git_commit is not None and not _CLIENT_COMMIT_RE.fullmatch(git_commit):
         return json.dumps(
@@ -2272,7 +2394,11 @@ def compile_experiment_spec(
                 "warnings": [],
             }
         )
-    with _materialise_files(files) as tmp:
+    try:
+        supplied = _merge_file_paths(files, file_paths)
+    except LockRefError as e:
+        return json.dumps({"errors": [str(e)], "warnings": []})
+    with _materialise_files(supplied) as tmp:
         result = compile_spec(
             yaml_content,
             base_dir=Path(tmp),
@@ -2285,7 +2411,12 @@ def compile_experiment_spec(
         )
     if result.lock is None:
         return json.dumps(
-            {"errors": result.errors, "warnings": result.warnings, "dropped": result.dropped}
+            {
+                "errors": result.errors,
+                "warnings": result.warnings,
+                "dropped": result.dropped,
+                "file_sha256": _file_shas(supplied),
+            }
         )
     # Whatever the temp dir's parent happens to be, this lock came from no
     # checkout: only the caller's word is recorded, never the temp dir's git.
@@ -2303,6 +2434,9 @@ def compile_experiment_spec(
             "spec_path": result.lock.provenance.spec_path,
             "warnings": result.warnings,
             "dropped": result.dropped,
+            # So the caller can check each supplied file against `sha256sum`,
+            # which is the only way to tell a drop-dir read from a stale copy.
+            "file_sha256": _file_shas(supplied),
         }
     )
 
@@ -2314,6 +2448,7 @@ def validate_experiment_spec(
     lax: bool = False,
     files: dict[str, str] | None = None,
     seed: int | None = None,
+    file_paths: dict[str, str] | None = None,
 ) -> str:
     """
     Validate a YAML experiment specification, or a lock.
@@ -2339,6 +2474,12 @@ def validate_experiment_spec(
         files: data-pool files by the bare filename the spec's `source:` names,
             content as text -- materialised into a temp dir used as base_dir;
             also where a runs spec's base fleet lock goes
+        file_paths: the same map as ``files``, but each value is a path in this
+            host's lock drop directory (PMSPEC_LOCK_DIR, default
+            ``~/.local/share/pmspec/locks``) instead of the content -- which is
+            how a base fleet lock above ~200 KB gets here at all, since
+            ``files`` content travels through the model's context. A name given
+            in both is an error.
         seed: the seed to validate under; defaults to the spec's own
             (``design.seed``, or a runs spec's root ``seed:``). `assign:`
             refuses to draw unseeded, so a spec with assignments and no seed
@@ -2374,7 +2515,12 @@ def validate_experiment_spec(
     except ImportError as e:
         return json.dumps({"error": f"pmspec not available: {e}"})
 
-    with _materialise_files(files) as tmp:
+    try:
+        supplied = _merge_file_paths(files, file_paths)
+    except LockRefError as e:
+        return json.dumps({"valid": False, "kind": "spec", "errors": [str(e)], "warnings": []})
+
+    with _materialise_files(supplied) as tmp:
         base_dir = Path(tmp)
 
         # The one preparation every reader of a spec shares, exactly as `pmspec
@@ -2393,7 +2539,13 @@ def validate_experiment_spec(
         prep_errors, prep_warnings = prepared.errors, prepared.warnings
         if (raw_spec is None and prep_errors) or (is_runs and base is None):
             return json.dumps(
-                {"valid": False, "kind": "spec", "errors": prep_errors, "warnings": prep_warnings}
+                {
+                    "valid": False,
+                    "kind": "spec",
+                    "errors": prep_errors,
+                    "warnings": prep_warnings,
+                    "file_sha256": _file_shas(supplied),
+                }
             )
 
         # Run validator
@@ -2458,6 +2610,8 @@ def validate_experiment_spec(
             "errors": all_errors,
             "warnings": all_warnings,
             "dropped": dropped,
+            # sha256 per supplied file, to check against `sha256sum` locally.
+            "file_sha256": _file_shas(supplied),
             "summary": {
                 # A runs spec has no experiment of its own: the name is the
                 # base lock's, as `pmspec validate` reports it.
@@ -2573,20 +2727,22 @@ def convert_spec_to_json(yaml_content: str) -> str:
 
 @mcp.tool()
 def upload_experiment(
-    lock_content: str,
-    mode: str,
+    lock_content: str | None = None,
+    mode: str = "",
     experiment_id: int | None = None,
     dry_run: bool = True,
     deep_verify: bool = False,
     allow_dirty: bool = False,
     allow_past: bool = False,
+    lock_path: str | None = None,
 ) -> str:
     """Upload a LOCK (from compile_experiment_spec or `pmspec compile`) and verify it.
 
     Dry-run by default; local-only (the API target must be localhost:8090).
 
     Args:
-        lock_content: a lock, not a spec -- call compile_experiment_spec first
+        lock_content: a lock, not a spec -- call compile_experiment_spec first.
+            Exactly one of lock_content and lock_path.
         mode: 'test' -> VM runner, name becomes 'test-<name>-<date>', dirty commit
             allowed; 'real' -> as named in the lock, refused without a clean commit
         experiment_id: append to this experiment instead of creating one.
@@ -2598,6 +2754,18 @@ def upload_experiment(
             through anyway. Never needed for 'test' mode, which already allows it.
         allow_past: let a schedule anchor that is already in the past through
             (the runner will never pick it up; use for backfilling a record).
+        lock_path: instead of lock_content, the lock's name in this host's lock
+            drop directory (PMSPEC_LOCK_DIR, default
+            ``~/.local/share/pmspec/locks``), e.g. "study.lock.yaml".
+
+    **A lock over ~200 KB must use lock_path.** ``lock_content`` reaches this
+    tool through the model's context, and a 500-bot lock is megabytes of YAML:
+    it does not fit, and compressing it does not help because the argument still
+    travels the same way. Copy the lock to the box out of band
+    (``scp design/study.lock.yaml <host>:~/.local/share/pmspec/locks/``) and pass
+    its name. Nothing outside that directory can be read, symlinks included. The
+    result echoes ``lock_sha256``; compare it with ``sha256sum`` of the committed
+    lock to prove the box read the file you meant.
 
     A runs lock (`kind: runs`) appends queues to existing crawlers matched by
     name, is idempotent (a queue already live at the same name and wall-clock
@@ -2613,14 +2781,22 @@ def upload_experiment(
     Returns:
         JSON with the upload result and a bound-and-identical verify, or an error
     """
+    try:
+        lock_text = _read_lock_ref(
+            lock_content, lock_path, what="lock_content", path_what="lock_path"
+        )
+    except LockRefError as e:
+        return json.dumps({"success": False, "error": str(e)})
+    assert lock_text is not None  # _read_lock_ref(required=True) raises otherwise
+
     if mode not in MODES:
         return json.dumps({"success": False, "error": f"mode must be one of {MODES}"})
-    if not is_lock_document(lock_content):
+    if not is_lock_document(lock_text):
         return json.dumps(
             {"success": False, "error": "not a lock: call compile_experiment_spec first"}
         )
     try:
-        lock = load_lock(lock_content)
+        lock = load_lock(lock_text)
     except LockError as e:
         return json.dumps({"success": False, "error": "invalid lock", "errors": e.errors})
 
@@ -2636,7 +2812,7 @@ def upload_experiment(
             return json.dumps({"success": False, "error": guard})
         try:
             plan = plan_runs_upload(
-                lock_content,
+                lock_text,
                 session=_McpSession(),
                 options=UploadOptions(
                     mode=mode,
@@ -2658,6 +2834,7 @@ def upload_experiment(
                 "experiment_name": lock.experiment["name"],
                 "git_commit": lock.provenance.git_commit,
                 "base_lock_sha256": lock.provenance.base_lock_sha256,
+                "lock_sha256": sha256_text(lock_text),
                 **plan,
                 "to_apply": "call again with dry_run=false",
             }
@@ -2683,6 +2860,10 @@ def upload_experiment(
                 "crawler_count": len(lock.crawlers),
                 "anchor": lock.schedule["anchor"],
                 "git_commit": lock.provenance.git_commit,
+                # The same field an applied upload reports (upload_lock computes
+                # it over the same text), so a caller can check the box read the
+                # file it meant with `sha256sum` before applying anything.
+                "lock_sha256": sha256_text(lock_text),
                 "secrets_needed": needed,
                 "secrets_missing": secrets_missing,
                 "secrets_store": secrets_store,
@@ -2722,7 +2903,7 @@ def upload_experiment(
         allow_past=allow_past,
     )
     try:
-        result = upload_lock(lock_content, session=session, store=store, options=options)
+        result = upload_lock(lock_text, session=session, store=store, options=options)
     except UploadRefused as e:
         return json.dumps({"success": False, "error": str(e)})
     except Exception as e:
@@ -2756,7 +2937,7 @@ def upload_experiment(
     # to retry with dry_run=False and create a duplicate experiment.
     try:
         verdict = verify_lock(
-            lock_content, session=session, experiment_id=result.experiment_id, deep=deep_verify
+            lock_text, session=session, experiment_id=result.experiment_id, deep=deep_verify
         )
     except Exception as e:
         response["verify"] = {"error": str(e)}
@@ -2773,22 +2954,41 @@ def upload_experiment(
 
 
 @mcp.tool()
-def verify_experiment(experiment_id: int, lock_content: str, deep: bool = False) -> str:
+def verify_experiment(
+    experiment_id: int,
+    lock_content: str | None = None,
+    deep: bool = False,
+    lock_path: str | None = None,
+) -> str:
     """Is the live experiment bound to this lock (hash) and structurally identical to it?
 
     Args:
         experiment_id: the live experiment to check
-        lock_content: the lock it should match
+        lock_content: the lock it should match. Exactly one of lock_content and lock_path.
         deep: also compare each queue's jobs/behaviours, not just schedule (slower:
             downloads the experiment export)
+        lock_path: instead of lock_content, the lock's name in this host's lock
+            drop directory (PMSPEC_LOCK_DIR, default ``~/.local/share/pmspec/locks``).
+            **A lock over ~200 KB must use this**: lock_content travels through the
+            model's context and a 500-bot lock does not fit. Copy it over with scp
+            first; nothing outside that directory can be read.
 
     Returns:
-        JSON: {"ok", "bound", "local_sha256", "live_sha256s", "anchor", "differences",
-        "extra_live_crawlers", "render"}. Only the lock's own crawlers are compared;
-        crawlers the experiment holds from other uploads are listed, not diffed.
+        JSON: {"ok", "bound", "lock_sha256", "local_sha256", "live_sha256s", "anchor",
+        "differences", "extra_live_crawlers", "render"}. ``lock_sha256`` is the sha256
+        of the text this call read -- compare it with ``sha256sum`` of the committed
+        lock. Only the lock's own crawlers are compared; crawlers the experiment holds
+        from other uploads are listed, not diffed.
     """
     try:
-        r = verify_lock(lock_content, session=_McpSession(), experiment_id=experiment_id, deep=deep)
+        lock_text = _read_lock_ref(
+            lock_content, lock_path, what="lock_content", path_what="lock_path"
+        )
+    except LockRefError as e:
+        return json.dumps({"error": str(e)})
+    assert lock_text is not None  # _read_lock_ref(required=True) raises otherwise
+    try:
+        r = verify_lock(lock_text, session=_McpSession(), experiment_id=experiment_id, deep=deep)
     except LockError as e:
         return json.dumps({"error": "invalid lock", "errors": e.errors})
     except Exception as e:
@@ -2799,6 +2999,7 @@ def verify_experiment(experiment_id: int, lock_content: str, deep: bool = False)
             "experiment_id": r.experiment_id,
             "ok": r.ok,
             "bound": r.bound,
+            "lock_sha256": sha256_text(lock_text),
             "local_sha256": r.local_sha256,
             "live_sha256s": r.live_sha256s,
             "anchor": r.anchor,
@@ -2816,6 +3017,7 @@ def experiment_status_tool(
     hours: int = 24,
     lock_content: str | None = None,
     deep: bool = False,
+    lock_path: str | None = None,
 ) -> str:
     """Provenance (what pmspec uploaded) plus health (how it is running) for a live
     experiment, and -- when a lock is given -- whether the two still agree.
@@ -2825,14 +3027,26 @@ def experiment_status_tool(
         hours: health window in hours
         lock_content: optional lock text; when given, also runs verify against it
         deep: with lock_content, also compare each queue's jobs/behaviours
+        lock_path: instead of lock_content, the lock's name in this host's lock drop
+            directory (PMSPEC_LOCK_DIR, default ``~/.local/share/pmspec/locks``).
+            **A lock over ~200 KB must use this** -- lock_content travels through the
+            model's context. Passing neither is fine: status without a lock reports
+            provenance and health only. Passing both is an error.
 
     Returns:
         JSON: {"experiment_id", "name", "runner_user_id", "uploads": [{"label", "values"}],
-        "health", "ok", "bound_to_any_lock", "verify": {...}|None, "render"}.
+        "health", "ok", "bound_to_any_lock", "lock_sha256" (null without a lock),
+        "verify": {...}|None, "render"}.
     """
     try:
+        lock_text = _read_lock_ref(
+            lock_content, lock_path, what="lock_content", path_what="lock_path", required=False
+        )
+    except LockRefError as e:
+        return json.dumps({"error": str(e)})
+    try:
         st = experiment_status(
-            _McpSession(), experiment_id, hours=hours, lock_text=lock_content, deep=deep
+            _McpSession(), experiment_id, hours=hours, lock_text=lock_text, deep=deep
         )
     except LockError as e:
         return json.dumps({"error": "invalid lock", "errors": e.errors})
@@ -2863,6 +3077,7 @@ def experiment_status_tool(
             "health": st.health,
             "ok": st.ok,
             "bound_to_any_lock": st.bound_to_any_lock,
+            "lock_sha256": sha256_text(lock_text) if lock_text is not None else None,
             "verify": verify_payload,
             "render": st.render(),
         }
@@ -2872,10 +3087,11 @@ def experiment_status_tool(
 @mcp.tool(name="audit_experiment")
 def audit_experiment_tool(
     experiment_id: int,
-    lock_content: str,
+    lock_content: str | None = None,
     hours: int = 24,
     sample: int | None = None,
     strict: bool = False,
+    lock_path: str | None = None,
 ) -> str:
     """Did each finished lambda job in the live experiment apply the treatment its lock says
     it should? Read-only: matches lock jobs to live jobs by (crawler, queue, ordinal) and
@@ -2884,12 +3100,18 @@ def audit_experiment_tool(
 
     Args:
         experiment_id: the live experiment to audit
-        lock_content: the lock text describing what each job should have requested
+        lock_content: the lock text describing what each job should have requested.
+            Exactly one of lock_content and lock_path.
         hours: only consider queues/jobs finished within this many hours
         sample: audit a seeded random sample of this many crawlers instead of all of them
         strict: also fail (`ok`) on unreported/degraded/missing decision reports -- and on an
             audit that examined no job at all -- not just an outright mismatch, a lost
             treatment or a live queue whose job types no longer line up with the lock (`shape`)
+        lock_path: instead of lock_content, the lock's name in this host's lock drop
+            directory (PMSPEC_LOCK_DIR, default ``~/.local/share/pmspec/locks``).
+            **A lock over ~200 KB must use this**: lock_content travels through the
+            model's context, and the studies worth auditing are the big ones. Copy
+            the lock over with scp; nothing outside that directory can be read.
 
     Strategy schemas for a non-``youtube_v1`` strategy's ``x-requested`` mapping are resolved
     via ``SpecValidator(base_dir=None)._strategy_schema`` -- a lock has no directory of its
@@ -2898,11 +3120,20 @@ def audit_experiment_tool(
     the lock file, which does not apply to lock text passed in over MCP).
 
     Returns:
-        JSON: {"experiment_id", "ok", "sampled", "total", "audited" (jobs actually examined --
+        JSON: {"experiment_id", "ok", "lock_sha256" (of the text this call read),
+        "sampled", "total", "audited" (jobs actually examined --
         0 is a vacuous audit, failed under strict), "counts": [{"arm", "outcome", "n"}],
         "findings": [first 50 as dicts], "render"}.
     """
     from pmspec.spec.validator import SpecValidator
+
+    try:
+        lock_text = _read_lock_ref(
+            lock_content, lock_path, what="lock_content", path_what="lock_path"
+        )
+    except LockRefError as e:
+        return json.dumps({"error": str(e)})
+    assert lock_text is not None  # _read_lock_ref(required=True) raises otherwise
 
     # hours=0 audits nothing and sample=0 audits nobody; either would pass
     # vacuously. Same bound as the CLI's click.IntRange(min=1).
@@ -2912,7 +3143,7 @@ def audit_experiment_tool(
         return json.dumps({"error": f"sample must be >= 1, got {sample}"})
 
     try:
-        parsed = load_lock(lock_content)
+        parsed = load_lock(lock_text)
     except LockError as e:
         return json.dumps({"error": "invalid lock", "errors": e.errors})
 
@@ -2927,7 +3158,7 @@ def audit_experiment_tool(
         result = audit_experiment(
             _McpSession(),
             experiment_id,
-            lock_content,
+            lock_text,
             hours=hours,
             sample=sample,
             strict=strict,
@@ -2942,6 +3173,7 @@ def audit_experiment_tool(
         {
             "experiment_id": result.experiment_id,
             "ok": result.ok(strict),
+            "lock_sha256": sha256_text(lock_text),
             "sampled": result.sampled,
             "total": result.total,
             "audited": result.audited,
@@ -2967,7 +3199,12 @@ def audit_experiment_tool(
 
 
 @mcp.tool(name="diff_locks")
-def diff_locks_tool(lock_a: str, lock_b: str) -> str:
+def diff_locks_tool(
+    lock_a: str | None = None,
+    lock_b: str | None = None,
+    lock_a_path: str | None = None,
+    lock_b_path: str | None = None,
+) -> str:
     """Diff two locks: provenance side by side, anchor, and crawler-level structural
     differences (built at a fixed reference anchor, so a re-anchored-but-otherwise
     -identical lock differs only in the anchor line). Read-only, purely local -- no
@@ -2976,13 +3213,28 @@ def diff_locks_tool(lock_a: str, lock_b: str) -> str:
     Args:
         lock_a: first lock's text
         lock_b: second lock's text
+        lock_a_path: instead of lock_a, its name in this host's lock drop directory
+            (PMSPEC_LOCK_DIR, default ``~/.local/share/pmspec/locks``)
+        lock_b_path: the same for the second lock
+
+    Exactly one of ``lock_a``/``lock_a_path``, and one of ``lock_b``/``lock_b_path``.
+    **A lock over ~200 KB must use the path form** -- lock text travels through the
+    model's context, and two of them is twice the problem. Nothing outside the drop
+    directory can be read.
 
     Returns:
         JSON: {"identical", "differences", "only_in_a", "only_in_b", "anchor_a",
-        "anchor_b", "render"} or {"error": ..., "errors": [...]}
+        "anchor_b", "lock_a_sha256", "lock_b_sha256", "render"} or
+        {"error": ..., "errors": [...]}
     """
     try:
-        d = diff_locks(lock_a, lock_b)
+        a_text = _read_lock_ref(lock_a, lock_a_path, what="lock_a")
+        b_text = _read_lock_ref(lock_b, lock_b_path, what="lock_b")
+    except LockRefError as e:
+        return json.dumps({"error": str(e)})
+    assert a_text is not None and b_text is not None  # required=True
+    try:
+        d = diff_locks(a_text, b_text)
     except LockError as e:
         return json.dumps({"error": "invalid lock", "errors": e.errors})
 
@@ -2995,6 +3247,8 @@ def diff_locks_tool(lock_a: str, lock_b: str) -> str:
             "only_in_b": d.only_in_b,
             "anchor_a": d.anchor_a,
             "anchor_b": d.anchor_b,
+            "lock_a_sha256": sha256_text(a_text),
+            "lock_b_sha256": sha256_text(b_text),
             "render": d.render(),
         }
     )

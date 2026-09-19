@@ -1547,6 +1547,19 @@ def doctor(ctx: click.Context) -> None:
             "  [dim]-[/dim] no decision symlink (not needed: the registry names the functions)"
         )
 
+    # The lock drop directory: the only place the MCP reads a `lock_path` from.
+    # A 500-bot lock cannot travel through a tool call, so a study that big is
+    # uploadable only if this directory exists and the lock has been copied in.
+    lock_dir = settings.get_pmspec_lock_dir()
+    if lock_dir.is_dir():
+        locks = len(list(lock_dir.glob("*.lock.yaml")))
+        console.print(f"  [green]✓[/green] lock drop dir: {lock_dir} ({locks} lock(s))")
+    else:
+        console.print(
+            f"  [yellow]⚠[/yellow] lock drop dir missing: {lock_dir} — the MCP's lock_path "
+            f"arguments have nowhere to read from (mkdir -p {lock_dir})"
+        )
+
     # The job-data (MinIO) reader: without a working key, `debug job` /
     # `lambda invocations` silently return nothing rather than failing.
     from orchestrator.logs.jobdata_s3 import store_from_settings
