@@ -1350,11 +1350,17 @@ grep -nE '127\.0\.0\.1:.*(3307|8889)|ALLOW_EMPTY' ../primemover_api/docker-compo
 
 **No HAR files / job data on disk, or every job shows `problems writing jobresult`**
 - HAR recording is toggled by `recorder.enabled` in the runner's
-  `application.properties` (default **off** → `NoRecordingProxy`, a pass-through;
-  residential proxying still works, only capture is lost). Set `true` to record.
-  When on, the MITM recorder chains through the residential proxy and impersonates
-  TLS per host — verified working; mind the recorder cert (`cert/2024/ca-cert.p12`)
-  shelf life.
+  `application.properties`. The *shipped* file sets it **`true`**, and ex63 runs
+  that way; only an absent key falls back to `NoRecordingProxy` (a pass-through:
+  residential proxying still works, only capture is lost). An earlier version of
+  this file called the default "off", which was wrong for every box that keeps the
+  shipped config. The VM sets `false` locally since 2026-09-20 (exp-3 tests: the
+  MITM transport was one suspected Google tell — it was not the cause, see the
+  proxy-exit finding, but the setting stayed). When on, the MITM recorder chains
+  through the residential proxy and impersonates TLS per host — verified working;
+  mind the recorder cert (`cert/2024/ca-cert.p12`) shelf life. There is no
+  "HAR without MITM" variant: `NoRecordingProxy` records nothing and the
+  `WireMockRecorderProxy` is an unwired 2024 stub.
 - **`out/har` being absent is normal and not the bug.** `storage.local.enabled=false`
   means the local writer bean is never constructed; job data goes to MinIO. See
   "Where job data goes" above before chasing this. If a *reader* is empty, the
