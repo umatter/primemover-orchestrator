@@ -976,6 +976,7 @@
               "type": "string",
               "enum": [
                 "assertproxyjob",
+                "clearstoragejob",
                 "clickjob",
                 "entertextfieldjob",
                 "handlealertjob",
@@ -1370,6 +1371,33 @@
             "$ref": "#/definitions/workflowItem"
           }
         },
+        "clear_storage": {
+          "oneOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "object",
+              "description": "Web-storage clearing options",
+              "properties": {
+                "captcha_mode": {
+                  "type": "string",
+                  "enum": [
+                    "never",
+                    "always",
+                    "ondemand"
+                  ]
+                },
+                "scope": {
+                  "type": "string",
+                  "description": "none, local, session or all; a design may map it per arm"
+                }
+              },
+              "additionalProperties": true
+            }
+          ],
+          "description": "Clear web storage for the current origin"
+        },
         "assert_proxy": {
           "oneOf": [
             {
@@ -1549,6 +1577,7 @@
           "type": "string",
           "enum": [
             "assertproxyjob",
+            "clearstoragejob",
             "clickjob",
             "entertextfieldjob",
             "handlealertjob",

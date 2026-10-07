@@ -928,6 +928,23 @@ def build_schema() -> dict[str, Any]:
                     "description": "Workflow items to repeat (alternative to template, with repeat:)",
                     "items": {"$ref": "#/definitions/workflowItem"},
                 },
+                "clear_storage": {
+                    "oneOf": [
+                        {"type": "string"},
+                        _shorthand_options(
+                            "clear_storage",
+                            "Web-storage clearing options",
+                            {
+                                "scope": {
+                                    "type": "string",
+                                    "description": "none, local, session or all; a design may map it per arm",
+                                },
+                                "captcha_mode": {"type": "string", "enum": _CAPTCHA_MODES},
+                            },
+                        ),
+                    ],
+                    "description": "Clear web storage for the current origin",
+                },
                 "assert_proxy": {
                     # Mapping only: a bare string would have to guess whether it named a
                     # country, a city or an IP, and guessing wrong turns a check into a

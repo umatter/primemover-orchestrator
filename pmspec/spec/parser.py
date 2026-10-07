@@ -489,6 +489,7 @@ class SpecParser:
             "handle_alert",
             "try_handle_alert",
             "assert_proxy",
+            "clear_storage",
         ]
 
         for key in shorthand_keys:
@@ -664,6 +665,20 @@ class SpecParser:
             job["behaviors"] = self._make_behaviors(
                 {"action": action, "captchaMode": defaults.get("captcha_mode", "never")}
             )
+
+        elif job_type == "clear_storage":
+            # Accepts the bare scope (`clear_storage: all`) and the mapping form. The scope
+            # is passed through unvalidated on purpose: a design maps it per arm, so it is
+            # routinely a `{param}` placeholder here and only becomes a word at compile time.
+            # The runner validates the resolved value and fails the job on anything else.
+            scope = value.get("scope") if isinstance(value, dict) else value
+            if scope in (None, ""):
+                self.errors.append("'clear_storage' needs a scope: none, local, session or all")
+            else:
+                behaviors = {"scope": scope}
+                if isinstance(value, dict) and value.get("captcha_mode"):
+                    behaviors["captchaMode"] = value["captcha_mode"]
+                job["behaviors"] = self._make_behaviors(behaviors)
 
         elif job_type == "assert_proxy":
             # The runner judges country strictly and city best-effort, because the four

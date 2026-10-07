@@ -890,3 +890,60 @@ crawlers:
     def test_scalar_form_is_an_error(self):
         parsed = SpecParser().parse(self.SPEC.replace("{country: US, city: boston}", "US"))
         self.assertTrue(any("requires a mapping" in e for e in parsed.errors), parsed.errors)
+
+
+class ClearStorageJobTest(unittest.TestCase):
+    """Web-storage clearing, the mechanism behind a privacy arm.
+
+    `scope: none` is the load-bearing value: it lets a control arm run the same workflow as
+    the arm whose storage is cleared, so the two differ in storage alone rather than also in
+    job count and session duration.
+    """
+
+    SPEC = """
+version: '1.0'
+experiment:
+  name: clear storage
+  description: web storage clearing
+crawlers:
+- name: bot
+  agent: {name: a, identification: mlx, location: US-MA-BOSTON}
+  configuration: {name: c}
+  session:
+    name: s
+    workflow:
+    - visit: https://example.com/
+    - clear_storage: {scope: all}
+"""
+
+    def _jobs(self, text):
+        parsed = SpecParser().parse(text)
+        return parsed, parsed.crawlers[0]["queues"][0]["jobs"]
+
+    def test_registered(self):
+        self.assertEqual(JobRegistry.get_api_type("clear_storage"), "clearstoragejob")
+
+    def test_mapping_form(self):
+        parsed, jobs = self._jobs(self.SPEC)
+        self.assertEqual(parsed.errors, [])
+        self.assertEqual(jobs[1]["type"], "clearstoragejob")
+        self.assertEqual({b["name"]: b["value"] for b in jobs[1]["behaviors"]}["scope"], "all")
+
+    def test_bare_scalar_form(self):
+        parsed, jobs = self._jobs(self.SPEC.replace("{scope: all}", "session"))
+        self.assertEqual(parsed.errors, [])
+        self.assertEqual({b["name"]: b["value"] for b in jobs[1]["behaviors"]}["scope"], "session")
+
+    def test_a_design_placeholder_survives_to_the_behaviour(self):
+        # A privacy factor maps the scope per arm, so at parse time it is a placeholder and
+        # only becomes a word at compile time. Rejecting non-enum values here would make the
+        # whole per-arm mechanism unexpressible.
+        parsed, jobs = self._jobs(self.SPEC.replace("{scope: all}", "{scope: '{storage_scope}'}"))
+        self.assertEqual(parsed.errors, [])
+        self.assertEqual(
+            {b["name"]: b["value"] for b in jobs[1]["behaviors"]}["scope"], "{storage_scope}"
+        )
+
+    def test_missing_scope_is_an_error(self):
+        parsed = SpecParser().parse(self.SPEC.replace("{scope: all}", "{}"))
+        self.assertTrue(any("needs a scope" in e for e in parsed.errors), parsed.errors)

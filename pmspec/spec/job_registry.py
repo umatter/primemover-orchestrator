@@ -448,3 +448,25 @@ JobRegistry.register(
         ],
     )
 )
+
+# Clear storage job
+#
+# Wipes web storage for the current origin. `scope: none` is not a pointless value: it lets
+# an experiment's control arm run the *same* workflow as the arm whose storage is cleared,
+# so the two differ in storage alone and not in job count or session duration. Giving only
+# the treated arm the job would confound the manipulation with the shape of the session.
+#
+# scope is required and the runner refuses to guess at a missing or misspelt one, because a
+# job that quietly clears nothing while the record says it cleared is a silent second
+# control arm.
+JobRegistry.register(
+    JobTypeSchema(
+        yaml_name="clear_storage",
+        api_type="clearstoragejob",
+        display_name="Clear Storage",
+        description="Clear web storage for the current origin (none | local | session | all)",
+        behaviors=[
+            BehaviorSchema("scope", required=True, description="none, local, session or all"),
+        ],
+    )
+)
