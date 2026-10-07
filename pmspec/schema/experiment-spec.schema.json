@@ -975,6 +975,7 @@
             {
               "type": "string",
               "enum": [
+                "assertproxyjob",
                 "clickjob",
                 "entertextfieldjob",
                 "handlealertjob",
@@ -1369,6 +1370,38 @@
             "$ref": "#/definitions/workflowItem"
           }
         },
+        "assert_proxy": {
+          "oneOf": [
+            {
+              "type": "object",
+              "description": "Exit-geography expectations; at least one is required",
+              "properties": {
+                "captcha_mode": {
+                  "type": "string",
+                  "enum": [
+                    "never",
+                    "always",
+                    "ondemand"
+                  ]
+                },
+                "city": {
+                  "type": "string",
+                  "description": "City name, judged best-effort"
+                },
+                "country": {
+                  "type": "string",
+                  "description": "ISO country code, judged strictly"
+                },
+                "ip": {
+                  "type": "string",
+                  "description": "Exact exit IP"
+                }
+              },
+              "additionalProperties": true
+            }
+          ],
+          "description": "Fail the session unless the proxy exit matches"
+        },
         "handle_alert": {
           "oneOf": [
             {
@@ -1515,6 +1548,7 @@
         "type": {
           "type": "string",
           "enum": [
+            "assertproxyjob",
             "clickjob",
             "entertextfieldjob",
             "handlealertjob",

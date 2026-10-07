@@ -830,3 +830,63 @@ class TestMultiloginProfileDefaults(unittest.TestCase):
         if isinstance(profile, str):
             profile = json.loads(profile)
         self.assertEqual(DEFAULT_MULTILOGIN_PROFILE["core_version"], profile["core_version"])
+
+
+class AssertProxyJobTest(unittest.TestCase):
+    """The exit-geography assertion.
+
+    The runner has always accepted `assertproxyjob` and calls it the provider-neutral
+    name from the spec DSL, but the DSL had no way to emit it: a bot that exited in the
+    wrong city ran to completion and reported success.
+    """
+
+    SPEC = """
+version: '1.0'
+experiment:
+  name: assert proxy
+  description: exit geography assertion
+crawlers:
+- name: bot
+  agent: {name: a, identification: mlx, location: US-MA-BOSTON}
+  configuration: {name: c}
+  session:
+    name: s
+    workflow:
+    - assert_proxy: {country: US, city: boston}
+    - visit: https://example.com/
+"""
+
+    def _jobs(self, spec_text):
+        parsed = SpecParser().parse(spec_text)
+        return parsed, parsed.crawlers[0]["queues"][0]["jobs"]
+
+    def test_registered(self):
+        self.assertEqual(JobRegistry.get_api_type("assert_proxy"), "assertproxyjob")
+
+    def test_expands_to_the_runner_s_api_type_and_behaviors(self):
+        parsed, jobs = self._jobs(self.SPEC)
+        self.assertEqual(parsed.errors, [])
+        self.assertEqual(jobs[0]["type"], "assertproxyjob")
+        behaviors = {b["name"]: b["value"] for b in jobs[0]["behaviors"]}
+        self.assertEqual(behaviors["country"], "US")
+        self.assertEqual(behaviors["city"], "boston")
+        self.assertNotIn("ip", behaviors, "absent expectations are not emitted as empty")
+
+    def test_a_single_expectation_is_enough(self):
+        parsed, jobs = self._jobs(self.SPEC.replace("{country: US, city: boston}", "{country: US}"))
+        self.assertEqual(parsed.errors, [])
+        behaviors = {b["name"]: b["value"] for b in jobs[0]["behaviors"]}
+        self.assertEqual(behaviors["country"], "US")
+        self.assertNotIn("city", behaviors)
+
+    def test_asserting_nothing_is_an_error(self):
+        # A job with no expectations would pass on any exit, which is worse than not
+        # having the job: it reads like a check and is not one.
+        parsed = SpecParser().parse(self.SPEC.replace("{country: US, city: boston}", "{}"))
+        self.assertTrue(
+            any("at least one of ip, country, city" in e for e in parsed.errors), parsed.errors
+        )
+
+    def test_scalar_form_is_an_error(self):
+        parsed = SpecParser().parse(self.SPEC.replace("{country: US, city: boston}", "US"))
+        self.assertTrue(any("requires a mapping" in e for e in parsed.errors), parsed.errors)

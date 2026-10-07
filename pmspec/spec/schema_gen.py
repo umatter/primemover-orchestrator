@@ -928,6 +928,30 @@ def build_schema() -> dict[str, Any]:
                     "description": "Workflow items to repeat (alternative to template, with repeat:)",
                     "items": {"$ref": "#/definitions/workflowItem"},
                 },
+                "assert_proxy": {
+                    # Mapping only: a bare string would have to guess whether it named a
+                    # country, a city or an IP, and guessing wrong turns a check into a
+                    # check-shaped no-op.
+                    "oneOf": [
+                        _shorthand_options(
+                            "assert_proxy",
+                            "Exit-geography expectations; at least one is required",
+                            {
+                                "ip": {"type": "string", "description": "Exact exit IP"},
+                                "country": {
+                                    "type": "string",
+                                    "description": "ISO country code, judged strictly",
+                                },
+                                "city": {
+                                    "type": "string",
+                                    "description": "City name, judged best-effort",
+                                },
+                                "captcha_mode": {"type": "string", "enum": _CAPTCHA_MODES},
+                            },
+                        ),
+                    ],
+                    "description": "Fail the session unless the proxy exit matches",
+                },
                 "handle_alert": {
                     "oneOf": [
                         {"type": "string", "enum": ["accept", "dismiss"]},

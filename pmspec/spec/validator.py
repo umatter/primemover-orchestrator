@@ -365,6 +365,7 @@ class SpecValidator:
         "try_switch": frozenset({"selector", "target", "selection_type", "captcha_mode"}),
         "handle_alert": frozenset({"action"}),
         "try_handle_alert": frozenset({"action"}),
+        "assert_proxy": frozenset({"ip", "country", "city", "captcha_mode"}),
     }
 
     def __init__(
@@ -1403,6 +1404,7 @@ class SpecValidator:
             "try_switch",
             "handle_alert",
             "try_handle_alert",
+            "assert_proxy",
         ]
 
         matched_types = [job_type for job_type in job_types if job_type in item]

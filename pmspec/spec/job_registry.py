@@ -421,3 +421,30 @@ JobRegistry.register(
         ],
     )
 )
+
+# Assert proxy job
+#
+# The runner has had this since the Oxylabs work: AssertProxyByOxylabsJobHandler checks
+# the exit against ip.oxylabs.io/location, and PrimemoverApiConverter accepts the api type
+# under the provider-neutral name "assertproxyjob" -- the name it expects the spec DSL to
+# use. The DSL never had it, so no spec could ask for the check and a bot that exited in
+# the wrong city ran to completion and reported success. Recording the exit says so
+# afterwards; asserting it fails the session instead of quietly producing data from the
+# wrong place.
+#
+# Every behavior is optional individually because the check is partial by nature -- a
+# country alone is a useful assertion -- but the parser requires at least one, as the
+# runner's AssertProxyJob does.
+JobRegistry.register(
+    JobTypeSchema(
+        yaml_name="assert_proxy",
+        api_type="assertproxyjob",
+        display_name="Assert Proxy",
+        description="Fail the session unless the proxy exit matches the expected geography",
+        behaviors=[
+            BehaviorSchema("ip", required=False, description="Exact exit IP to require"),
+            BehaviorSchema("country", required=False, description="ISO country code, e.g. US"),
+            BehaviorSchema("city", required=False, description="City name, e.g. boston"),
+        ],
+    )
+)

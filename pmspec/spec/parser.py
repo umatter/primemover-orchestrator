@@ -466,7 +466,10 @@ class SpecParser:
         if JobRegistry.is_api_type(item.get("type")):
             return [self._normalize_job(item, defaults)]
 
-        # Check for shorthand syntax (single key like 'visit', 'wait', etc.)
+        # Check for shorthand syntax (single key like 'visit', 'wait', etc.).
+        # This list duplicates JobRegistry: a type registered there but missing here is
+        # silently "unknown workflow item", which is how assert_proxy stayed unreachable
+        # while the runner had accepted it all along. Add to both.
         shorthand_keys = [
             "visit",
             "wait",
@@ -485,6 +488,7 @@ class SpecParser:
             "try_switch",
             "handle_alert",
             "try_handle_alert",
+            "assert_proxy",
         ]
 
         for key in shorthand_keys:
@@ -660,6 +664,33 @@ class SpecParser:
             job["behaviors"] = self._make_behaviors(
                 {"action": action, "captchaMode": defaults.get("captcha_mode", "never")}
             )
+
+        elif job_type == "assert_proxy":
+            # The runner judges country strictly and city best-effort, because the four
+            # geolocation databases ip.oxylabs.io reports routinely disagree on a city and
+            # Oxylabs targets from the one that most often returns none. Expectations are
+            # passed through as given; what they mean is the runner's business.
+            expectations = value if isinstance(value, dict) else {}
+            if not isinstance(value, dict):
+                self.errors.append(
+                    "'assert_proxy' requires a mapping with at least one of ip, country, city"
+                )
+            else:
+                behaviors = {
+                    key: expectations[key]
+                    for key in ("ip", "country", "city")
+                    if expectations.get(key) not in (None, "")
+                }
+                if not behaviors:
+                    self.errors.append(
+                        "'assert_proxy' needs at least one of ip, country, city;"
+                        " a job asserting nothing would pass on any exit"
+                    )
+                else:
+                    behaviors["captchaMode"] = expectations.get(
+                        "captcha_mode", defaults.get("captcha_mode", "never")
+                    )
+                    job["behaviors"] = self._make_behaviors(behaviors)
 
         elif job_type in ["switch", "try_switch", "single_select", "single_select_url"]:
             if isinstance(value, str):
