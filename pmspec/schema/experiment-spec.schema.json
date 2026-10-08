@@ -1388,6 +1388,20 @@
                     "ondemand"
                   ]
                 },
+                "origins": {
+                  "oneOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      }
+                    }
+                  ],
+                  "description": "origins whose site data `all` also clears"
+                },
                 "scope": {
                   "type": "string",
                   "description": "none, local, session or all; a design may map it per arm"
@@ -1396,7 +1410,7 @@
               "additionalProperties": true
             }
           ],
-          "description": "Clear web storage for the current origin"
+          "description": "Clear browsing data (cookies, cache, site storage)"
         },
         "assert_proxy": {
           "oneOf": [

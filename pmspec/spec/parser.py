@@ -676,8 +676,16 @@ class SpecParser:
                 self.errors.append("'clear_storage' needs a scope: none, local, session or all")
             else:
                 behaviors = {"scope": scope}
-                if isinstance(value, dict) and value.get("captcha_mode"):
-                    behaviors["captchaMode"] = value["captcha_mode"]
+                if isinstance(value, dict):
+                    origins = value.get("origins")
+                    if isinstance(origins, (list, tuple)):
+                        # A YAML list is the readable form; the runner reads one string, and
+                        # an origin cannot contain a comma, so joining is lossless.
+                        origins = ",".join(str(o) for o in origins)
+                    if origins:
+                        behaviors["origins"] = origins
+                    if value.get("captcha_mode"):
+                        behaviors["captchaMode"] = value["captcha_mode"]
                 job["behaviors"] = self._make_behaviors(behaviors)
 
         elif job_type == "assert_proxy":
