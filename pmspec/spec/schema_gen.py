@@ -939,18 +939,11 @@ def build_schema() -> dict[str, Any]:
                                     "type": "string",
                                     "description": "none, local, session or all; a design may map it per arm",
                                 },
-                                "origins": {
-                                    "oneOf": [
-                                        {"type": "string"},
-                                        {"type": "array", "items": {"type": "string"}},
-                                    ],
-                                    "description": "origins whose site data `all` also clears",
-                                },
                                 "captcha_mode": {"type": "string", "enum": _CAPTCHA_MODES},
                             },
                         ),
                     ],
-                    "description": "Clear browsing data (cookies, cache, site storage)",
+                    "description": "Clear the current origin's cookies and web storage",
                 },
                 "assert_proxy": {
                     # Mapping only: a bare string would have to guess whether it named a

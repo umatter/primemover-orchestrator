@@ -465,17 +465,11 @@ JobRegistry.register(
         api_type="clearstoragejob",
         display_name="Clear Storage",
         description=(
-            "Clear browsing data: none | local | session | all. `all` is the"
-            " privacy-conscious user -- cookies and cache browser-wide, plus every storage"
-            " bucket of each named origin"
+            "Clear the current origin's data: none | local | session | all."
+            " `all` is its cookies plus both web stores"
         ),
         behaviors=[
             BehaviorSchema("scope", required=True, description="none, local, session or all"),
-            BehaviorSchema(
-                "origins",
-                required=False,
-                description="comma-separated origins whose site data `all` also clears",
-            ),
         ],
     )
 )

@@ -366,7 +366,7 @@ class SpecValidator:
         "handle_alert": frozenset({"action"}),
         "try_handle_alert": frozenset({"action"}),
         "assert_proxy": frozenset({"ip", "country", "city", "captcha_mode"}),
-        "clear_storage": frozenset({"scope", "origins", "captcha_mode"}),
+        "clear_storage": frozenset({"scope", "captcha_mode"}),
     }
 
     def __init__(

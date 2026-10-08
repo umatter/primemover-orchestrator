@@ -947,27 +947,3 @@ crawlers:
     def test_missing_scope_is_an_error(self):
         parsed = SpecParser().parse(self.SPEC.replace("{scope: all}", "{}"))
         self.assertTrue(any("needs a scope" in e for e in parsed.errors), parsed.errors)
-
-    def test_origins_list_is_joined_for_the_runner(self):
-        # A YAML list reads better in a spec; the runner reads one behaviour string, and an
-        # origin cannot contain a comma, so joining loses nothing.
-        spec = self.SPEC.replace(
-            "{scope: all}",
-            "{scope: all, origins: ['https://www.bing.com', 'https://search.yahoo.com']}",
-        )
-        parsed, jobs = self._jobs(spec)
-        self.assertEqual(parsed.errors, [])
-        behaviors = {b["name"]: b["value"] for b in jobs[1]["behaviors"]}
-        self.assertEqual(behaviors["origins"], "https://www.bing.com,https://search.yahoo.com")
-
-    def test_origins_string_passes_through(self):
-        parsed, jobs = self._jobs(
-            self.SPEC.replace("{scope: all}", "{scope: all, origins: 'https://www.bing.com'}")
-        )
-        self.assertEqual(parsed.errors, [])
-        behaviors = {b["name"]: b["value"] for b in jobs[1]["behaviors"]}
-        self.assertEqual(behaviors["origins"], "https://www.bing.com")
-
-    def test_no_origins_emits_no_behaviour(self):
-        parsed, jobs = self._jobs(self.SPEC)
-        self.assertNotIn("origins", {b["name"] for b in jobs[1]["behaviors"]})
