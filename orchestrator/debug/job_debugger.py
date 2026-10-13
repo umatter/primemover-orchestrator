@@ -684,6 +684,16 @@ class JobDebugger:
                             else:
                                 target = job_dir / Path(name).name
                             target.write_bytes(zf.read(name))
+                            if "_page_sessionstorage_ref_" in lowered:
+                                # A compact capture's pointer to the earlier job that
+                                # holds this session storage in full. Kept as it is, and
+                                # resolved next to it when the full copy checks out.
+                                content = self.jobdata_store.resolve_session_storage(zf.read(name))
+                                if content is not None:
+                                    resolved = Path(name).name.replace(
+                                        "_page_sessionstorage_ref_", "_page_sessionstorage_"
+                                    )
+                                    (job_dir / resolved).write_bytes(content)
                 except zipfile.BadZipFile:
                     logger.debug("%s is not a zip; skipped", obj.key)
                 continue

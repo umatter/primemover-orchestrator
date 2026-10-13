@@ -28,12 +28,19 @@ of thousands of keys.
 
 from __future__ import annotations
 
+import hashlib
+import io
+import json
+import logging
 import re
+import zipfile
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:  # pragma: no cover - import only for type checking
     pass
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -174,6 +181,60 @@ class JobDataStore:
             if close is not None:
                 close()
         return data
+
+    def resolve_session_storage(self, pointer: bytes | str) -> bytes | None:
+        """The session storage a compact capture's pointer stands for.
+
+        A runner crawler with ``capture_profile=compact`` stores an unchanged
+        session storage as ``_page_sessionstorage_ref_<id>.json`` =
+        ``{"same_as_job_id", "same_as_object", "sha256"}``: the earlier job of
+        the same session that holds it in full, by its ``static-jobdata``
+        identifier. The runner never chains pointers, so one hop suffices.
+
+        Returns the stored bytes only when the object is found under one of
+        the configured prefixes, holds that job's session-storage entry, and
+        the entry hashes to ``sha256``. Anything else is None, logged: a
+        pointer that cannot be followed is missing evidence, and handing back
+        some other storage as this job's would be worse than none.
+        """
+        try:
+            ref = json.loads(pointer)
+            job_id = int(ref["same_as_job_id"])
+            identifier = str(ref["same_as_object"])
+            expected = str(ref["sha256"]).lower()
+        except (ValueError, KeyError, TypeError) as e:
+            logger.warning("session storage pointer not understood (%s): %r", e, pointer[:200])
+            return None
+
+        payload = None
+        for prefix in self.prefixes:
+            try:
+                payload = self.read(prefix + identifier)
+                break
+            except Exception:  # noqa: S112 - NoSuchKey under this prefix: try the next
+                continue
+        if payload is None:
+            logger.warning(
+                "session storage pointer names %s, which is not in the store", identifier
+            )
+            return None
+
+        entry_suffix = f"_page_sessionstorage_{job_id}.json"
+        try:
+            with zipfile.ZipFile(io.BytesIO(payload)) as zf:
+                names = [n for n in zf.namelist() if n.endswith(entry_suffix)]
+                if not names:
+                    logger.warning("%s holds no session storage for job %s", identifier, job_id)
+                    return None
+                content = zf.read(names[0])
+        except zipfile.BadZipFile:
+            logger.warning("%s is not a zip; session storage pointer not followed", identifier)
+            return None
+
+        if hashlib.sha256(content).hexdigest() != expected:
+            logger.warning("session storage of job %s does not match the pointer's hash", job_id)
+            return None
+        return content
 
 
 def store_from_settings(settings: Any) -> JobDataStore:
