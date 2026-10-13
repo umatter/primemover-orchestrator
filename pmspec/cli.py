@@ -712,7 +712,7 @@ def _write_secrets_file(path: Path, text: str) -> None:
     "--mode",
     type=click.Choice(MODES),
     required=True,
-    help="test = VM runner, test- name prefix; real = as in the lock",
+    help="test = never ex63: the lock's runner-only box (3 VM, 8 Switch Cloud), else the VM; test- name prefix. real = as in the lock",
 )
 @click.option("--experiment-id", "-e", type=int, help="Append crawlers to an existing experiment")
 @click.option("--dry-run", is_flag=True)

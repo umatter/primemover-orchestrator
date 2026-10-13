@@ -170,11 +170,47 @@ def test_no_commit_refused_in_real_mode_unless_allow_dirty(store):
     )
 
 
-def test_test_mode_forces_vm_runner_and_prefixes_name():
+def test_test_mode_defaults_to_vm_runner_and_prefixes_name():
     name, runner = effective_experiment(make_lock(), "test", date(2026, 9, 11))
     assert name == "test-Study-20260911" and runner == TEST_RUNNER_USER_ID
     lock = make_lock(experiment={"name": "Study", "description": "", "runner_user_id": 1})
     assert effective_experiment(lock, "real", date(2026, 9, 11)) == ("Study", 1)
+
+
+_MISSING = object()
+
+
+def _lock_with_runner(runner: Any) -> Any:
+    experiment: dict[str, Any] = {"name": "Study", "description": ""}
+    if runner is not _MISSING:
+        experiment["runner_user_id"] = runner
+    return make_lock(experiment=experiment)
+
+
+@pytest.mark.parametrize("runner", [3, 8])
+def test_test_mode_keeps_a_runner_only_box_named_in_the_lock(runner):
+    # 8 is pm-runner-sc (Switch Cloud), the box replacing the VM: a test upload
+    # meant for it must not be rerouted to the VM.
+    assert effective_experiment(_lock_with_runner(runner), "test", date(2026, 10, 13)) == (
+        "test-Study-20261013",
+        runner,
+    )
+
+
+@pytest.mark.parametrize("runner", [1, None, _MISSING])
+def test_test_mode_never_lands_on_ex63(runner):
+    # 1 is ex63, and None/absent means the API's default runner, which is ex63:
+    # a test upload goes to the VM instead.
+    _, effective = effective_experiment(_lock_with_runner(runner), "test", date(2026, 10, 13))
+    assert effective == TEST_RUNNER_USER_ID
+
+
+@pytest.mark.parametrize("runner", [1, 3, 8, None])
+def test_real_mode_runs_where_the_lock_says(runner):
+    assert effective_experiment(_lock_with_runner(runner), "real", date(2026, 10, 13)) == (
+        "Study",
+        runner,
+    )
 
 
 def test_fixed_anchor_in_the_past_is_refused(store):

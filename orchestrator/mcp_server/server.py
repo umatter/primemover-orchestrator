@@ -968,7 +968,8 @@ def pm_create_experiment(
         description: Optional description.
         testing: Mark as a testing experiment (runner uses testing endpoints).
         runner_user_id: Which runner executes it: 1 = ex63 (the default when omitted),
-            3 = the runner-only VM. Must be a configured runner account on the API.
+            3 = the runner-only VM, 8 = pm-runner-sc (Switch Cloud, replacing the VM).
+            Must be a configured runner account on the API.
             None means "not supplied" -- there is no way to force the default
             runner from this argument; omit it and the API applies its own default.
         confirm: Apply the change; without it, returns a preview only.
@@ -2743,8 +2744,10 @@ def upload_experiment(
     Args:
         lock_content: a lock, not a spec -- call compile_experiment_spec first.
             Exactly one of lock_content and lock_path.
-        mode: 'test' -> VM runner, name becomes 'test-<name>-<date>', dirty commit
-            allowed; 'real' -> as named in the lock, refused without a clean commit
+        mode: 'test' -> never ex63: the lock's runner_user_id when it names a
+            runner-only box (3 = the VM, 8 = pm-runner-sc, Switch Cloud), else the VM
+            (3); name becomes 'test-<name>-<date>', dirty commit allowed.
+            'real' -> as named in the lock, refused without a clean commit
         experiment_id: append to this experiment instead of creating one.
             REQUIRED for a `kind: runs` lock, which adds queues to the crawlers
             of the experiment its base fleet lock created.

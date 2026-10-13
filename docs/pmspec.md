@@ -62,7 +62,7 @@ the pmspec version and the seed; there is no timestamp.
 ```bash
 pmspec secrets init my-study.lock.yaml        # scaffold ~/.config/primemover/secrets.toml
 pmspec secrets check my-study.lock.yaml       # which ${secret:…} keys it needs, none printed
-pmspec upload my-study.lock.yaml --mode test  # VM runner, name prefixed test-…, dirty commit ok
+pmspec upload my-study.lock.yaml --mode test  # never ex63 (lock's runner-only box, else VM), test-…, dirty ok
 pmspec upload my-study.lock.yaml --mode real  # as in the lock; refuses a dirty/unknown commit
 ```
 
@@ -228,7 +228,9 @@ This automatically generates 10 crawlers (2 conditions × 5 replications) with p
 The `experiment:` mapping accepts an optional runner choice:
 
 - `runner_user_id` (optional, integer): which runner executes the study. `1` = ex63
-  (the default when omitted), `3` = the runner-only VM.
+  (the default when omitted), `3` = the runner-only VM, `8` = pm-runner-sc (Switch Cloud,
+  replacing the VM). A `--mode test` upload never runs on ex63: it keeps a runner-only box
+  named here and sends anything else (`1`, or none) to the VM.
 
 ### Locks, provenance and verify — for generators
 

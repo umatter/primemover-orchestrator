@@ -734,8 +734,8 @@ mutate**, not only the `pm_`-prefixed ones:
   `_require_local_write_target()` before `upload_lock` can mutate anything.
 
 `upload_experiment` takes a lock (from `compile_experiment_spec` or `pmspec compile`) plus a
-**required** `mode` (`test` = VM runner, `test-` name prefix; `real` = as in the lock, refuses a
-dirty or unknown commit) and is dry-run by default (`dry_run=false` to apply). Before 2026-08-21
+**required** `mode` (`test` = never ex63: the lock's runner-only box if it names one, else the VM,
+and a `test-` name prefix; `real` = as in the lock, refuses a dirty or unknown commit) and is dry-run by default (`dry_run=false` to apply). Before 2026-08-21
 it defaulted to applying and never called the guard, so it could write to a remote API.
 `test_mcp_write_guard.py` walks the AST for any tool calling a write verb at a non-login endpoint —
 including an `upload_lock(...)` call or a `.post_file(...)` on a session — and asserts it is
@@ -815,9 +815,10 @@ service triple in `mcp.yml` with its own prefix and its own token.
 
 The shared MCP (`primemover-mcp.service`) authenticates to the API with **one**
 identity — `admin@primemover.example` (user 1) from the repo `.env` — regardless of which
-person's bearer token calls it. Users 1 and 3 are both **service accounts**
-(`PM_SERVICE_ACCOUNT_IDS=1,3`; user 3 is the VM runner identity, not a
-researcher login — researchers are users 2/5/6/7). Service accounts bypass
+person's bearer token calls it. Users 1, 3 and 8 are **service accounts**
+(`PM_SERVICE_ACCOUNT_IDS=1,3,8` on ex63 since 2026-10-13; user 3 is the VM runner identity, user 8
+pm-runner-sc, the Switch Cloud box replacing the VM before SWITCHengines closes on 2026-12-31 --
+runner logins, not researchers, who are users 2/5/6/7). Service accounts bypass
 isolation and see everything, and everything the shared MCP composes is
 **owned by user 1**, so it is invisible to individual researcher logins.
 
@@ -850,11 +851,12 @@ Consequences: as a **regular** (non-service) user, your MCP's read tools
 shared HTTP MCP or the CLI for cross-user/admin visibility. Your experiments
 **do run**: since 2026-09-02 execution is decided by `experiments.runner_user_id`,
 not by owner (see `docs/integration-contract.md` "Runner assignment"). Leave it
-unset and ex63 runs them; pass `runner_user_id=3` to `pm_create_experiment`, or
+unset and ex63 runs them; pass `runner_user_id=3` (or `8`) to `pm_create_experiment`, or
 upload a lock with `mode='test'` (`upload_experiment` / `pmspec upload --mode test`,
-which forces the VM runner and a `test-` name prefix) or with
-`experiment.runner_user_id: 3` in the spec it was compiled from, to run them
-on the VM instead — handy for test runs while a real study occupies ex63. This
+which never runs on ex63: it keeps a runner-only box the lock names -- `3` or `8` -- and
+sends anything else to the VM, with a `test-` name prefix) or with
+`experiment.runner_user_id: 3` (or `8`) in the spec it was compiled from, to run them
+on a runner-only box instead — handy for test runs while a real study occupies ex63. This
 user-scoped MCP is what lets Claude Code in any other repo on the laptop author,
 validate, upload and trace experiments; the `primemover*` skills are symlinked
 into `~/.claude/skills` for the same reason.
@@ -1141,7 +1143,7 @@ Configuration via `.env` file (Pydantic Settings). Required credentials with no 
 - `PM_API_EMAIL`, `PM_API_PASSWORD` - API authentication
 - `GRAFANA_ADMIN_PASSWORD` - Grafana admin
 
-All other settings have sensible defaults (see `orchestrator/config/settings.py`). The API logs in CET timezone; Promtail config handles conversion to UTC for Loki. `PM_DEFAULT_RUNNER_USER_ID` (defaults to 1, ex63) and `PM_SERVICE_ACCOUNT_IDS` (`1,3`) drive the runner-assignment mechanism used by "Composing as a specific user" above.
+All other settings have sensible defaults (see `orchestrator/config/settings.py`). The API logs in CET timezone; Promtail config handles conversion to UTC for Loki. `PM_DEFAULT_RUNNER_USER_ID` (defaults to 1, ex63) and `PM_SERVICE_ACCOUNT_IDS` (`1,3`; ex63 runs `1,3,8`) drive the runner-assignment mechanism used by "Composing as a specific user" above.
 
 ## Deployment (VM / systemd)
 
