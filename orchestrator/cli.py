@@ -3582,7 +3582,7 @@ def experiment_validate(
     # MODES there.
     type=click.Choice(("real", "test")),
     required=True,
-    help="test = VM runner, test- name prefix; real = as in the lock",
+    help="test = never ex63: the lock's runner-only box (3 VM, 8 Switch Cloud), else the VM; test- name prefix. real = as in the lock",
 )
 @click.option("-e", "--experiment-id", type=int, help="Add to existing experiment")
 @click.option("--dry-run", is_flag=True, help="Validate and convert without uploading")

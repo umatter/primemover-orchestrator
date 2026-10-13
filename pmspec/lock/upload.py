@@ -28,7 +28,13 @@ from .secrets import SecretStore, find_placeholders
 from .verify import _paginate, _wall
 
 MODES = ("real", "test")
+# Test mode keeps test uploads off ex63, the box the real studies run on. The API
+# runs an experiment whose runner_user_id is NULL on its default runner, ex63, so
+# NULL counts as ex63 here. A lock that names a runner-only box (3 = the VM, 8 =
+# pm-runner-sc, the Switch Cloud box replacing it) keeps it; everything else goes
+# to the VM.
 TEST_RUNNER_USER_ID = 3
+EX63_RUNNER_USER_ID = 1
 _PREF_MAX = 255
 
 NO_PREFERENCE_SYNC = (
@@ -109,7 +115,8 @@ def effective_experiment(lock: Lock, mode: str, today: date) -> tuple[str, int |
     name = lock.experiment["name"]
     runner = lock.experiment.get("runner_user_id")
     if mode == "test":
-        return f"test-{name}-{today:%Y%m%d}", TEST_RUNNER_USER_ID
+        on_ex63 = runner is None or runner == EX63_RUNNER_USER_ID
+        return f"test-{name}-{today:%Y%m%d}", TEST_RUNNER_USER_ID if on_ex63 else runner
     return name, runner
 
 
