@@ -1101,4 +1101,4 @@ The Promtail configuration includes timezone handling (`location: "Europe/Zurich
 
 ## License
 
-MIT
+MIT, see [LICENSE](LICENSE).
