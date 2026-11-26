@@ -18,45 +18,11 @@ Deploy PrimeMover on a fresh Ubuntu VM.
 
 > **Important**: Run as a regular user, not root. The setup script uses `sudo` when needed. If you only have root access, create a user first: `adduser primemover && usermod -aG sudo primemover`, then `su - primemover`.
 
-### Private Repository Setup
-
-Since PrimeMover repositories are private, you need GitHub authentication before cloning.
-
-**Option A: SSH Key (Recommended)**
-
 ```bash
-# 1. Generate SSH key on your VM (if not already done)
-ssh-keygen -t ed25519 -C "your-email@example.com"
-
-# 2. Add the public key to your GitHub account
-cat ~/.ssh/id_ed25519.pub
-# Copy output -> GitHub -> Settings -> SSH Keys -> New SSH Key
-
-# 3. Clone and run setup
-git clone git@github.com:umatter/primemover-orchestrator.git ~/tools/primemover-orchestrator
+git clone https://github.com/umatter/primemover-orchestrator.git ~/tools/primemover-orchestrator
 cd ~/tools/primemover-orchestrator
 ./scripts/setup-server.sh
 ```
-
-**Option B: Personal Access Token (PAT)**
-
-If you prefer HTTPS with a PAT (useful when one token grants access to all repos):
-
-```bash
-# 1. Create a PAT at: GitHub -> Settings -> Developer Settings -> Personal Access Tokens
-#    Grant 'repo' scope for full private repository access
-
-# 2. Configure git to rewrite SSH URLs to HTTPS with your token
-#    This is required because the setup script clones sibling repos using SSH URLs
-git config --global url."https://<YOUR_TOKEN>@github.com/".insteadOf "git@github.com:"
-
-# 3. Clone using HTTPS (your token is used automatically)
-git clone https://<YOUR_TOKEN>@github.com/umatter/primemover-orchestrator.git ~/tools/primemover-orchestrator
-cd ~/tools/primemover-orchestrator
-./scripts/setup-server.sh
-```
-
-> **Note**: Step 2 configures git to rewrite SSH URLs to HTTPS. This is required because `orchestrator setup` clones sibling repositories (`primemover_api`, `primemover_runner`, `primemover_gui`) using SSH URLs internally.
 
 The setup script installs everything: Docker, Java, Maven, XFCE desktop, VNC, Multilogin X, and all PrimeMover components.
 
@@ -153,11 +119,9 @@ brew install --cask google-chrome
 
 For running browser automation with Multilogin on a headless server, use our automated setup script.
 
-Since this is a private repository, first set up GitHub authentication (see [Private Repository Setup](#private-repository-setup) above), then:
-
 ```bash
-# Clone and run setup (after configuring SSH key or PAT)
-git clone git@github.com:umatter/primemover-orchestrator.git ~/tools/primemover-orchestrator
+# Clone and run setup
+git clone https://github.com/umatter/primemover-orchestrator.git ~/tools/primemover-orchestrator
 cd ~/tools/primemover-orchestrator
 ./scripts/setup-server.sh
 ```
@@ -189,10 +153,8 @@ The orchestrator is the **entry point** for the PrimeMover ecosystem.
 > and `orchestrator e2e --chrome` drives a real job through it. See
 > [Chrome-only dev](docs/new-server-setup.md#chrome-only-dev-no-multilogin--proxy--s3-accounts).
 
-First, set up GitHub authentication for private repository access (see [Private Repository Setup](#private-repository-setup)), then:
-
 ```bash
-git clone git@github.com:umatter/primemover-orchestrator.git
+git clone https://github.com/umatter/primemover-orchestrator.git
 cd primemover-orchestrator
 make prereqs   # Verify prerequisites are installed
 make setup     # Full setup: clone repos, build, start

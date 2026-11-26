@@ -1,7 +1,7 @@
 # PrimeMover Orchestrator Makefile
 #
 # Quick Start (full setup from scratch):
-#   git clone git@github.com:umatter/primemover-orchestrator.git
+#   git clone https://github.com/umatter/primemover-orchestrator.git
 #   cd primemover-orchestrator
 #   make setup
 #

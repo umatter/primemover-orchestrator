@@ -32,9 +32,9 @@ def cli(ctx: click.Context) -> None:
 
 # Default GitHub repository URLs
 REPO_URLS = {
-    "api": "git@github.com:umatter/primemover_api.git",
-    "runner": "git@github.com:umatter/primemover_runner.git",
-    "gui": "git@github.com:umatter/primemover_gui.git",
+    "api": "https://github.com/umatter/primemover_api.git",
+    "runner": "https://github.com/umatter/primemover_runner.git",
+    "gui": "https://github.com/umatter/primemover_gui.git",
 }
 
 
@@ -77,7 +77,7 @@ def setup(
     \b
     Example:
         # Fresh setup (clone orchestrator first, then run setup)
-        git clone git@github.com:umatter/primemover-orchestrator.git
+        git clone https://github.com/umatter/primemover-orchestrator.git
         cd primemover-orchestrator
         pip install -e .
         orchestrator setup

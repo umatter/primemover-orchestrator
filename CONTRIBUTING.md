@@ -6,7 +6,7 @@ Thank you for your interest in contributing to the PrimeMover Orchestrator!
 
 ```bash
 # Clone the repository
-git clone git@github.com:umatter/primemover-orchestrator.git
+git clone https://github.com/umatter/primemover-orchestrator.git
 cd primemover-orchestrator
 
 # Create virtual environment
