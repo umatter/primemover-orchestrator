@@ -1099,6 +1099,11 @@ docker logs pm-orchestrator-promtail 2>&1 | grep "timestamp too new"
 ```
 The Promtail configuration includes timezone handling (`location: "Europe/Zurich"`) to convert API timestamps to UTC. If you see timezone-related issues, verify the promtail config at `infrastructure/promtail/promtail-config.yaml`.
 
+## Funding
+
+Development of PrimeMover was funded by the Swiss National Science Foundation (SNSF),
+grants 100018_207698 and CRSK-1_190429.
+
 ## License
 
 MIT, see [LICENSE](LICENSE).
